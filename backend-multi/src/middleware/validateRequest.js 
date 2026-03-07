@@ -1,0 +1,22 @@
+// src/middleware/validateRequest.js
+const { validationResult } = require('express-validator');
+const { error: errorResponse } = require('../utils/apiResponse');
+
+const validateRequest = (req, res, next) => {
+  const errors = validationResult(req);
+
+  if (!errors.isEmpty()) {
+    return errorResponse(res, {
+      statusCode: 400,
+      message: 'Errores de validación',
+      errors: errors.array().map((e) => ({
+        campo: e.param,
+        mensaje: e.msg,
+      })),
+    });
+  }
+
+  next();
+};
+
+module.exports = validateRequest;
