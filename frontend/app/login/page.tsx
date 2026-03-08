@@ -2,39 +2,42 @@
 
 import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import "../../firebase/firebaseConfig";
 
 export default function LoginPage() {
   const router = useRouter();
-
-  const auth = useMemo(() => getAuth(), []);
+  const auth = getAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (loading) return;
 
+    console.log("SUBMIT EJECUTADO");
     setLoading(true);
     setError(null);
+    setStatus("Intentando iniciar sesión...");
 
     try {
+      console.log("INTENTANDO LOGIN CON:", email);
+
       const credential = await signInWithEmailAndPassword(auth, email, password);
       const user = credential.user;
 
-      if (!user) {
-        throw new Error("No se pudo iniciar sesión.");
-      }
+      console.log("LOGIN OK:", user?.email);
+      setStatus(`Login exitoso con ${user?.email}`);
 
-      // Aquí puedes agregar lógica de roles más adelante
-      // Por ahora redirigimos al admin si el login fue exitoso
-      router.push("/admin");
-      router.refresh();
+      setTimeout(() => {
+        router.push("/admin");
+        router.refresh();
+      }, 500);
     } catch (err: any) {
       console.error("LOGIN ERROR:", err);
 
@@ -57,9 +60,11 @@ export default function LoginPage() {
           setError("Demasiados intentos. Inténtalo de nuevo más tarde.");
           break;
         default:
-          setError("No se pudo iniciar sesión. Verifica tus datos.");
+          setError(`No se pudo iniciar sesión. Código: ${code || "desconocido"}`);
           break;
       }
+
+      setStatus(null);
     } finally {
       setLoading(false);
     }
@@ -77,6 +82,7 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} style={styles.form}>
           {error ? <div style={styles.errorBox}>{error}</div> : null}
+          {status ? <div style={styles.okBox}>{status}</div> : null}
 
           <div style={styles.field}>
             <label htmlFor="email" style={styles.label}>
@@ -199,6 +205,15 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: "#fef2f2",
     color: "#b91c1c",
     border: "1px solid #fecaca",
+    borderRadius: "12px",
+    padding: "12px 14px",
+    fontSize: "14px",
+    fontWeight: 600,
+  },
+  okBox: {
+    backgroundColor: "#ecfdf5",
+    color: "#065f46",
+    border: "1px solid #a7f3d0",
     borderRadius: "12px",
     padding: "12px 14px",
     fontSize: "14px",
