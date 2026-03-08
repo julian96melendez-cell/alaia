@@ -5,6 +5,8 @@ import React, { createContext, useContext, useState } from "react";
 type Colors = {
   background: string;
   text: string;
+  subtext: string;
+  textSecondary: string;
   card: string;
   border: string;
   primary: string;
@@ -21,6 +23,8 @@ type ThemeContextType = {
 const lightColors: Colors = {
   background: "#ffffff",
   text: "#111827",
+  subtext: "#6b7280",
+  textSecondary: "#6b7280",
   card: "#f9fafb",
   border: "#e5e7eb",
   primary: "#4f46e5",
@@ -31,6 +35,8 @@ const lightColors: Colors = {
 const darkColors: Colors = {
   background: "#0f172a",
   text: "#f9fafb",
+  subtext: "#94a3b8",
+  textSecondary: "#94a3b8",
   card: "#1e293b",
   border: "#334155",
   primary: "#6366f1",
