@@ -14,30 +14,34 @@ export default function LoginPage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (loading) return;
 
-    console.log("SUBMIT EJECUTADO");
     setLoading(true);
     setError(null);
-    setStatus("Intentando iniciar sesión...");
 
     try {
-      console.log("INTENTANDO LOGIN CON:", email);
-
       const credential = await signInWithEmailAndPassword(auth, email, password);
-      const user = credential.user;
+      const idToken = await credential.user.getIdToken(true);
 
-      console.log("LOGIN OK:", user?.email);
-      setStatus(`Login exitoso con ${user?.email}`);
+      const res = await fetch("/api/session-login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ idToken }),
+      });
 
-      setTimeout(() => {
-        router.push("/admin");
-        router.refresh();
-      }, 500);
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.message || "No se pudo iniciar la sesión");
+      }
+
+      router.push("/admin");
+      router.refresh();
     } catch (err: any) {
       console.error("LOGIN ERROR:", err);
 
@@ -57,14 +61,12 @@ export default function LoginPage() {
           setError("Correo o contraseña incorrectos.");
           break;
         case "auth/too-many-requests":
-          setError("Demasiados intentos. Inténtalo de nuevo más tarde.");
+          setError("Demasiados intentos. Inténtalo más tarde.");
           break;
         default:
-          setError(`No se pudo iniciar sesión. Código: ${code || "desconocido"}`);
+          setError(err?.message || "No se pudo iniciar sesión.");
           break;
       }
-
-      setStatus(null);
     } finally {
       setLoading(false);
     }
@@ -82,7 +84,6 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} style={styles.form}>
           {error ? <div style={styles.errorBox}>{error}</div> : null}
-          {status ? <div style={styles.okBox}>{status}</div> : null}
 
           <div style={styles.field}>
             <label htmlFor="email" style={styles.label}>
@@ -205,15 +206,6 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: "#fef2f2",
     color: "#b91c1c",
     border: "1px solid #fecaca",
-    borderRadius: "12px",
-    padding: "12px 14px",
-    fontSize: "14px",
-    fontWeight: 600,
-  },
-  okBox: {
-    backgroundColor: "#ecfdf5",
-    color: "#065f46",
-    border: "1px solid #a7f3d0",
     borderRadius: "12px",
     padding: "12px 14px",
     fontSize: "14px",
