@@ -1,9 +1,7 @@
 "use client";
 
-import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import "../../firebase/firebaseConfig";
 
 export default function AdminLayout({
   children,
@@ -15,19 +13,46 @@ export default function AdminLayout({
   const [authorized, setAuthorized] = useState(false);
 
   useEffect(() => {
-    const auth = getAuth();
+    let mounted = true;
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setAuthorized(true);
-      } else {
-        setAuthorized(false);
+    async function verify() {
+      try {
+        const res = await fetch("/api/session-me", {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          router.replace("/login");
+          return;
+        }
+
+        if (!data.user?.admin) {
+          router.replace("/login");
+          return;
+        }
+
+        if (mounted) {
+          setAuthorized(true);
+        }
+      } catch (error) {
+        console.error("ADMIN VERIFY ERROR:", error);
         router.replace("/login");
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
       }
-      setLoading(false);
-    });
+    }
 
-    return () => unsubscribe();
+    verify();
+
+    return () => {
+      mounted = false;
+    };
   }, [router]);
 
   if (loading) {
