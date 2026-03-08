@@ -1,25 +1,22 @@
-import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
-
-// Rutas que requieren sesión
-const PROTECTED_PREFIXES = ["/admin"];
-
-// Rutas públicas (no redirigir si ya estás ahí)
-const PUBLIC_PATHS = ["/login"];
+import { NextRequest, NextResponse } from "next/server";
 
 export function middleware(req: NextRequest) {
+  const session = req.cookies.get("session")?.value;
   const { pathname } = req.nextUrl;
 
-  const isProtected = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));
-  if (!isProtected) return NextResponse.next();
+  // Proteger rutas admin
+  if (pathname.startsWith("/admin") && !session) {
+    return NextResponse.redirect(new URL("/login", req.url));
+  }
 
-  // Si tu token está en localStorage, middleware NO lo puede leer.
-  // Por eso, para middleware seguro, necesitamos cookie.
-  // Solución rápida: proteger del lado cliente también (ver punto 1.2)
-  // Y dejar middleware para cuando pasemos a cookies HttpOnly.
+  // Si ya hay sesión, no permitir volver al login
+  if (pathname === "/login" && session) {
+    return NextResponse.redirect(new URL("/admin", req.url));
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/admin/:path*"],
+  matcher: ["/admin/:path*", "/login"],
 };
