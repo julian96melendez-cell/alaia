@@ -1,51 +1,76 @@
+"use client";
+
 import React from "react";
-import {
-  Text as DefaultText,
-  View as DefaultView,
-  TextProps as DefaultTextProps,
-  ViewProps as DefaultViewProps,
-} from "react-native";
 
 type ThemeProps = {
   lightColor?: string;
   darkColor?: string;
+  children?: React.ReactNode;
+  style?: React.CSSProperties;
 };
 
-export type TextProps = ThemeProps & DefaultTextProps;
-export type ViewProps = ThemeProps & DefaultViewProps;
+export type TextProps = ThemeProps & React.HTMLAttributes<HTMLSpanElement>;
+export type ViewProps = ThemeProps & React.HTMLAttributes<HTMLDivElement>;
 
 function useThemeColor(
   props: { light?: string; dark?: string },
   colorName: "text" | "background"
 ) {
-  const theme = "light"; // Puedes reemplazarlo luego por un hook real
+  const theme = "light"; // luego puedes conectar tu hook real
   const colorFromProps = props[theme];
 
-  if (colorFromProps) {
-    return colorFromProps;
-  }
+  if (colorFromProps) return colorFromProps;
 
   return Colors[theme][colorName];
 }
 
-export function Text(props: TextProps) {
-  const { style, lightColor, darkColor, ...otherProps } = props;
+export function Text({
+  style,
+  lightColor,
+  darkColor,
+  children,
+  ...props
+}: TextProps) {
   const color = useThemeColor({ light: lightColor, dark: darkColor }, "text");
 
-  return <DefaultText style={[{ color }, style]} {...otherProps} />;
+  return (
+    <span
+      {...props}
+      style={{
+        color,
+        ...(style || {}),
+      }}
+    >
+      {children}
+    </span>
+  );
 }
 
-export function View(props: ViewProps) {
-  const { style, lightColor, darkColor, ...otherProps } = props;
+export function View({
+  style,
+  lightColor,
+  darkColor,
+  children,
+  ...props
+}: ViewProps) {
   const backgroundColor = useThemeColor(
     { light: lightColor, dark: darkColor },
     "background"
   );
 
-  return <DefaultView style={[{ backgroundColor }, style]} {...otherProps} />;
+  return (
+    <div
+      {...props}
+      style={{
+        backgroundColor,
+        ...(style || {}),
+      }}
+    >
+      {children}
+    </div>
+  );
 }
 
-// 🎨 Paleta de colores
 const Colors = {
   light: {
     text: "#000",
