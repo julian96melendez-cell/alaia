@@ -1,16 +1,6 @@
-import { Ionicons } from "@expo/vector-icons";
-import {
-    Dimensions,
-    Image,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
-} from "react-native";
-import useTheme from "../../hooks/useTheme";
+"use client";
 
-const { width } = Dimensions.get("window");
-const CARD_WIDTH = width * 0.45;
+import useTheme from "../../hooks/useTheme";
 
 interface ProductCardProps {
   product: {
@@ -33,96 +23,101 @@ export default function ProductCard({
   const { theme } = useTheme();
 
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      style={[styles.card, { backgroundColor: theme.card }]}
-      activeOpacity={0.9}
+    <div
+      onClick={onPress}
+      style={{
+        width: "100%",
+        maxWidth: 260,
+        borderRadius: 16,
+        margin: "10px 8px",
+        overflow: "hidden",
+        cursor: "pointer",
+        backgroundColor: theme.card,
+        boxShadow: "0 2px 10px rgba(0,0,0,0.08)",
+      }}
     >
-      {/* Imagen del producto */}
-      <View style={styles.imageContainer}>
-        <Image
-          source={{
-            uri:
-              product.image ||
-              "https://cdn.pixabay.com/photo/2016/11/19/14/00/shoes-1838769_1280.jpg",
+      <div
+        style={{
+          width: "100%",
+          height: 150,
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
+        <img
+          src={
+            product.image ||
+            "https://cdn.pixabay.com/photo/2016/11/19/14/00/shoes-1838769_1280.jpg"
+          }
+          alt={product.name}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            display: "block",
           }}
-          style={styles.image}
         />
-        <TouchableOpacity
-          style={[styles.wishlistButton, { backgroundColor: theme.card }]}
-          onPress={onWishlist}
-        >
-          <Ionicons name="heart-outline" size={20} color={theme.tint} />
-        </TouchableOpacity>
-      </View>
 
-      {/* Info */}
-      <View style={styles.info}>
-        <Text style={[styles.name, { color: theme.text }]} numberOfLines={1}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onWishlist?.();
+          }}
+          style={{
+            position: "absolute",
+            top: 10,
+            right: 10,
+            borderRadius: 999,
+            padding: "8px 10px",
+            border: "none",
+            backgroundColor: theme.card,
+            cursor: "pointer",
+            boxShadow: "0 1px 6px rgba(0,0,0,0.1)",
+          }}
+        >
+          ♡
+        </button>
+      </div>
+
+      <div style={{ padding: 10 }}>
+        <div
+          style={{
+            fontSize: 15,
+            fontWeight: 600,
+            color: theme.text,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
           {product.name}
-        </Text>
-        <Text style={[styles.brand, { color: theme.subtext }]} numberOfLines={1}>
+        </div>
+
+        <div
+          style={{
+            fontSize: 13,
+            margin: "2px 0",
+            color: theme.subtext,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
           {product.brand || "Marca genérica"}
-        </Text>
-        <Text style={[styles.price, { color: theme.tint }]}>
+        </div>
+
+        <div
+          style={{
+            fontSize: 16,
+            fontWeight: 700,
+            marginTop: 6,
+            color: theme.tint,
+          }}
+        >
           ${product.price.toFixed(2)}
-        </Text>
-      </View>
-    </TouchableOpacity>
+        </div>
+      </div>
+    </div>
   );
 }
-
-const styles = StyleSheet.create({
-  card: {
-    width: CARD_WIDTH,
-    borderRadius: 16,
-    marginVertical: 10,
-    marginHorizontal: 8,
-    elevation: 4,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
-    overflow: "hidden",
-  },
-  imageContainer: {
-    width: "100%",
-    height: 150,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    overflow: "hidden",
-    position: "relative",
-  },
-  image: {
-    width: "100%",
-    height: "100%",
-    resizeMode: "cover",
-  },
-  wishlistButton: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    borderRadius: 20,
-    padding: 6,
-    elevation: 3,
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 1 },
-  },
-  info: {
-    padding: 10,
-  },
-  name: {
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  brand: {
-    fontSize: 13,
-    marginVertical: 2,
-  },
-  price: {
-    fontSize: 16,
-    fontWeight: "700",
-    marginTop: 6,
-  },
-});
