@@ -1,29 +1,21 @@
-import { StyleSheet } from "react-native";
-import { Text, View } from "./Themed";
+"use client";
 
-export default function EditScreenInfo({ path }: { path: string }) {
+type Props = {
+  path: string;
+};
+
+export default function EditScreenInfo({ path }: Props) {
   return (
-    <View style={styles.container}>
-      <Text style={styles.text}>
-        Abre este archivo: <Text style={styles.path}>{path}</Text> para empezar a editar.
-      </Text>
-    </View>
+    <div
+      style={{
+        textAlign: "center",
+        margin: "20px",
+        fontSize: "16px",
+        lineHeight: "24px",
+      }}
+    >
+      Abre este archivo:{" "}
+      <span style={{ fontWeight: "bold" }}>{path}</span> para empezar a editar.
+    </div>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    alignItems: "center",
-    justifyContent: "center",
-    marginHorizontal: 20,
-  },
-  text: {
-    fontSize: 16,
-    lineHeight: 24,
-    textAlign: "center",
-  },
-  path: {
-    marginTop: 10,
-    fontWeight: "bold",
-  },
-});
