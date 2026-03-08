@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 
-export default function PagoCanceladoPage() {
+function PagoCanceladoContent() {
   const sp = useSearchParams();
   const ordenId = sp.get("ordenId");
 
@@ -38,5 +39,13 @@ export default function PagoCanceladoPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+export default function PagoCanceladoPage() {
+  return (
+    <Suspense fallback={<div className="p-6">Cargando...</div>}>
+      <PagoCanceladoContent />
+    </Suspense>
   );
 }
