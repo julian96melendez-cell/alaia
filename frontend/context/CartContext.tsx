@@ -22,7 +22,7 @@ import React, {
     useReducer,
     useState,
 } from "react";
-import { auth } from "../../firebase/firebaseConfig";
+import { auth } from "../firebase/firebaseConfig";
 
 /* ───────────────────────── Tipos base ───────────────────────── */
 
