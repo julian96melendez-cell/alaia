@@ -1,9 +1,21 @@
 "use client";
 
-import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
+import {
+  getAuth,
+  PhoneAuthProvider,
+  PhoneMultiFactorGenerator,
+  RecaptchaVerifier,
+  signInWithEmailAndPassword,
+} from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import "../../firebase/firebaseConfig";
+
+declare global {
+  interface Window {
+    recaptchaVerifier?: RecaptchaVerifier;
+  }
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -11,9 +23,26 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  async function createSecureSession(idToken: string) {
+    const res = await fetch("/api/session-login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ idToken }),
+      credentials: "include",
+      cache: "no-store",
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      throw new Error(data.message || "No se pudo iniciar la sesión");
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -26,23 +55,80 @@ export default function LoginPage() {
       const credential = await signInWithEmailAndPassword(auth, email, password);
       const idToken = await credential.user.getIdToken(true);
 
-      const res = await fetch("/api/session-login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ idToken }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok || !data.ok) {
-        throw new Error(data.message || "No se pudo iniciar la sesión");
-      }
+      await createSecureSession(idToken);
 
       router.push("/admin");
       router.refresh();
     } catch (err: any) {
+      try {
+        if (err?.code === "auth/multi-factor-auth-required") {
+          const resolver = err.resolver;
+
+          if (!resolver?.hints?.length) {
+            throw new Error("No hay un segundo factor disponible para esta cuenta.");
+          }
+
+          if (!window.recaptchaVerifier) {
+            window.recaptchaVerifier = new RecaptchaVerifier(
+              auth,
+              "recaptcha-container",
+              {
+                size: "invisible",
+              }
+            );
+
+            await window.recaptchaVerifier.render();
+          }
+
+          const phoneInfoOptions = {
+            multiFactorHint: resolver.hints[0],
+            session: resolver.session,
+          };
+
+          const phoneAuthProvider = new PhoneAuthProvider(auth);
+
+          const verificationId = await phoneAuthProvider.verifyPhoneNumber(
+            phoneInfoOptions,
+            window.recaptchaVerifier
+          );
+
+          const verificationCode = window.prompt(
+            "Introduce el código SMS que acabas de recibir"
+          );
+
+          if (!verificationCode) {
+            throw new Error("No introdujiste el código SMS.");
+          }
+
+          const phoneCredential = PhoneAuthProvider.credential(
+            verificationId,
+            verificationCode
+          );
+
+          const multiFactorAssertion =
+            PhoneMultiFactorGenerator.assertion(phoneCredential);
+
+          const userCredential = await resolver.resolveSignIn(
+            multiFactorAssertion
+          );
+
+          const idToken = await userCredential.user.getIdToken(true);
+
+          await createSecureSession(idToken);
+
+          router.push("/admin");
+          router.refresh();
+          return;
+        }
+      } catch (mfaError: any) {
+        console.error("MFA ERROR:", mfaError);
+        setError(
+          mfaError?.message || "No se pudo completar la verificación MFA."
+        );
+        setLoading(false);
+        return;
+      }
+
       console.error("LOGIN ERROR:", err);
 
       const code = err?.code || "";
@@ -128,7 +214,15 @@ export default function LoginPage() {
           >
             {loading ? "Entrando..." : "Entrar"}
           </button>
+
+          <div style={{ marginTop: 8 }}>
+            <a href="/forgot-password" style={{ color: "#4f46e5", fontSize: 14 }}>
+              ¿Olvidaste tu contraseña?
+            </a>
+          </div>
         </form>
+
+        <div id="recaptcha-container" />
       </section>
     </main>
   );
