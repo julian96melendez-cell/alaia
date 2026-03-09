@@ -8,7 +8,10 @@ export async function GET(req: NextRequest) {
     if (!session) {
       return NextResponse.json(
         { ok: false, message: "No session" },
-        { status: 401 }
+        {
+          status: 401,
+          headers: { "Cache-Control": "no-store" },
+        }
       );
     }
 
@@ -17,24 +20,35 @@ export async function GET(req: NextRequest) {
     if (!decoded.admin) {
       return NextResponse.json(
         { ok: false, message: "Not admin" },
-        { status: 403 }
+        {
+          status: 403,
+          headers: { "Cache-Control": "no-store" },
+        }
       );
     }
 
-    return NextResponse.json({
-      ok: true,
-      user: {
-        uid: decoded.uid,
-        email: decoded.email || null,
-        admin: decoded.admin === true,
+    return NextResponse.json(
+      {
+        ok: true,
+        user: {
+          uid: decoded.uid,
+          email: decoded.email || null,
+          admin: decoded.admin === true,
+        },
       },
-    });
+      {
+        headers: { "Cache-Control": "no-store" },
+      }
+    );
   } catch (error) {
     console.error("SESSION ME ERROR:", error);
 
     return NextResponse.json(
       { ok: false, message: "Invalid session" },
-      { status: 401 }
+      {
+        status: 401,
+        headers: { "Cache-Control": "no-store" },
+      }
     );
   }
 }

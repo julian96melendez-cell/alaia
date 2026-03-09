@@ -14,6 +14,7 @@ export default function AdminLayout({
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
 
     async function verify() {
       try {
@@ -21,26 +22,31 @@ export default function AdminLayout({
           method: "GET",
           credentials: "include",
           cache: "no-store",
+          signal: controller.signal,
         });
 
         const data = await res.json();
 
-        if (!res.ok || !data.ok) {
-          router.replace("/login");
-          return;
-        }
-
-        if (!data.user?.admin) {
-          router.replace("/login");
+        if (!res.ok || !data?.ok || !data?.user?.admin) {
+          if (mounted) {
+            setAuthorized(false);
+            router.replace("/login");
+          }
           return;
         }
 
         if (mounted) {
           setAuthorized(true);
         }
-      } catch (error) {
+      } catch (error: any) {
+        if (error?.name === "AbortError") return;
+
         console.error("ADMIN VERIFY ERROR:", error);
-        router.replace("/login");
+
+        if (mounted) {
+          setAuthorized(false);
+          router.replace("/login");
+        }
       } finally {
         if (mounted) {
           setLoading(false);
@@ -52,15 +58,12 @@ export default function AdminLayout({
 
     return () => {
       mounted = false;
+      controller.abort();
     };
   }, [router]);
 
   if (loading) {
-    return (
-      <div style={loadingStyle}>
-        Verificando acceso administrativo…
-      </div>
-    );
+    return <div style={loadingStyle}>Verificando acceso administrativo…</div>;
   }
 
   if (!authorized) return null;

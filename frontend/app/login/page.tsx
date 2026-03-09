@@ -8,7 +8,7 @@ import {
   signInWithEmailAndPassword,
 } from "firebase/auth";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "../../firebase/firebaseConfig";
 
 declare global {
@@ -23,8 +23,23 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [smsCode, setSmsCode] = useState("");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [mfaResolver, setMfaResolver] = useState<any>(null);
+
+  useEffect(() => {
+    if (!window.recaptchaVerifier) {
+      window.recaptchaVerifier = new RecaptchaVerifier(
+        auth,
+        "recaptcha-container",
+        { size: "invisible" }
+      );
+    }
+  }, [auth]);
 
   async function createSecureSession(idToken: string) {
     const res = await fetch("/api/session-login", {
@@ -32,9 +47,9 @@ export default function LoginPage() {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ idToken }),
       credentials: "include",
       cache: "no-store",
+      body: JSON.stringify({ idToken }),
     });
 
     const data = await res.json();
@@ -60,24 +75,12 @@ export default function LoginPage() {
       router.push("/admin");
       router.refresh();
     } catch (err: any) {
-      try {
-        if (err?.code === "auth/multi-factor-auth-required") {
+      if (err?.code === "auth/multi-factor-auth-required") {
+        try {
           const resolver = err.resolver;
 
           if (!resolver?.hints?.length) {
             throw new Error("No hay un segundo factor disponible para esta cuenta.");
-          }
-
-          if (!window.recaptchaVerifier) {
-            window.recaptchaVerifier = new RecaptchaVerifier(
-              auth,
-              "recaptcha-container",
-              {
-                size: "invisible",
-              }
-            );
-
-            await window.recaptchaVerifier.render();
           }
 
           const phoneInfoOptions = {
@@ -87,46 +90,24 @@ export default function LoginPage() {
 
           const phoneAuthProvider = new PhoneAuthProvider(auth);
 
-          const verificationId = await phoneAuthProvider.verifyPhoneNumber(
+          const newVerificationId = await phoneAuthProvider.verifyPhoneNumber(
             phoneInfoOptions,
-            window.recaptchaVerifier
+            window.recaptchaVerifier!
           );
 
-          const verificationCode = window.prompt(
-            "Introduce el código SMS que acabas de recibir"
+          setVerificationId(newVerificationId);
+          setMfaResolver(resolver);
+          setLoading(false);
+          return;
+        } catch (mfaSetupError: any) {
+          console.error("MFA SETUP ERROR:", mfaSetupError);
+          setError(
+            mfaSetupError?.message ||
+              "No se pudo iniciar la verificación MFA."
           );
-
-          if (!verificationCode) {
-            throw new Error("No introdujiste el código SMS.");
-          }
-
-          const phoneCredential = PhoneAuthProvider.credential(
-            verificationId,
-            verificationCode
-          );
-
-          const multiFactorAssertion =
-            PhoneMultiFactorGenerator.assertion(phoneCredential);
-
-          const userCredential = await resolver.resolveSignIn(
-            multiFactorAssertion
-          );
-
-          const idToken = await userCredential.user.getIdToken(true);
-
-          await createSecureSession(idToken);
-
-          router.push("/admin");
-          router.refresh();
+          setLoading(false);
           return;
         }
-      } catch (mfaError: any) {
-        console.error("MFA ERROR:", mfaError);
-        setError(
-          mfaError?.message || "No se pudo completar la verificación MFA."
-        );
-        setLoading(false);
-        return;
       }
 
       console.error("LOGIN ERROR:", err);
@@ -153,7 +134,42 @@ export default function LoginPage() {
           setError(err?.message || "No se pudo iniciar sesión.");
           break;
       }
-    } finally {
+
+      setLoading(false);
+    }
+  }
+
+  async function verifySms() {
+    if (!verificationId || !mfaResolver || !smsCode.trim()) {
+      setError("Debes introducir el código SMS.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const phoneCredential = PhoneAuthProvider.credential(
+        verificationId,
+        smsCode.trim()
+      );
+
+      const multiFactorAssertion =
+        PhoneMultiFactorGenerator.assertion(phoneCredential);
+
+      const userCredential = await mfaResolver.resolveSignIn(
+        multiFactorAssertion
+      );
+
+      const idToken = await userCredential.user.getIdToken(true);
+
+      await createSecureSession(idToken);
+
+      router.push("/admin");
+      router.refresh();
+    } catch (err: any) {
+      console.error("MFA ERROR:", err);
+      setError("Código SMS incorrecto o verificación fallida.");
       setLoading(false);
     }
   }
@@ -161,66 +177,66 @@ export default function LoginPage() {
   return (
     <main style={styles.page}>
       <section style={styles.card}>
-        <div style={styles.header}>
-          <h1 style={styles.title}>Iniciar sesión</h1>
-          <p style={styles.subtitle}>
-            Accede al panel de administración de Alaia
-          </p>
-        </div>
+        <h1 style={styles.title}>Iniciar sesión</h1>
 
-        <form onSubmit={handleSubmit} style={styles.form}>
-          {error ? <div style={styles.errorBox}>{error}</div> : null}
+        {error && <div style={styles.errorBox}>{error}</div>}
 
-          <div style={styles.field}>
-            <label htmlFor="email" style={styles.label}>
-              Correo electrónico
-            </label>
+        {!verificationId ? (
+          <form onSubmit={handleSubmit} style={styles.form}>
             <input
-              id="email"
               type="email"
-              placeholder="tu@email.com"
+              placeholder="Correo electrónico"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
               required
               style={styles.input}
             />
-          </div>
 
-          <div style={styles.field}>
-            <label htmlFor="password" style={styles.label}>
-              Contraseña
-            </label>
             <input
-              id="password"
               type="password"
-              placeholder="Tu contraseña"
+              placeholder="Contraseña"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
               required
               style={styles.input}
             />
-          </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            style={{
-              ...styles.button,
-              opacity: loading ? 0.7 : 1,
-              cursor: loading ? "not-allowed" : "pointer",
-            }}
-          >
-            {loading ? "Entrando..." : "Entrar"}
-          </button>
+            <button
+              type="submit"
+              disabled={loading}
+              style={{
+                ...styles.button,
+                opacity: loading ? 0.7 : 1,
+              }}
+            >
+              {loading ? "Entrando..." : "Entrar"}
+            </button>
+          </form>
+        ) : (
+          <div style={styles.form}>
+            <p>Introduce el código SMS</p>
 
-          <div style={{ marginTop: 8 }}>
-            <a href="/forgot-password" style={{ color: "#4f46e5", fontSize: 14 }}>
-              ¿Olvidaste tu contraseña?
-            </a>
+            <input
+              type="text"
+              value={smsCode}
+              onChange={(e) => setSmsCode(e.target.value)}
+              placeholder="Código SMS"
+              style={styles.input}
+            />
+
+            <button
+              type="button"
+              onClick={verifySms}
+              disabled={loading}
+              style={{
+                ...styles.button,
+                opacity: loading ? 0.7 : 1,
+              }}
+            >
+              {loading ? "Verificando..." : "Verificar código"}
+            </button>
           </div>
-        </form>
+        )}
 
         <div id="recaptcha-container" />
       </section>
@@ -234,75 +250,57 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    padding: "24px",
+    padding: 24,
     background:
       "linear-gradient(180deg, #f8fafc 0%, #eef2ff 50%, #f8fafc 100%)",
   },
   card: {
     width: "100%",
-    maxWidth: "420px",
+    maxWidth: 420,
     backgroundColor: "#ffffff",
-    borderRadius: "20px",
-    padding: "32px",
+    borderRadius: 20,
+    padding: 32,
     boxShadow: "0 20px 50px rgba(15, 23, 42, 0.12)",
     border: "1px solid rgba(0,0,0,0.06)",
   },
-  header: {
-    marginBottom: "24px",
-  },
   title: {
     margin: 0,
-    fontSize: "28px",
+    marginBottom: 20,
+    fontSize: 28,
     fontWeight: 700,
     color: "#111827",
   },
-  subtitle: {
-    marginTop: "8px",
-    marginBottom: 0,
-    fontSize: "14px",
-    color: "#6b7280",
-  },
   form: {
     display: "grid",
-    gap: "16px",
-  },
-  field: {
-    display: "grid",
-    gap: "8px",
-  },
-  label: {
-    fontSize: "14px",
-    fontWeight: 600,
-    color: "#111827",
+    gap: 16,
   },
   input: {
     width: "100%",
     padding: "12px 14px",
-    borderRadius: "12px",
+    borderRadius: 12,
     border: "1px solid #d1d5db",
-    fontSize: "14px",
+    fontSize: 14,
     outline: "none",
-    backgroundColor: "#ffffff",
-    color: "#111827",
   },
   button: {
-    marginTop: "8px",
     width: "100%",
     padding: "12px 16px",
-    borderRadius: "12px",
+    borderRadius: 12,
     border: "none",
     backgroundColor: "#111827",
     color: "#ffffff",
-    fontSize: "15px",
+    fontSize: 15,
     fontWeight: 700,
+    cursor: "pointer",
   },
   errorBox: {
     backgroundColor: "#fef2f2",
     color: "#b91c1c",
     border: "1px solid #fecaca",
-    borderRadius: "12px",
+    borderRadius: 12,
     padding: "12px 14px",
-    fontSize: "14px",
+    fontSize: 14,
     fontWeight: 600,
+    marginBottom: 16,
   },
 };
