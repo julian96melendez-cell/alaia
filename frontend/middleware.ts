@@ -4,17 +4,21 @@ export function middleware(req: NextRequest) {
   const session = req.cookies.get("session")?.value;
   const { pathname } = req.nextUrl;
 
-  // Proteger rutas admin
   if (pathname.startsWith("/admin") && !session) {
-    return NextResponse.redirect(new URL("/login", req.url));
+    const response = NextResponse.redirect(new URL("/login", req.url));
+    response.headers.set("Cache-Control", "no-store");
+    return response;
   }
 
-  // Si ya hay sesión, no permitir volver al login
   if (pathname === "/login" && session) {
-    return NextResponse.redirect(new URL("/admin", req.url));
+    const response = NextResponse.redirect(new URL("/admin", req.url));
+    response.headers.set("Cache-Control", "no-store");
+    return response;
   }
 
-  return NextResponse.next();
+  const response = NextResponse.next();
+  response.headers.set("Cache-Control", "no-store");
+  return response;
 }
 
 export const config = {
