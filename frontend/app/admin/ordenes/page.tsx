@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * ======================================================
- * AdminOrdenesPage — ENTERPRISE MAX (FINAL)
- * ======================================================
- * ✅ Server-side pagination + filters + sort + search
- * ✅ Debounced search (pro)
- * ✅ Auto refresh toggle
- * ✅ Admin metrics (/metrics)
- * ✅ Update estadoPago + estadoFulfillment (PUT admin)
- * ✅ Optimistic UI + rollback
- * ✅ AbortController anti memory leak
- * ✅ Export CSV
- * ✅ UX pro: skeletons + banners + badges + actions
- * ======================================================
- */
-
 import { api } from "@/lib/api";
 import type { Orden } from "@/lib/types";
 import Link from "next/link";
@@ -39,37 +23,35 @@ type ListMeta = {
   pages: number;
 };
 
-type AdminListResponse<T> = {
-  ok: boolean;
-  message?: string;
-  data?: T;
-  meta?: ListMeta;
-};
-
-type AdminMetricsResponse = {
-  ok: boolean;
-  message?: string;
-  data?: Metrics;
-};
-
 type UpdateEstadoBody = {
   estadoPago?: "pendiente" | "pagado" | "fallido" | "reembolsado";
-  estadoFulfillment?: "pendiente" | "procesando" | "enviado" | "entregado" | "cancelado";
+  estadoFulfillment?:
+    | "pendiente"
+    | "procesando"
+    | "enviado"
+    | "entregado"
+    | "cancelado";
 };
 
 const PAGO_OPTS = ["pendiente", "pagado", "fallido", "reembolsado"] as const;
-const FUL_OPTS = ["pendiente", "procesando", "enviado", "entregado", "cancelado"] as const;
+const FUL_OPTS = [
+  "pendiente",
+  "procesando",
+  "enviado",
+  "entregado",
+  "cancelado",
+] as const;
 
-function safeLower(v: any) {
+function safeLower(v: unknown) {
   return String(v || "").trim().toLowerCase();
 }
 
-function money(n: any) {
+function money(n: unknown) {
   const x = Number(n || 0);
   return Number.isFinite(x) ? x.toFixed(2) : "0.00";
 }
 
-function fmtNumber(n: any) {
+function fmtNumber(n: unknown) {
   const x = Number(n || 0);
   return Number.isFinite(x) ? x.toLocaleString() : "0";
 }
@@ -158,11 +140,13 @@ function Button({
   onClick,
   disabled,
   variant = "secondary",
+  type = "button",
 }: {
   children: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
   variant?: "primary" | "secondary" | "danger";
+  type?: "button" | "submit";
 }) {
   const base: React.CSSProperties = {
     padding: "10px 12px",
@@ -170,7 +154,6 @@ function Button({
     border: "1px solid rgba(0,0,0,.12)",
     fontWeight: 900,
     cursor: disabled ? "not-allowed" : "pointer",
-    transition: "transform .08s ease",
     userSelect: "none",
     whiteSpace: "nowrap",
   };
@@ -190,6 +173,7 @@ function Button({
 
   return (
     <button
+      type={type}
       onClick={onClick}
       disabled={disabled}
       style={{ ...base, ...(styles[variant] || styles.secondary) }}
@@ -211,13 +195,55 @@ function SkeletonRow() {
       }}
     >
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ height: 12, width: 220, background: "rgba(0,0,0,.06)", borderRadius: 6 }} />
-        <div style={{ height: 28, width: 120, background: "rgba(0,0,0,.06)", borderRadius: 999 }} />
-        <div style={{ height: 28, width: 140, background: "rgba(0,0,0,.06)", borderRadius: 999 }} />
-        <div style={{ height: 28, width: 90, background: "rgba(0,0,0,.06)", borderRadius: 999 }} />
+        <div
+          style={{
+            height: 12,
+            width: 220,
+            background: "rgba(0,0,0,.06)",
+            borderRadius: 6,
+          }}
+        />
+        <div
+          style={{
+            height: 28,
+            width: 120,
+            background: "rgba(0,0,0,.06)",
+            borderRadius: 999,
+          }}
+        />
+        <div
+          style={{
+            height: 28,
+            width: 140,
+            background: "rgba(0,0,0,.06)",
+            borderRadius: 999,
+          }}
+        />
+        <div
+          style={{
+            height: 28,
+            width: 90,
+            background: "rgba(0,0,0,.06)",
+            borderRadius: 999,
+          }}
+        />
       </div>
-      <div style={{ height: 10, width: 320, background: "rgba(0,0,0,.05)", borderRadius: 6 }} />
-      <div style={{ height: 38, width: 260, background: "rgba(0,0,0,.05)", borderRadius: 12 }} />
+      <div
+        style={{
+          height: 10,
+          width: 320,
+          background: "rgba(0,0,0,.05)",
+          borderRadius: 6,
+        }}
+      />
+      <div
+        style={{
+          height: 38,
+          width: 260,
+          background: "rgba(0,0,0,.05)",
+          borderRadius: 12,
+        }}
+      />
     </div>
   );
 }
@@ -234,9 +260,12 @@ function buildCsv(ordenes: Orden[]) {
   ];
 
   const rows = ordenes.map((o) => {
-    const usuarioNombre = typeof o.usuario === "object" ? (o.usuario?.nombre || "") : "";
-    const usuarioEmail = typeof o.usuario === "object" ? (o.usuario?.email || "") : "";
+    const usuarioNombre =
+      typeof o.usuario === "object" ? (o.usuario?.nombre || "") : "";
+    const usuarioEmail =
+      typeof o.usuario === "object" ? (o.usuario?.email || "") : "";
     const createdAt = (o as any).createdAt || "";
+
     return [
       o._id,
       usuarioNombre,
@@ -248,7 +277,7 @@ function buildCsv(ordenes: Orden[]) {
     ];
   });
 
-  const esc = (v: any) => {
+  const esc = (v: unknown) => {
     const s = String(v ?? "");
     if (s.includes(",") || s.includes('"') || s.includes("\n")) {
       return `"${s.replaceAll('"', '""')}"`;
@@ -256,7 +285,9 @@ function buildCsv(ordenes: Orden[]) {
     return s;
   };
 
-  return [headers.join(","), ...rows.map((r) => r.map(esc).join(","))].join("\n");
+  return [headers.join(","), ...rows.map((r) => r.map(esc).join(","))].join(
+    "\n"
+  );
 }
 
 function downloadTextFile(filename: string, content: string) {
@@ -272,42 +303,50 @@ function downloadTextFile(filename: string, content: string) {
 }
 
 export default function AdminOrdenesPage() {
-  // ===== list state
   const [loading, setLoading] = useState(true);
   const [ordenes, setOrdenes] = useState<Orden[]>([]);
-  const [meta, setMeta] = useState<ListMeta>({ page: 1, limit: 20, total: 0, pages: 1 });
+  const [meta, setMeta] = useState<ListMeta>({
+    page: 1,
+    limit: 20,
+    total: 0,
+    pages: 1,
+  });
   const [error, setError] = useState<string | null>(null);
 
-  // ===== metrics
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
 
-  // ===== query controls
   const [qInput, setQInput] = useState("");
-  const [q, setQ] = useState(""); // debounced
+  const [q, setQ] = useState("");
   const [estadoPago, setEstadoPago] = useState<string>("all");
   const [estadoFulfillment, setEstadoFulfillment] = useState<string>("all");
   const [sort, setSort] = useState<string>("createdAt_desc");
 
-  // ===== auto refresh
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [autoRefreshSec, setAutoRefreshSec] = useState(20);
 
-  // ===== updating single order
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const lastSnapshotRef = useRef<Map<string, Orden>>(new Map());
 
-  // ===== aborting
-  const abortRef = useRef<AbortController | null>(null);
-  const debounceRef = useRef<any>(null);
-  const intervalRef = useRef<any>(null);
+  const listAbortRef = useRef<AbortController | null>(null);
+  const metricsAbortRef = useRef<AbortController | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  function cancelInFlight() {
+  function cancelListInFlight() {
     try {
-      abortRef.current?.abort();
+      listAbortRef.current?.abort();
     } catch {}
-    abortRef.current = new AbortController();
-    return abortRef.current.signal;
+    listAbortRef.current = new AbortController();
+    return listAbortRef.current.signal;
+  }
+
+  function cancelMetricsInFlight() {
+    try {
+      metricsAbortRef.current?.abort();
+    } catch {}
+    metricsAbortRef.current = new AbortController();
+    return metricsAbortRef.current.signal;
   }
 
   async function loadList(next?: Partial<ListMeta>) {
@@ -317,7 +356,7 @@ export default function AdminOrdenesPage() {
     setLoading(true);
     setError(null);
 
-    const signal = cancelInFlight();
+    const signal = cancelListInFlight();
 
     const params = new URLSearchParams();
     params.set("page", String(page));
@@ -326,16 +365,15 @@ export default function AdminOrdenesPage() {
 
     if (q.trim()) params.set("q", q.trim());
     if (estadoPago !== "all") params.set("estadoPago", estadoPago);
-    if (estadoFulfillment !== "all") params.set("estadoFulfillment", estadoFulfillment);
+    if (estadoFulfillment !== "all") {
+      params.set("estadoFulfillment", estadoFulfillment);
+    }
 
-    const res = await api.get<Orden[]>(
-      `/api/ordenes/admin?${params.toString()}`,
-      {
-        autoLogoutOn401: true,
-        friendlyErrorMessage: "No se pudieron cargar las órdenes (admin).",
-        signal,
-      } as any
-    );
+    const res = await api.get<Orden[]>(`/api/ordenes/admin?${params.toString()}`, {
+      autoLogoutOn401: true,
+      friendlyErrorMessage: "No se pudieron cargar las órdenes (admin).",
+      signal,
+    } as any);
 
     if (!res.ok) {
       setOrdenes([]);
@@ -345,15 +383,15 @@ export default function AdminOrdenesPage() {
       return;
     }
 
-    // Si tu api.get devuelve { data, meta } en res (depende de tu wrapper),
-    // intentamos leer meta si existe. Si no existe, dejamos lo que tengamos.
     const maybeMeta = (res as any).meta as ListMeta | undefined;
 
     setOrdenes(res.data || []);
-    if (maybeMeta?.page) setMeta(maybeMeta);
-    else setMeta((m) => ({ ...m, page, limit }));
+    if (maybeMeta?.page) {
+      setMeta(maybeMeta);
+    } else {
+      setMeta((m) => ({ ...m, page, limit }));
+    }
 
-    // guardamos snapshot para rollback por id
     const map = new Map<string, Orden>();
     (res.data || []).forEach((o) => map.set(o._id, o));
     lastSnapshotRef.current = map;
@@ -363,7 +401,8 @@ export default function AdminOrdenesPage() {
 
   async function loadMetrics() {
     setMetricsLoading(true);
-    const signal = cancelInFlight();
+
+    const signal = cancelMetricsInFlight();
 
     const res = await api.get<Metrics>("/api/ordenes/admin/metrics", {
       autoLogoutOn401: true,
@@ -381,16 +420,22 @@ export default function AdminOrdenesPage() {
     setMetricsLoading(false);
   }
 
-  // ===== initial load
   useEffect(() => {
-    loadMetrics();
-    loadList({ page: 1 });
+    void loadMetrics();
+    void loadList({ page: 1 });
+
+    return () => {
+      try {
+        listAbortRef.current?.abort();
+        metricsAbortRef.current?.abort();
+      } catch {}
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ===== debounce qInput -> q
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+
     debounceRef.current = setTimeout(() => {
       setQ(qInput.trim());
     }, 450);
@@ -400,13 +445,11 @@ export default function AdminOrdenesPage() {
     };
   }, [qInput]);
 
-  // ===== when filters change -> reload from page 1
   useEffect(() => {
-    loadList({ page: 1 });
+    void loadList({ page: 1 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, estadoPago, estadoFulfillment, sort]);
 
-  // ===== auto refresh
   useEffect(() => {
     if (!autoRefresh) {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -417,8 +460,8 @@ export default function AdminOrdenesPage() {
     if (intervalRef.current) clearInterval(intervalRef.current);
 
     intervalRef.current = setInterval(() => {
-      loadList();
-      loadMetrics();
+      void loadList();
+      void loadMetrics();
     }, Math.max(8, autoRefreshSec) * 1000);
 
     return () => {
@@ -429,39 +472,32 @@ export default function AdminOrdenesPage() {
   }, [autoRefresh, autoRefreshSec]);
 
   async function updateEstado(ordenId: string, body: UpdateEstadoBody) {
-    if (!ordenId) return;
-    if (updatingId) return;
+    if (!ordenId || updatingId) return;
 
-    // snapshot para rollback
     const snap = lastSnapshotRef.current.get(ordenId);
 
     setUpdatingId(ordenId);
     setError(null);
 
-    // optimistic UI
     setOrdenes((prev) =>
       prev.map((o) =>
         o._id === ordenId
           ? ({
               ...o,
               estadoPago: body.estadoPago ?? o.estadoPago,
-              estadoFulfillment: body.estadoFulfillment ?? o.estadoFulfillment,
-            } as any)
+              estadoFulfillment:
+                body.estadoFulfillment ?? o.estadoFulfillment,
+            } as Orden)
           : o
       )
     );
 
-    const res = await api.put<Orden>(
-      `/api/ordenes/admin/${ordenId}/estado`,
-      body,
-      {
-        autoLogoutOn401: true,
-        friendlyErrorMessage: "No se pudo actualizar el estado de la orden.",
-      }
-    );
+    const res = await api.put<Orden>(`/api/ordenes/admin/${ordenId}/estado`, body, {
+      autoLogoutOn401: true,
+      friendlyErrorMessage: "No se pudo actualizar el estado de la orden.",
+    });
 
     if (!res.ok) {
-      // rollback
       if (snap) {
         setOrdenes((prev) => prev.map((o) => (o._id === ordenId ? snap : o)));
       }
@@ -470,9 +506,7 @@ export default function AdminOrdenesPage() {
       return;
     }
 
-    // refrescar list + metrics (sin romper)
-    await loadList();
-    await loadMetrics();
+    await Promise.all([loadList(), loadMetrics()]);
     setUpdatingId(null);
   }
 
@@ -484,19 +518,50 @@ export default function AdminOrdenesPage() {
   }, [meta.page, meta.limit, meta.total]);
 
   return (
-    <main style={{ maxWidth: 1200, margin: "0 auto", padding: 24, display: "grid", gap: 14 }}>
-      {/* ===== HEADER + METRICS */}
+    <main
+      style={{
+        maxWidth: 1200,
+        margin: "0 auto",
+        padding: 24,
+        display: "grid",
+        gap: 14,
+      }}
+    >
       <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
           <div>
-            <h1 style={{ margin: 0, fontSize: 22 }}>Órdenes — Admin (Enterprise)</h1>
+            <h1 style={{ margin: 0, fontSize: 22 }}>
+              Órdenes — Admin (Enterprise)
+            </h1>
             <p style={{ marginTop: 6, color: "rgba(0,0,0,.65)" }}>
-              Panel profesional con filtros server-side, métricas y cambios de estado con auditoría.
+              Panel profesional con filtros server-side, métricas y cambios de
+              estado con auditoría.
             </p>
           </div>
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                fontWeight: 900,
+              }}
+            >
               <input
                 type="checkbox"
                 checked={autoRefresh}
@@ -526,11 +591,10 @@ export default function AdminOrdenesPage() {
 
             <Button
               onClick={() => {
-                loadList();
-                loadMetrics();
+                void loadList();
+                void loadMetrics();
               }}
               disabled={loading}
-              variant="secondary"
             >
               {loading ? "Cargando…" : "Recargar"}
             </Button>
@@ -541,14 +605,20 @@ export default function AdminOrdenesPage() {
                 downloadTextFile(`ordenes_admin_${Date.now()}.csv`, csv);
               }}
               disabled={ordenes.length === 0}
-              variant="secondary"
             >
               Export CSV
             </Button>
           </div>
         </div>
 
-        <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div
+          style={{
+            marginTop: 12,
+            display: "flex",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
           {metricsLoading ? (
             <>
               <Badge>Total: …</Badge>
@@ -561,7 +631,9 @@ export default function AdminOrdenesPage() {
             <>
               <Badge>Total: {fmtNumber(metrics.totalOrdenes)}</Badge>
               <Badge tone="success">Pagadas: {fmtNumber(metrics.pagadas)}</Badge>
-              <Badge tone="warning">Pendientes: {fmtNumber(metrics.pendientes)}</Badge>
+              <Badge tone="warning">
+                Pendientes: {fmtNumber(metrics.pendientes)}
+              </Badge>
               <Badge tone="danger">Fallidas: {fmtNumber(metrics.fallidas)}</Badge>
               <Badge>Reembolsadas: {fmtNumber(metrics.reembolsadas)}</Badge>
               <Badge>Ingresos: ${money(metrics.totalIngresos)}</Badge>
@@ -572,7 +644,6 @@ export default function AdminOrdenesPage() {
           )}
         </div>
 
-        {/* ===== FILTER BAR */}
         <div
           style={{
             marginTop: 14,
@@ -651,7 +722,6 @@ export default function AdminOrdenesPage() {
           </select>
         </div>
 
-        {/* ===== ERROR BANNER */}
         {error ? (
           <div
             style={{
@@ -665,28 +735,50 @@ export default function AdminOrdenesPage() {
             }}
           >
             ❌ {error}
-            <div style={{ marginTop: 6, fontWeight: 800, color: "rgba(0,0,0,.65)" }}>
+            <div
+              style={{
+                marginTop: 6,
+                fontWeight: 800,
+                color: "rgba(0,0,0,.65)",
+              }}
+            >
               Si aparece <b>jwt expired</b>, vuelve a iniciar sesión.
             </div>
           </div>
         ) : null}
       </Card>
 
-      {/* ===== LIST */}
       <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
           <div style={{ fontWeight: 950 }}>
-            Mostrando: <span style={{ fontFamily: "monospace" }}>{showingRange}</span>{" "}
-            de <span style={{ fontFamily: "monospace" }}>{fmtNumber(meta.total)}</span>
+            Mostrando:{" "}
+            <span style={{ fontFamily: "monospace" }}>{showingRange}</span> de{" "}
+            <span style={{ fontFamily: "monospace" }}>
+              {fmtNumber(meta.total)}
+            </span>
           </div>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
             <select
               value={meta.limit}
               onChange={(e) => {
                 const nextLimit = Number(e.target.value);
                 setMeta((m) => ({ ...m, limit: nextLimit, page: 1 }));
-                loadList({ page: 1, limit: nextLimit });
+                void loadList({ page: 1, limit: nextLimit });
               }}
               style={{
                 padding: "8px 10px",
@@ -704,9 +796,8 @@ export default function AdminOrdenesPage() {
             </select>
 
             <Button
-              onClick={() => loadList({ page: Math.max(1, meta.page - 1) })}
+              onClick={() => void loadList({ page: Math.max(1, meta.page - 1) })}
               disabled={loading || meta.page <= 1}
-              variant="secondary"
             >
               ← Anterior
             </Button>
@@ -716,9 +807,10 @@ export default function AdminOrdenesPage() {
             </Badge>
 
             <Button
-              onClick={() => loadList({ page: Math.min(meta.pages || 1, meta.page + 1) })}
+              onClick={() =>
+                void loadList({ page: Math.min(meta.pages || 1, meta.page + 1) })
+              }
               disabled={loading || meta.page >= (meta.pages || 1)}
-              variant="secondary"
             >
               Siguiente →
             </Button>
@@ -741,8 +833,10 @@ export default function AdminOrdenesPage() {
               const pago = safeLower(o.estadoPago);
               const fulfillment = safeLower(o.estadoFulfillment);
 
-              const userNombre = typeof o.usuario === "object" ? (o.usuario?.nombre || "—") : "—";
-              const userEmail = typeof o.usuario === "object" ? (o.usuario?.email || "—") : "—";
+              const userNombre =
+                typeof o.usuario === "object" ? (o.usuario?.nombre || "—") : "—";
+              const userEmail =
+                typeof o.usuario === "object" ? (o.usuario?.email || "—") : "—";
 
               const isUpdating = updatingId === o._id;
 
@@ -758,28 +852,52 @@ export default function AdminOrdenesPage() {
                     opacity: isUpdating ? 0.75 : 1,
                   }}
                 >
-                  {/* top line */}
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <div style={{ fontWeight: 950 }}>
                       Orden:{" "}
-                      <span style={{ fontWeight: 800, fontFamily: "monospace" }}>{o._id}</span>
+                      <span
+                        style={{
+                          fontWeight: 800,
+                          fontFamily: "monospace",
+                        }}
+                      >
+                        {o._id}
+                      </span>
                     </div>
 
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <Badge tone={getPagoTone(pago)}>Pago: {pago || "—"}</Badge>
-                      <Badge tone={getFulTone(fulfillment)}>Envío: {fulfillment || "—"}</Badge>
+                      <Badge tone={getPagoTone(pago)}>
+                        Pago: {pago || "—"}
+                      </Badge>
+                      <Badge tone={getFulTone(fulfillment)}>
+                        Envío: {fulfillment || "—"}
+                      </Badge>
                       <Badge>Total: ${money((o as any).total)}</Badge>
                     </div>
                   </div>
 
-                  {/* user */}
                   <div style={{ color: "rgba(0,0,0,.7)", fontSize: 13 }}>
                     Usuario: <b>{userNombre}</b>{" "}
-                    <span style={{ color: "rgba(0,0,0,.55)" }}>({userEmail})</span>
+                    <span style={{ color: "rgba(0,0,0,.55)" }}>
+                      ({userEmail})
+                    </span>
                   </div>
 
-                  {/* actions */}
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                    }}
+                  >
                     <Link
                       href={`/admin/ordenes/${o._id}`}
                       style={{
@@ -810,15 +928,31 @@ export default function AdminOrdenesPage() {
                       Ver cliente
                     </Link>
 
-                    {/* inline status editors */}
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 10,
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                      }}
+                    >
                       <div style={{ display: "grid", gap: 4 }}>
-                        <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,.55)" }}>estadoPago</div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 900,
+                            color: "rgba(0,0,0,.55)",
+                          }}
+                        >
+                          estadoPago
+                        </div>
                         <select
                           value={pago || "pendiente"}
                           disabled={isUpdating}
                           onChange={(e) =>
-                            updateEstado(o._id, { estadoPago: e.target.value as any })
+                            void updateEstado(o._id, {
+                              estadoPago: e.target.value as UpdateEstadoBody["estadoPago"],
+                            })
                           }
                           style={{
                             padding: "8px 10px",
@@ -837,14 +971,23 @@ export default function AdminOrdenesPage() {
                       </div>
 
                       <div style={{ display: "grid", gap: 4 }}>
-                        <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(0,0,0,.55)" }}>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 900,
+                            color: "rgba(0,0,0,.55)",
+                          }}
+                        >
                           estadoFulfillment
                         </div>
                         <select
                           value={fulfillment || "pendiente"}
                           disabled={isUpdating}
                           onChange={(e) =>
-                            updateEstado(o._id, { estadoFulfillment: e.target.value as any })
+                            void updateEstado(o._id, {
+                              estadoFulfillment:
+                                e.target.value as UpdateEstadoBody["estadoFulfillment"],
+                            })
                           }
                           style={{
                             padding: "8px 10px",
@@ -862,9 +1005,7 @@ export default function AdminOrdenesPage() {
                         </select>
                       </div>
 
-                      {isUpdating ? (
-                        <Badge>Actualizando…</Badge>
-                      ) : null}
+                      {isUpdating ? <Badge>Actualizando…</Badge> : null}
                     </div>
                   </div>
                 </div>
