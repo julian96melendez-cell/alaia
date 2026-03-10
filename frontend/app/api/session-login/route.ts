@@ -4,6 +4,7 @@ import {
     getRateLimitHeaders,
     loginRateLimit,
 } from "@/lib/ratelimit";
+import { detectSuspiciousLogin } from "@/lib/security-anomaly";
 import { logAdminSession } from "@/lib/security-log";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -81,6 +82,14 @@ export async function POST(req: NextRequest) {
     await logAdminSession({
       uid: decoded.uid,
       email: decoded.email || null,
+      ip,
+      userAgent,
+      event: "login",
+      success: true,
+    });
+
+    await detectSuspiciousLogin({
+      uid: decoded.uid,
       ip,
       userAgent,
     });
