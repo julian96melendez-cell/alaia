@@ -1,4 +1,9 @@
 import { adminAuth } from "@/lib/firebase-admin";
+import {
+    getClientIp,
+    getRateLimitHeaders,
+    logoutRateLimit,
+} from "@/lib/ratelimit";
 import { NextRequest, NextResponse } from "next/server";
 
 function isAllowedOrigin(req: NextRequest) {
@@ -27,6 +32,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const ip = getClientIp(req.headers);
+    const userAgent = req.headers.get("user-agent") || "unknown";
+    const rateKey = `ip:${ip}:ua:${userAgent}`;
+
+    const { success, reset } = await logoutRateLimit.limit(rateKey);
+
+    if (!success) {
+      return NextResponse.json(
+        {
+          ok: false,
+          message:
+            "Demasiadas solicitudes de cierre de sesión. Inténtalo nuevamente en unos minutos.",
+        },
+        {
+          status: 429,
+          headers: getRateLimitHeaders(reset),
+        }
+      );
+    }
+
     const session = req.cookies.get("session")?.value;
 
     if (session) {
@@ -39,7 +64,7 @@ export async function POST(req: NextRequest) {
     }
 
     const response = NextResponse.json(
-      { ok: true },
+      { ok: true, message: "Sesión cerrada correctamente" },
       {
         headers: { "Cache-Control": "no-store" },
       }
