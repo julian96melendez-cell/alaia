@@ -1,63 +1,33 @@
 "use client";
 
-import {
-  getAuth,
-  PhoneAuthProvider,
-  PhoneMultiFactorGenerator,
-  RecaptchaVerifier,
-  signInWithEmailAndPassword,
-} from "firebase/auth";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import "../../firebase/firebaseConfig";
+import { useState } from "react";
 
-declare global {
-  interface Window {
-    recaptchaVerifier?: RecaptchaVerifier;
-  }
-}
+type LoginResponse = {
+  ok: boolean;
+  message?: string;
+  data?: {
+    usuario?: {
+      id: string;
+      nombre: string;
+      email: string;
+      rol: string;
+    };
+      tokens?: {
+      accessToken: string;
+      refreshToken: string;
+    };
+  };
+};
 
 export default function LoginPage() {
   const router = useRouter();
-  const auth = getAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [smsCode, setSmsCode] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const [verificationId, setVerificationId] = useState<string | null>(null);
-  const [mfaResolver, setMfaResolver] = useState<any>(null);
-
-  useEffect(() => {
-    if (!window.recaptchaVerifier) {
-      window.recaptchaVerifier = new RecaptchaVerifier(
-        auth,
-        "recaptcha-container",
-        { size: "invisible" }
-      );
-    }
-  }, [auth]);
-
-  async function createSecureSession(idToken: string) {
-    const res = await fetch("/api/session-login", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      credentials: "include",
-      cache: "no-store",
-      body: JSON.stringify({ idToken }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || !data.ok) {
-      throw new Error(data.message || "No se pudo iniciar la sesión");
-    }
-  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -67,109 +37,59 @@ export default function LoginPage() {
     setError(null);
 
     try {
-      const credential = await signInWithEmailAndPassword(auth, email, password);
-      const idToken = await credential.user.getIdToken(true);
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
 
-      await createSecureSession(idToken);
+      if (!apiUrl) {
+        throw new Error("Falta NEXT_PUBLIC_API_URL en el frontend.");
+      }
+
+      const res = await fetch(`${apiUrl}/api/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          password,
+        }),
+      });
+
+      const data: LoginResponse = await res.json().catch(() => ({
+        ok: false,
+        message: "Respuesta inválida del servidor",
+      }));
+
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.message || "No se pudo iniciar sesión.");
+      }
+
+      const accessToken = data?.data?.tokens?.accessToken || "";
+      const refreshToken = data?.data?.tokens?.refreshToken || "";
+      const rol = data?.data?.usuario?.rol || "";
+
+      if (!accessToken || !refreshToken) {
+        throw new Error("El backend no devolvió tokens válidos.");
+      }
+
+      localStorage.setItem("accessToken", accessToken);
+      localStorage.setItem("refreshToken", refreshToken);
+      localStorage.setItem("adminUser", JSON.stringify(data?.data?.usuario || null));
+
+      if (rol !== "admin") {
+        setError("Tu cuenta no tiene permisos de administrador.");
+        localStorage.removeItem("accessToken");
+        localStorage.removeItem("refreshToken");
+        localStorage.removeItem("adminUser");
+        setLoading(false);
+        return;
+      }
 
       router.push("/admin");
       router.refresh();
     } catch (err: any) {
-      if (err?.code === "auth/multi-factor-auth-required") {
-        try {
-          const resolver = err.resolver;
-
-          if (!resolver?.hints?.length) {
-            throw new Error("No hay un segundo factor disponible para esta cuenta.");
-          }
-
-          const phoneInfoOptions = {
-            multiFactorHint: resolver.hints[0],
-            session: resolver.session,
-          };
-
-          const phoneAuthProvider = new PhoneAuthProvider(auth);
-
-          const newVerificationId = await phoneAuthProvider.verifyPhoneNumber(
-            phoneInfoOptions,
-            window.recaptchaVerifier!
-          );
-
-          setVerificationId(newVerificationId);
-          setMfaResolver(resolver);
-          setLoading(false);
-          return;
-        } catch (mfaSetupError: any) {
-          console.error("MFA SETUP ERROR:", mfaSetupError);
-          setError(
-            mfaSetupError?.message ||
-              "No se pudo iniciar la verificación MFA."
-          );
-          setLoading(false);
-          return;
-        }
-      }
-
       console.error("LOGIN ERROR:", err);
-
-      const code = err?.code || "";
-
-      switch (code) {
-        case "auth/invalid-email":
-          setError("El correo electrónico no es válido.");
-          break;
-        case "auth/user-not-found":
-          setError("No existe una cuenta con ese correo.");
-          break;
-        case "auth/wrong-password":
-          setError("La contraseña es incorrecta.");
-          break;
-        case "auth/invalid-credential":
-          setError("Correo o contraseña incorrectos.");
-          break;
-        case "auth/too-many-requests":
-          setError("Demasiados intentos. Inténtalo más tarde.");
-          break;
-        default:
-          setError(err?.message || "No se pudo iniciar sesión.");
-          break;
-      }
-
-      setLoading(false);
-    }
-  }
-
-  async function verifySms() {
-    if (!verificationId || !mfaResolver || !smsCode.trim()) {
-      setError("Debes introducir el código SMS.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setError(null);
-
-      const phoneCredential = PhoneAuthProvider.credential(
-        verificationId,
-        smsCode.trim()
-      );
-
-      const multiFactorAssertion =
-        PhoneMultiFactorGenerator.assertion(phoneCredential);
-
-      const userCredential = await mfaResolver.resolveSignIn(
-        multiFactorAssertion
-      );
-
-      const idToken = await userCredential.user.getIdToken(true);
-
-      await createSecureSession(idToken);
-
-      router.push("/admin");
-      router.refresh();
-    } catch (err: any) {
-      console.error("MFA ERROR:", err);
-      setError("Código SMS incorrecto o verificación fallida.");
+      setError(err?.message || "No se pudo iniciar sesión.");
       setLoading(false);
     }
   }
@@ -177,68 +97,42 @@ export default function LoginPage() {
   return (
     <main style={styles.page}>
       <section style={styles.card}>
-        <h1 style={styles.title}>Iniciar sesión</h1>
+        <h1 style={styles.title}>LOGIN WEB NUEVO BACKEND</h1>
 
         {error && <div style={styles.errorBox}>{error}</div>}
 
-        {!verificationId ? (
-          <form onSubmit={handleSubmit} style={styles.form}>
-            <input
-              type="email"
-              placeholder="Correo electrónico"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              style={styles.input}
-            />
+        <form onSubmit={handleSubmit} style={styles.form}>
+          <input
+            type="email"
+            placeholder="Correo electrónico"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            autoComplete="email"
+            style={styles.input}
+          />
 
-            <input
-              type="password"
-              placeholder="Contraseña"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              style={styles.input}
-            />
+          <input
+            type="password"
+            placeholder="Contraseña"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoComplete="current-password"
+            style={styles.input}
+          />
 
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                ...styles.button,
-                opacity: loading ? 0.7 : 1,
-              }}
-            >
-              {loading ? "Entrando..." : "Entrar"}
-            </button>
-          </form>
-        ) : (
-          <div style={styles.form}>
-            <p>Introduce el código SMS</p>
-
-            <input
-              type="text"
-              value={smsCode}
-              onChange={(e) => setSmsCode(e.target.value)}
-              placeholder="Código SMS"
-              style={styles.input}
-            />
-
-            <button
-              type="button"
-              onClick={verifySms}
-              disabled={loading}
-              style={{
-                ...styles.button,
-                opacity: loading ? 0.7 : 1,
-              }}
-            >
-              {loading ? "Verificando..." : "Verificar código"}
-            </button>
-          </div>
-        )}
-
-        <div id="recaptcha-container" />
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              ...styles.button,
+              opacity: loading ? 0.7 : 1,
+            }}
+          >
+            {loading ? "Entrando..." : "Entrar"}
+          </button>
+        </form>
       </section>
     </main>
   );
