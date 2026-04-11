@@ -1,28 +1,28 @@
 "use client";
 
+import { auth } from "@/firebase/firebaseConfig";
 import { onAuthStateChanged, User } from "firebase/auth";
 import {
-    collection,
-    deleteDoc,
-    doc,
-    getDoc,
-    getDocs,
-    getFirestore,
-    onSnapshot,
-    runTransaction,
-    serverTimestamp,
-    setDoc,
-    writeBatch,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  getFirestore,
+  onSnapshot,
+  runTransaction,
+  serverTimestamp,
+  setDoc,
+  writeBatch,
 } from "firebase/firestore";
 import React, {
-    createContext,
-    useContext,
-    useEffect,
-    useMemo,
-    useReducer,
-    useState,
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+  useState,
 } from "react";
-import { auth } from "../firebase/firebaseConfig";
 
 /* ───────────────────────── Tipos base ───────────────────────── */
 
