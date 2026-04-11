@@ -1,9 +1,9 @@
 "use client";
 
+import "@/firebase/firebaseConfig";
 import { getAuth, signOut } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import "../../firebase/firebaseConfig";
 
 export default function AdminLogoutButton() {
   const router = useRouter();
@@ -15,23 +15,19 @@ export default function AdminLogoutButton() {
     setLoading(true);
 
     try {
-      // cerrar sesión segura en el backend
       await fetch("/api/session-logout", {
         method: "POST",
         credentials: "include",
         cache: "no-store",
       });
 
-      // cerrar sesión firebase
       await signOut(getAuth());
 
-      // redirigir
       router.replace("/login");
       router.refresh();
     } catch (error) {
       console.error("LOGOUT ERROR:", error);
 
-      // fallback por seguridad
       try {
         await signOut(getAuth());
       } catch {}
