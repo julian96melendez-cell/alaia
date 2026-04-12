@@ -1,13 +1,8 @@
-// server.js — PRODUCCIÓN REAL (ENTERPRISE FINAL / MAX SAFE)
-// ✅ API server limpio (NO arranca workers aquí)
-// ✅ Stripe webhook mantiene RAW (stripeRoutes debe usar express.raw en la ruta webhook)
-// ✅ Seguridad: helmet + rate limit + sanitize + hpp + cookies + requestId
-// ✅ Error handler + 404 + timeout anti slow attack
-
 "use strict";
 
 require("dotenv").config();
 
+const crypto = require("crypto");
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
@@ -18,70 +13,114 @@ const hpp = require("hpp");
 const cookieParser = require("cookie-parser");
 
 const conectarDB = require("./src/config/db");
+const { startWorkers, stopWorkers } = require("./src/workers");
 
 const authRoutes = require("./src/routes/authRoutes");
 const stripeRoutes = require("./src/routes/stripeRoutes");
 const adminOrdenRoutes = require("./src/routes/adminOrdenRoutes");
+const adminPayoutRoutes = require("./src/routes/adminPayoutRoutes");
+const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
 
 const app = express();
+
+// ======================================================
+// ENV / CONSTANTS
+// ======================================================
+const isProd = process.env.NODE_ENV === "production";
+const PORT = Number(process.env.PORT) || 3001;
+const BODY_LIMIT = isProd ? "1mb" : "5mb";
+
+const CLIENT_URLS = (process.env.CLIENT_URL || "")
+  .split(",")
+  .map((v) => v.trim())
+  .filter(Boolean);
+
+const LOCAL_DEV_ORIGINS = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+];
+
+const ALLOWED_ORIGINS = Array.from(
+  new Set([
+    ...CLIENT_URLS,
+    ...(!isProd ? LOCAL_DEV_ORIGINS : []),
+  ])
+);
+
+if (isProd && CLIENT_URLS.length === 0) {
+  console.warn("⚠️ CLIENT_URL not set in production");
+}
 
 // ======================================================
 // BASICS
 // ======================================================
 app.disable("x-powered-by");
+app.disable("etag");
 
-if (process.env.NODE_ENV === "production") {
-  // necesario si estás detrás de Render/NGINX/Cloudflare
+if (isProd) {
   app.set("trust proxy", 1);
 }
 
 // ======================================================
-// REQUEST ID (trazabilidad)
+// REQUEST ID / TRACEABILITY
 // ======================================================
 app.use((req, res, next) => {
+  const incomingReqId =
+    req.headers["x-request-id"] || req.headers["x-correlation-id"];
+
   req.reqId =
-    req.headers["x-request-id"] ||
-    req.headers["x-correlation-id"] ||
-    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    typeof incomingReqId === "string" && incomingReqId.trim()
+      ? incomingReqId.trim()
+      : crypto.randomUUID();
 
   res.setHeader("x-request-id", req.reqId);
   next();
 });
 
 // ======================================================
-// HELMET (security headers)
+// SECURITY HEADERS
 // ======================================================
 app.use(
   helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-    referrerPolicy: { policy: "no-referrer" },
-    frameguard: { action: "deny" },
+    contentSecurityPolicy: isProd
+      ? {
+          directives: {
+            defaultSrc: ["'self'"],
+            baseUri: ["'self'"],
+            fontSrc: ["'self'", "https:", "data:"],
+            formAction: ["'self'"],
+            frameAncestors: ["'none'"],
+            imgSrc: ["'self'", "data:", "https:"],
+            objectSrc: ["'none'"],
+            scriptSrc: ["'self'"],
+            scriptSrcAttr: ["'none'"],
+            styleSrc: ["'self'", "https:", "'unsafe-inline'"],
+            upgradeInsecureRequests: [],
+          },
+        }
+      : false,
+    crossOriginEmbedderPolicy: false,
     crossOriginOpenerPolicy: { policy: "same-origin" },
-    contentSecurityPolicy:
-      process.env.NODE_ENV === "production"
-        ? {
-            directives: {
-              defaultSrc: ["'self'"],
-              scriptSrc: ["'self'"],
-              objectSrc: ["'none'"],
-              upgradeInsecureRequests: [],
-            },
-          }
-        : false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    frameguard: { action: "deny" },
+    referrerPolicy: { policy: "no-referrer" },
+    hsts: isProd
+      ? {
+          maxAge: 31536000,
+          includeSubDomains: true,
+          preload: true,
+        }
+      : false,
   })
 );
 
 // ======================================================
-// CORS (producción estricta con CLIENT_URL)
+// CORS
+// TEMPORALMENTE ABIERTO PARA DESBLOQUEAR PRODUCCIÓN
 // ======================================================
-const allowedOrigin =
-  process.env.NODE_ENV === "production"
-    ? (process.env.CLIENT_URL || "").trim()
-    : true;
-
 app.use(
   cors({
-    origin: allowedOrigin || true, // si no hay CLIENT_URL, no bloquea (pero ponlo en prod)
+    origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
@@ -90,32 +129,58 @@ app.use(
       "stripe-signature",
       "x-request-id",
       "x-correlation-id",
+      "idempotency-key",
     ],
+    optionsSuccessStatus: 204,
   })
 );
 
 // ======================================================
 // LOGGER
 // ======================================================
-app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+morgan.token("reqId", (req) => req.reqId);
+
+app.use(
+  morgan(
+    isProd
+      ? ':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" reqId=:reqId'
+      : "dev"
+  )
+);
 
 // ======================================================
-// RATE LIMIT (global + auth)
+// RATE LIMIT
 // ======================================================
-const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 300 : 2000,
+const limiterBaseConfig = {
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  handler: (req, res) => {
+    res.status(429).json({
+      ok: false,
+      message: "Too many requests, please try again later",
+      reqId: req.reqId,
+    });
+  },
+};
+
+const globalLimiter = rateLimit({
+  ...limiterBaseConfig,
+  windowMs: 15 * 60 * 1000,
+  max: isProd ? 300 : 2000,
+  skip: (req) =>
+    req.path === "/" ||
+    req.path === "/healthz" ||
+    req.path === "/readyz",
 });
-app.use(globalLimiter);
 
 const authLimiter = rateLimit({
+  ...limiterBaseConfig,
   windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === "production" ? 60 : 500,
-  standardHeaders: true,
-  legacyHeaders: false,
+  max: isProd ? 60 : 500,
 });
+
+app.use(globalLimiter);
 
 // ======================================================
 // COOKIES
@@ -123,32 +188,36 @@ const authLimiter = rateLimit({
 app.use(cookieParser());
 
 // ======================================================
-// STRIPE WEBHOOK ROUTES (RAW)
-// IMPORTANTE:
-// - stripeRoutes debe tener la ruta del webhook con:
-//   router.post("/webhook", express.raw({ type: "application/json" }), handler)
-// - Poner esto ANTES de express.json()
-// ======================================================
-app.use("/api/stripe", stripeRoutes);
-
-// ======================================================
-// BODY PARSERS (no afectan al webhook si webhook usa raw)
+// STRIPE WEBHOOK RAW BODY
 // ======================================================
 app.use(
-  express.json({
-    limit: process.env.NODE_ENV === "production" ? "1mb" : "5mb",
-  })
-);
-
-app.use(
-  express.urlencoded({
-    extended: true,
-    limit: process.env.NODE_ENV === "production" ? "1mb" : "5mb",
+  "/api/stripe/webhook",
+  express.raw({
+    type: "application/json",
+    limit: BODY_LIMIT,
   })
 );
 
 // ======================================================
-// SANITIZATION (Express 4 ✅)
+// BODY PARSERS
+// ======================================================
+const jsonParser = express.json({ limit: BODY_LIMIT });
+const urlencodedParser = express.urlencoded({
+  extended: true,
+  limit: BODY_LIMIT,
+});
+
+app.use((req, res, next) => {
+  if (req.originalUrl === "/api/stripe/webhook") return next();
+
+  jsonParser(req, res, (jsonErr) => {
+    if (jsonErr) return next(jsonErr);
+    urlencodedParser(req, res, next);
+  });
+});
+
+// ======================================================
+// SANITIZATION
 // ======================================================
 app.use(
   mongoSanitize({
@@ -156,22 +225,44 @@ app.use(
   })
 );
 
-// Evita ataques por parámetros duplicados (?a=1&a=2)
 app.use(
   hpp({
-    whitelist: ["estadoPago", "estadoFulfillment", "sort"],
+    whitelist: ["estadoPago", "estadoFulfillment", "sort", "page", "limit", "q"],
   })
 );
 
 // ======================================================
-// ROUTES
+// HEALTH / READINESS
 // ======================================================
-app.get("/", (_, res) => {
-  res.send("Backend OK");
+app.get("/", (_req, res) => {
+  res.status(200).send("Backend OK");
 });
 
+app.get("/healthz", (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    status: "healthy",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/readyz", (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    status: "ready",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ======================================================
+// ROUTES
+// ======================================================
 app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api/stripe", stripeRoutes);
 app.use("/api/ordenes/admin", adminOrdenRoutes);
+app.use("/api/admin/payouts", adminPayoutRoutes);
+app.use("/api/admin/analytics", adminAnalyticsRoutes);
 
 // ======================================================
 // 404
@@ -188,18 +279,33 @@ app.use((req, res) => {
 // ERROR HANDLER
 // ======================================================
 app.use((err, req, res, next) => {
+  const status =
+    Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 600
+      ? err.statusCode
+      : Number.isInteger(err?.status) && err.status >= 400 && err.status < 600
+      ? err.status
+      : 500;
+
   console.error("GLOBAL ERROR:", {
     reqId: req.reqId,
+    method: req.method,
     path: req.originalUrl,
+    status,
+    code: err?.code,
     message: err?.message,
+    stack: isProd ? undefined : err?.stack,
   });
 
-  const status = err?.status || 500;
+  if (res.headersSent) {
+    return next(err);
+  }
 
   res.status(status).json({
     ok: false,
     message:
-      process.env.NODE_ENV === "production"
+      status === 429
+        ? "Too many requests"
+        : isProd
         ? "Error interno del servidor"
         : err?.message || "Error interno",
     reqId: req.reqId,
@@ -207,22 +313,83 @@ app.use((err, req, res, next) => {
 });
 
 // ======================================================
-// DB + START
+// START / SHUTDOWN
 // ======================================================
+let server;
+let shuttingDown = false;
+
+function gracefulShutdown(signal, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  console.log(`[${signal}] Graceful shutdown started`);
+
+  try {
+    stopWorkers();
+  } catch (err) {
+    console.error("Error stopping workers:", err?.message || err);
+  }
+
+  if (!server) {
+    process.exit(exitCode);
+  }
+
+  server.close((err) => {
+    if (err) {
+      console.error("Error closing HTTP server:", err);
+      process.exit(1);
+    }
+
+    console.log("HTTP server closed");
+    process.exit(exitCode);
+  });
+
+  setTimeout(() => {
+    console.error("Forced shutdown after timeout");
+    process.exit(1);
+  }, 10000).unref();
+}
+
 (async () => {
   try {
     await conectarDB();
 
-    const PORT = process.env.PORT || 3001;
+    startWorkers();
 
-    const server = app.listen(PORT, () => {
+    server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 BACKEND RUNNING ON ${PORT}`);
+      console.log("🌐 Allowed origins from env:", ALLOWED_ORIGINS);
+      console.log("🌐 CORS mode: TEMP OPEN (origin: true)");
     });
 
-    // 🔒 Timeout anti slow attack
+    server.requestTimeout = 15000;
+    server.headersTimeout = 16000;
+    server.keepAliveTimeout = 5000;
     server.setTimeout(15000);
+
+    server.on("clientError", (err, socket) => {
+      console.error("CLIENT ERROR:", err?.message || err);
+      if (socket.writable) {
+        socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+      }
+    });
+
+    process.on("SIGINT", () => gracefulShutdown("SIGINT", 0));
+    process.on("SIGTERM", () => gracefulShutdown("SIGTERM", 0));
+
+    process.on("unhandledRejection", (reason) => {
+      console.error("UNHANDLED REJECTION:", reason);
+      gracefulShutdown("unhandledRejection", 1);
+    });
+
+    process.on("uncaughtException", (error) => {
+      console.error("UNCAUGHT EXCEPTION:", error);
+      gracefulShutdown("uncaughtException", 1);
+    });
   } catch (e) {
-    console.error("FATAL: DB connection failed", e?.message || e);
+    console.error("FATAL: startup failed", e?.message || e);
     process.exit(1);
   }
 })();
+
+module.exports = app;
