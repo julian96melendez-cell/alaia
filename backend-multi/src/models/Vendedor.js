@@ -36,6 +36,7 @@ const VendedorSchema = new mongoose.Schema(
     // STRIPE CONNECT
     // ================================
     stripeAccountId: { type: String, default: "", trim: true, index: true },
+
     stripeAccountType: {
       type: String,
       enum: ["express", "standard"],
@@ -54,7 +55,7 @@ const VendedorSchema = new mongoose.Schema(
     // Stripe capabilities
     chargesEnabled: { type: Boolean, default: false, index: true },
     payoutsEnabled: { type: Boolean, default: false, index: true },
-    detailsSubmitted: { type: Boolean, default: false },
+    detailsSubmitted: { type: Boolean, default: false, index: true },
 
     // Comisión personalizada
     comisionPorcentaje: {
@@ -66,7 +67,13 @@ const VendedorSchema = new mongoose.Schema(
 
     // Datos públicos
     tiendaNombre: { type: String, default: "", trim: true, index: true },
-    tiendaSlug: { type: String, default: "", trim: true, index: true },
+    tiendaSlug: {
+      type: String,
+      default: "",
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
     telefono: { type: String, default: "", trim: true },
     pais: { type: String, default: "", trim: true },
 
@@ -75,7 +82,7 @@ const VendedorSchema = new mongoose.Schema(
     puedeRetirar: { type: Boolean, default: true, index: true },
 
     // Auditoría
-    ultimoPayoutAt: { type: Date, default: null },
+    ultimoPayoutAt: { type: Date, default: null, index: true },
     ultimoErrorPayout: { type: String, default: "" },
 
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
@@ -84,44 +91,53 @@ const VendedorSchema = new mongoose.Schema(
 );
 
 // ======================================================
-// TEXT SEARCH
+// INDEXES
 // ======================================================
 VendedorSchema.index({ tiendaNombre: "text", tiendaSlug: "text" });
+// Activa esta línea solo si cada tienda debe tener slug único real:
+// VendedorSchema.index({ tiendaSlug: 1 }, { unique: true, sparse: true });
 
 // ======================================================
 // HELPERS DE SEGURIDAD
 // ======================================================
-
-/**
- * ¿Puede vender?
- */
 VendedorSchema.methods.estaActivoParaVentas = function () {
   if (!this.puedeVender) return false;
   if (this.estado !== "activo") return false;
   if (!this.stripeAccountId) return false;
   if (!this.chargesEnabled) return false;
+  if (!this.detailsSubmitted) return false;
   return true;
 };
 
-/**
- * ¿Puede recibir payouts?
- */
 VendedorSchema.methods.puedeRecibirPayout = function () {
   if (!this.puedeRetirar) return false;
   if (this.estado !== "activo") return false;
   if (!this.stripeAccountId) return false;
   if (!this.payoutsEnabled) return false;
+  if (!this.detailsSubmitted) return false;
   return true;
 };
 
-/**
- * Bloqueo automático si Stripe no está listo
- */
+// ======================================================
+// HARDENING AUTOMÁTICO
+// ======================================================
 VendedorSchema.pre("save", function (next) {
   if (!this.stripeAccountId) {
     this.chargesEnabled = false;
     this.payoutsEnabled = false;
-    this.estado = "pendiente";
+
+    if (this.estado !== "suspendido") {
+      this.estado = "pendiente";
+    }
+  }
+
+  if (!this.detailsSubmitted) {
+    this.chargesEnabled = false;
+    this.payoutsEnabled = false;
+
+    if (this.estado === "activo") {
+      this.estado = "verificando";
+    }
   }
 
   if (this.estado === "suspendido") {

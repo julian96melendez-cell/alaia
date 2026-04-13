@@ -7,14 +7,15 @@ const WebhookEventSchema = new mongoose.Schema(
       type: String,
       required: true,
       index: true,
+      trim: true,
+      lowercase: true,
     },
 
-    // event.id de Stripe
+    // event.id del provider
     eventId: {
       type: String,
       required: true,
-      unique: true,
-      index: true,
+      trim: true,
     },
 
     // checkout.session.completed, etc
@@ -22,6 +23,7 @@ const WebhookEventSchema = new mongoose.Schema(
       type: String,
       required: true,
       index: true,
+      trim: true,
     },
 
     // relación con orden
@@ -30,6 +32,14 @@ const WebhookEventSchema = new mongoose.Schema(
       ref: "Orden",
       index: true,
       default: null,
+    },
+
+    // request trace id
+    reqId: {
+      type: String,
+      default: "",
+      index: true,
+      trim: true,
     },
 
     // received | processed | failed | skipped
@@ -44,17 +54,20 @@ const WebhookEventSchema = new mongoose.Schema(
     errorMessage: {
       type: String,
       default: "",
+      trim: true,
+      maxlength: 1000,
     },
 
     // resumen del evento
     summary: {
       type: mongoose.Schema.Types.Mixed,
-      default: {},
+      default: () => ({}),
     },
 
     processedAt: {
       type: Date,
       default: Date.now,
+      index: true,
     },
   },
   {
@@ -63,8 +76,13 @@ const WebhookEventSchema = new mongoose.Schema(
   }
 );
 
-// Índices pro
+// Unicidad real por provider + eventId
+WebhookEventSchema.index({ provider: 1, eventId: 1 }, { unique: true });
+
+// Índices operativos
 WebhookEventSchema.index({ provider: 1, createdAt: -1 });
 WebhookEventSchema.index({ ordenId: 1, createdAt: -1 });
+WebhookEventSchema.index({ status: 1, createdAt: -1 });
+WebhookEventSchema.index({ eventType: 1, createdAt: -1 });
 
 module.exports = mongoose.model("WebhookEvent", WebhookEventSchema);

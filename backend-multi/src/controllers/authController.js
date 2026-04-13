@@ -1,6 +1,8 @@
 // =============================================
-// controllers/authController.js — ENTERPRISE ULTRA (COPY/PASTE)
+// controllers/authController.js — ENTERPRISE ULTRA
 // =============================================
+
+"use strict";
 
 const Usuario = require("../models/Usuario");
 const catchAsync = require("../utils/catchAsync");
@@ -15,21 +17,33 @@ const {
   incrementarTokenVersion,
 } = require("../services/authService");
 
-// ---------------------------------------------
+// =============================================
 // Helpers
-// ---------------------------------------------
-const mapRolFrontend = (rol) => {
-  if (!rol) return "user";
-  if (rol === "usuario") return "user";
-  return rol;
-};
+// =============================================
+function safeString(v) {
+  if (v === null || v === undefined) return "";
+  return String(v).trim();
+}
 
-const normalizarEmail = (email) => {
-  if (email === null || email === undefined) return "";
-  return String(email).trim().toLowerCase();
-};
+function normalizarEmail(email) {
+  return safeString(email).toLowerCase();
+}
 
-const validar = (req, res) => {
+function getClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
+  }
+
+  return (
+    req.ip ||
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    ""
+  );
+}
+
+function validar(req, res) {
   const errores = validationResult(req);
 
   if (!errores.isEmpty()) {
@@ -37,7 +51,7 @@ const validar = (req, res) => {
       statusCode: 400,
       message: "Errores de validación",
       errors: errores.array().map((e) => ({
-        campo: e.param,
+        campo: e.path || e.param,
         mensaje: e.msg,
       })),
     });
@@ -45,26 +59,49 @@ const validar = (req, res) => {
   }
 
   return true;
-};
+}
 
-const pickUsuarioPublico = (usuario) => {
+function pickUsuarioPublico(usuario) {
   if (!usuario) return null;
 
   return {
     id: String(usuario._id),
     nombre: usuario.nombre,
     email: usuario.email,
-    rol: mapRolFrontend(usuario.rol),
+    rol: usuario.rol,
+    activo: usuario.activo,
+    bloqueado: usuario.bloqueado,
+    emailVerificado: usuario.emailVerificado,
+    stripeAccountId: usuario.stripeAccountId || null,
+    stripeOnboardingComplete: !!usuario.stripeOnboardingComplete,
+    stripeChargesEnabled: !!usuario.stripeChargesEnabled,
+    stripePayoutsEnabled: !!usuario.stripePayoutsEnabled,
+    createdAt: usuario.createdAt,
+    updatedAt: usuario.updatedAt,
   };
-};
+}
 
-// Mensaje único para no permitir “enumeración”
-const credencialesInvalidas = (res) =>
-  error(res, { statusCode: 401, message: "Credenciales inválidas" });
+function credencialesInvalidas(res) {
+  return error(res, {
+    statusCode: 401,
+    message: "Credenciales inválidas",
+  });
+}
 
-// Comprueba flags de cuenta
-const cuentaNoDisponible = (res) =>
-  error(res, { statusCode: 403, message: "Cuenta no disponible" });
+function cuentaNoDisponible(res) {
+  return error(res, {
+    statusCode: 403,
+    message: "Cuenta no disponible",
+  });
+}
+
+function getRefreshTokenFromRequest(req) {
+  return (
+    safeString(req.body?.refreshToken) ||
+    safeString(req.cookies?.refreshToken) ||
+    ""
+  );
+}
 
 // =============================================
 // POST /api/auth/registrar
@@ -72,43 +109,51 @@ const cuentaNoDisponible = (res) =>
 exports.registrar = catchAsync(async (req, res) => {
   if (!validar(req, res)) return;
 
-  const nombre = String(req.body?.nombre || "").trim();
+  const nombre = safeString(req.body?.nombre);
   const email = normalizarEmail(req.body?.email);
   const password = String(req.body?.password || "");
 
-  // Validaciones defensivas (aunque uses express-validator)
   if (!nombre || nombre.length < 2) {
-    return error(res, { statusCode: 400, message: "Nombre inválido" });
-  }
-  if (!email) {
-    return error(res, { statusCode: 400, message: "Email inválido" });
-  }
-  if (!password || password.length < 8) {
-    return error(res, { statusCode: 400, message: "Password inválido" });
+    return error(res, {
+      statusCode: 400,
+      message: "Nombre inválido",
+    });
   }
 
-  // 1) Validar existencia (sin filtrar datos)
+  if (!email) {
+    return error(res, {
+      statusCode: 400,
+      message: "Email inválido",
+    });
+  }
+
+  if (!password || password.length < 8) {
+    return error(res, {
+      statusCode: 400,
+      message: "Password inválido",
+    });
+  }
+
   const existe = await buscarUsuarioPorEmail(email);
   if (existe) {
-    // Mensaje genérico para no confirmar si existe o no (seguridad)
     return error(res, {
       statusCode: 400,
       message: "No se pudo registrar con esos datos",
     });
   }
 
-  // 2) Crear usuario
   const usuario = await Usuario.create({
     nombre,
     email,
     password,
     rol: "usuario",
+    activo: true,
+    bloqueado: false,
+    emailVerificado: false,
   });
 
-  // 3) Generar tokens
   const tokens = generarTokens(usuario);
 
-  // 4) Respuesta
   return success(res, {
     statusCode: 201,
     message: "Usuario registrado correctamente",
@@ -127,29 +172,52 @@ exports.login = catchAsync(async (req, res) => {
 
   const email = normalizarEmail(req.body?.email);
   const password = String(req.body?.password || "");
+  const ip = getClientIp(req);
 
-  if (!email || !password) return credencialesInvalidas(res);
+  if (!email || !password) {
+    return credencialesInvalidas(res);
+  }
 
-  // 1) Buscar usuario
-  // IMPORTANTE: si tu schema tiene password select:false,
-  // tu authService.buscarUsuarioPorEmail debe hacer .select("+password")
   const usuario = await buscarUsuarioPorEmail(email);
 
-  if (!usuario) return credencialesInvalidas(res);
+  if (!usuario) {
+    return credencialesInvalidas(res);
+  }
 
-  // 1.1) Cuenta activa/bloqueada (si tienes esos campos)
   if (usuario.activo === false || usuario.bloqueado === true) {
     return cuentaNoDisponible(res);
   }
 
-  // 2) Validar password
-  const esValida = await usuario.compararPassword(password);
-  if (!esValida) return credencialesInvalidas(res);
+  if (typeof usuario.estaBloqueadoTemporalmente === "function") {
+    if (usuario.estaBloqueadoTemporalmente()) {
+      return error(res, {
+        statusCode: 403,
+        message: "Cuenta bloqueada temporalmente",
+      });
+    }
+  }
 
-  // 3) Tokens
+  const esValida = await usuario.compararPassword(password);
+
+  if (!esValida) {
+    if (typeof usuario.registrarLoginFallido === "function") {
+      usuario.registrarLoginFallido({
+        maxIntentos: 5,
+        bloqueoMinutos: 15,
+      });
+      await usuario.save();
+    }
+
+    return credencialesInvalidas(res);
+  }
+
+  if (typeof usuario.registrarLoginExitoso === "function") {
+    usuario.registrarLoginExitoso(ip);
+    await usuario.save();
+  }
+
   const tokens = generarTokens(usuario);
 
-  // 4) Respuesta
   return success(res, {
     message: "Inicio de sesión exitoso",
     data: {
@@ -165,7 +233,7 @@ exports.login = catchAsync(async (req, res) => {
 exports.refreshToken = catchAsync(async (req, res) => {
   if (!validar(req, res)) return;
 
-  const refreshToken = String(req.body?.refreshToken || "").trim();
+  const refreshToken = getRefreshTokenFromRequest(req);
 
   if (!refreshToken) {
     return error(res, {
@@ -174,7 +242,6 @@ exports.refreshToken = catchAsync(async (req, res) => {
     });
   }
 
-  // 1) Validar refresh token
   let payload;
   try {
     payload = verificarRefreshToken(refreshToken);
@@ -185,12 +252,17 @@ exports.refreshToken = catchAsync(async (req, res) => {
     });
   }
 
-  if (!payload?.id) {
-    return error(res, { statusCode: 401, message: "Refresh token inválido" });
+  const userId = safeString(payload?.id || payload?._id || payload?.userId);
+
+  if (!userId) {
+    return error(res, {
+      statusCode: 401,
+      message: "Refresh token inválido",
+    });
   }
 
-  // 2) Buscar usuario
-  const usuario = await buscarUsuarioPorId(payload.id);
+  const usuario = await buscarUsuarioPorId(userId);
+
   if (!usuario) {
     return error(res, {
       statusCode: 401,
@@ -198,26 +270,37 @@ exports.refreshToken = catchAsync(async (req, res) => {
     });
   }
 
-  // 2.1) Cuenta activa/bloqueada
   if (usuario.activo === false || usuario.bloqueado === true) {
     return cuentaNoDisponible(res);
   }
 
-  // 3) Revocación por tokenVersion
+  if (typeof usuario.estaBloqueadoTemporalmente === "function") {
+    if (usuario.estaBloqueadoTemporalmente()) {
+      return error(res, {
+        statusCode: 403,
+        message: "Cuenta bloqueada temporalmente",
+      });
+    }
+  }
+
   if (
     typeof payload.tokenVersion === "number" &&
     typeof usuario.tokenVersion === "number" &&
     usuario.tokenVersion !== payload.tokenVersion
   ) {
-    return error(res, { statusCode: 401, message: "Refresh token revocado" });
+    return error(res, {
+      statusCode: 401,
+      message: "Refresh token revocado",
+    });
   }
 
-  // 4) Generar nuevos tokens
   const tokens = generarTokens(usuario);
 
   return success(res, {
     message: "Tokens renovados correctamente",
-    data: { tokens },
+    data: {
+      tokens,
+    },
   });
 });
 
@@ -234,7 +317,6 @@ exports.logout = catchAsync(async (req, res) => {
     });
   }
 
-  // Revoca refresh tokens incrementando tokenVersion
   await incrementarTokenVersion(usuarioId);
 
   return success(res, {

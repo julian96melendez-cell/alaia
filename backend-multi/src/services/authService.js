@@ -2,14 +2,33 @@
 // authService.js — ENTERPRISE FINAL (PRODUCCIÓN)
 // =============================================
 
+"use strict";
+
 const jwt = require("jsonwebtoken");
 const Usuario = require("../models/Usuario");
 
 // ==============================
-// Configuración de expiración
+// Configuración
 // ==============================
-const ACCESS_TOKEN_EXPIRE = "15m"; // Ultra seguro
-const REFRESH_TOKEN_EXPIRE = "7d"; // Estándar enterprise
+const ACCESS_TOKEN_EXPIRE = "15m";
+const REFRESH_TOKEN_EXPIRE = "7d";
+const JWT_ALGORITHM = "HS256";
+
+// ==============================
+// Helpers
+// ==============================
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value || !String(value).trim()) {
+    throw new Error(`Falta ${name} en variables de entorno`);
+  }
+  return String(value).trim();
+}
+
+function normalizeEmail(email) {
+  if (email === null || email === undefined) return "";
+  return String(email).trim().toLowerCase();
+}
 
 // ==============================
 // GENERAR ACCESS + REFRESH TOKENS
@@ -19,10 +38,11 @@ exports.generarTokens = (usuario) => {
     throw new Error("Usuario inválido al generar tokens");
   }
 
+  const jwtSecret = requireEnv("JWT_SECRET");
+  const jwtRefreshSecret = requireEnv("JWT_REFRESH_SECRET");
+
   const tokenVersion =
-    typeof usuario.tokenVersion === "number"
-      ? usuario.tokenVersion
-      : 0;
+    typeof usuario.tokenVersion === "number" ? usuario.tokenVersion : 0;
 
   const payload = {
     id: usuario._id.toString(),
@@ -30,12 +50,14 @@ exports.generarTokens = (usuario) => {
     tokenVersion,
   };
 
-  const accessToken = jwt.sign(payload, process.env.JWT_SECRET, {
+  const accessToken = jwt.sign(payload, jwtSecret, {
     expiresIn: ACCESS_TOKEN_EXPIRE,
+    algorithm: JWT_ALGORITHM,
   });
 
-  const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {
+  const refreshToken = jwt.sign(payload, jwtRefreshSecret, {
     expiresIn: REFRESH_TOKEN_EXPIRE,
+    algorithm: JWT_ALGORITHM,
   });
 
   return { accessToken, refreshToken };
@@ -43,14 +65,14 @@ exports.generarTokens = (usuario) => {
 
 // ==============================
 // BUSCAR USUARIO POR EMAIL
-// 🔥 FIX CRÍTICO: incluir password
+// Incluye password para login
 // ==============================
 exports.buscarUsuarioPorEmail = async (email) => {
-  if (!email) return null;
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return null;
 
-  return Usuario.findOne({ email })
-    .select("+password")   // ← CLAVE PARA LOGIN
-    .select("+tokenVersion");
+  return Usuario.findOne({ email: normalizedEmail })
+    .select("+password +tokenVersion");
 };
 
 // ==============================
@@ -59,8 +81,7 @@ exports.buscarUsuarioPorEmail = async (email) => {
 exports.buscarUsuarioPorId = async (id) => {
   if (!id) return null;
 
-  return Usuario.findById(id)
-    .select("+tokenVersion");
+  return Usuario.findById(id).select("+tokenVersion");
 };
 
 // ==============================
@@ -71,22 +92,22 @@ exports.verificarRefreshToken = (token) => {
     throw new Error("Refresh token requerido");
   }
 
-  return jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+  const jwtRefreshSecret = requireEnv("JWT_REFRESH_SECRET");
+
+  return jwt.verify(token, jwtRefreshSecret, {
+    algorithms: [JWT_ALGORITHM],
+  });
 };
 
 // ==============================
 // INVALIDAR REFRESH TOKENS (LOGOUT)
 // ==============================
 exports.incrementarTokenVersion = async (usuarioId) => {
-  if (!usuarioId) return;
+  if (!usuarioId) return null;
 
-  const usuario = await Usuario.findById(usuarioId);
-  if (!usuario) return;
-
-  usuario.tokenVersion =
-    typeof usuario.tokenVersion === "number"
-      ? usuario.tokenVersion + 1
-      : 1;
-
-  await usuario.save();
+  return Usuario.findByIdAndUpdate(
+    usuarioId,
+    { $inc: { tokenVersion: 1 } },
+    { new: true }
+  ).select("+tokenVersion");
 };

@@ -2,167 +2,247 @@
 // auth.js — Middleware de Autenticación Enterprise ULTRA
 // ==========================================================
 
+"use strict";
+
 const jwt = require("jsonwebtoken");
 const Usuario = require("../models/Usuario");
 
 // ==========================================================
-// Helpers de respuesta estándar
+// Helpers respuesta estándar
 // ==========================================================
-const send401 = (res, message = "No autenticado") =>
-  res.status(401).json({ ok: false, message });
+function sendError(res, status, message, reqId = null) {
+  return res.status(status).json({
+    ok: false,
+    message,
+    reqId: reqId || null,
+  });
+}
 
-const send403 = (res, message = "Acceso denegado") =>
-  res.status(403).json({ ok: false, message });
+function send401(res, message = "No autenticado", reqId = null) {
+  return sendError(res, 401, message, reqId);
+}
+
+function send403(res, message = "Acceso denegado", reqId = null) {
+  return sendError(res, 403, message, reqId);
+}
 
 // ==========================================================
 // Helpers seguridad
 // ==========================================================
-const safeString = (v) =>
-  typeof v === "string" && v !== "null" && v !== "undefined" ? v : null;
+function safeString(v) {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!s || s === "null" || s === "undefined") return null;
+  return s;
+}
 
-const getTokenFromRequest = (req) => {
-  // 1. Header Authorization
+function getTokenFromAuthorizationHeader(req) {
   const authHeader = req.headers.authorization || req.headers.Authorization;
+  const value = safeString(authHeader);
 
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    return authHeader.split(" ")[1];
+  if (!value) return null;
+  if (!value.startsWith("Bearer ")) return null;
+
+  const token = value.slice(7).trim();
+  return safeString(token);
+}
+
+function getTokenFromCookies(req) {
+  return (
+    safeString(req.cookies?.accessToken) ||
+    safeString(req.cookies?.token) ||
+    null
+  );
+}
+
+function getTokenFromRequest(req) {
+  return getTokenFromAuthorizationHeader(req) || getTokenFromCookies(req);
+}
+
+function verifyJwt(token) {
+  if (!process.env.JWT_SECRET) {
+    const err = new Error("JWT_SECRET faltante");
+    err.statusCode = 500;
+    throw err;
   }
 
-  // 2. Cookie segura (si decides usar cookies después)
-  if (req.cookies?.accessToken) {
-    return req.cookies.accessToken;
-  }
+  return jwt.verify(token, process.env.JWT_SECRET, {
+    algorithms: ["HS256"],
+  });
+}
 
-  return null;
-};
+function isTemporaryLocked(usuario) {
+  if (!usuario?.lockedUntil) return false;
+  return new Date(usuario.lockedUntil).getTime() > Date.now();
+}
+
+function hasRole(usuario, allowedRoles = []) {
+  if (!usuario?.rol) return false;
+  return allowedRoles.includes(usuario.rol);
+}
 
 // ==========================================================
 // MIDDLEWARE: PROTEGER
 // ==========================================================
-const proteger = async (req, res, next) => {
-  try {
-    if (!process.env.JWT_SECRET) {
-      console.error("❌ JWT_SECRET faltante");
-      return send401(res, "Error configuración servidor");
-    }
+async function proteger(req, res, next) {
+  const reqId = req.reqId || null;
 
-    const token = safeString(getTokenFromRequest(req));
+  try {
+    const token = getTokenFromRequest(req);
 
     if (!token) {
-      return send401(res, "No autenticado");
+      return send401(res, "No autenticado", reqId);
     }
 
-    // ======================================================
-    // Verificar JWT con opciones seguras
-    // ======================================================
     let decoded;
-
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET, {
-        algorithms: ["HS256"],
-      });
+      decoded = verifyJwt(token);
     } catch (err) {
-      if (err.name === "TokenExpiredError") {
-        return send401(res, "Token expirado");
+      if (err?.name === "TokenExpiredError") {
+        return send401(res, "Token expirado", reqId);
       }
-      return send401(res, "Token inválido");
+
+      if (err?.statusCode === 500) {
+        console.error("❌ Auth config error:", err.message);
+        return sendError(res, 500, "Error configuración servidor", reqId);
+      }
+
+      return send401(res, "Token inválido", reqId);
     }
 
-    if (!decoded?.id) {
-      return send401(res, "Token inválido");
+    const userId = safeString(decoded?.id || decoded?._id || decoded?.userId);
+    if (!userId) {
+      return send401(res, "Token inválido", reqId);
     }
 
-    // ======================================================
-    // Buscar usuario en BD
-    // ======================================================
-    const usuario = await Usuario.findById(decoded.id).select("-password");
+    const usuario = await Usuario.findById(userId).select("-password");
 
     if (!usuario) {
-      return send401(res, "Usuario no existe");
+      return send401(res, "Usuario no existe", reqId);
     }
 
-    // ======================================================
-    // Verificación de revocación
-    // ======================================================
+    if (usuario.activo === false) {
+      return send403(res, "Cuenta inactiva", reqId);
+    }
+
+    if (usuario.bloqueado === true) {
+      return send403(res, "Cuenta bloqueada", reqId);
+    }
+
+    if (isTemporaryLocked(usuario)) {
+      return send403(res, "Cuenta bloqueada temporalmente", reqId);
+    }
+
     if (
-      typeof decoded.tokenVersion === "number" &&
+      typeof decoded?.tokenVersion === "number" &&
       usuario.tokenVersion !== decoded.tokenVersion
     ) {
-      return send401(res, "Sesión revocada");
+      return send401(res, "Sesión revocada", reqId);
     }
 
-    // ======================================================
-    // Verificación de bloqueo de cuenta
-    // ======================================================
-    if (usuario.bloqueado === true) {
-      return send403(res, "Cuenta bloqueada");
-    }
-
-    // ======================================================
-    // Verificación opcional de email
-    // ======================================================
-    if (usuario.emailVerificado === false) {
-      // puedes activar esto cuando quieras
-      // return send403(res, "Debes verificar tu email");
-    }
-
-    // ======================================================
-    // Adjuntar usuario
-    // ======================================================
     req.usuario = usuario;
-    req.usuarioId = usuario._id.toString();
+    req.usuarioId = String(usuario._id);
+    req.auth = {
+      token,
+      decoded,
+    };
 
-    next();
+    return next();
   } catch (err) {
-    console.error("❌ Auth middleware error:", err.message);
-    return send401(res);
+    console.error("❌ Auth middleware error:", {
+      reqId,
+      message: err?.message,
+    });
+
+    return send401(res, "No autenticado", reqId);
   }
-};
+}
+
+// ==========================================================
+// MIDDLEWARE: REQUIERE ROLES
+// ==========================================================
+function requireRoles(...roles) {
+  const allowedRoles = roles.flat().filter(Boolean);
+
+  return function roleMiddleware(req, res, next) {
+    const reqId = req.reqId || null;
+
+    if (!req.usuario) {
+      return send401(res, "No autenticado", reqId);
+    }
+
+    if (!allowedRoles.length) {
+      return send403(res, "Acceso denegado", reqId);
+    }
+
+    if (!hasRole(req.usuario, allowedRoles)) {
+      return send403(
+        res,
+        `Requiere rol: ${allowedRoles.join(", ")}`,
+        reqId
+      );
+    }
+
+    return next();
+  };
+}
 
 // ==========================================================
 // MIDDLEWARE: SOLO ADMIN
 // ==========================================================
-const soloAdmin = (req, res, next) => {
-  if (!req.usuario) {
-    return send401(res);
-  }
+const soloAdmin = requireRoles("admin");
 
-  if (req.usuario.rol !== "admin") {
-    return send403(res, "Requiere rol admin");
-  }
-
-  next();
-};
+// ==========================================================
+// MIDDLEWARE: SOLO VENDEDOR
+// ==========================================================
+const soloVendedor = requireRoles("vendedor");
 
 // ==========================================================
 // MIDDLEWARE: DUEÑO O ADMIN
+// getOwnerIdFn puede ser sync o async
 // ==========================================================
-const duenoOAdmin = (getOwnerIdFn) => {
-  return async (req, res, next) => {
-    try {
-      const ownerId = await getOwnerIdFn(req);
+function duenoOAdmin(getOwnerIdFn) {
+  return async function ownerOrAdminMiddleware(req, res, next) {
+    const reqId = req.reqId || null;
 
-      if (!ownerId) {
-        return send403(res);
+    try {
+      if (!req.usuario) {
+        return send401(res, "No autenticado", reqId);
       }
 
-      if (
-        req.usuario.rol === "admin" ||
-        ownerId.toString() === req.usuarioId
-      ) {
+      if (req.usuario.rol === "admin") {
         return next();
       }
 
-      return send403(res);
-    } catch {
-      return send403(res);
+      const ownerId = await getOwnerIdFn(req);
+
+      if (!ownerId) {
+        return send403(res, "Acceso denegado", reqId);
+      }
+
+      if (String(ownerId) === String(req.usuarioId)) {
+        return next();
+      }
+
+      return send403(res, "Acceso denegado", reqId);
+    } catch (err) {
+      console.error("❌ duenoOAdmin error:", {
+        reqId,
+        message: err?.message,
+      });
+
+      return send403(res, "Acceso denegado", reqId);
     }
   };
-};
+}
 
+// ==========================================================
+// EXPORTS
 // ==========================================================
 module.exports = {
   proteger,
   soloAdmin,
+  soloVendedor,
+  requireRoles,
   duenoOAdmin,
 };

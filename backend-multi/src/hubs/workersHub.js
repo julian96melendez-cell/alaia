@@ -19,6 +19,6 @@ function safeStart(name, fn) {
 
 module.exports = function startWorkers() {
   // ✅ Payout hold 7d
-  const payoutHold7dWorker = require("../workers/payoutHold7dWorker");
+  const payoutHold7dWorker = require("../workers/payoutWorker");
   safeStart("payoutHold7dWorker", payoutHold7dWorker.start);
 };

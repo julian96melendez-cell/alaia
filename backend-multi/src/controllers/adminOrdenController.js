@@ -31,6 +31,8 @@
 // Requiere middleware: proteger + soloAdmin
 // ==========================================================
 
+"use strict";
+
 const mongoose = require("mongoose");
 const Orden = require("../models/Orden");
 
@@ -54,7 +56,7 @@ try {
 let EmailService = null;
 try {
   EmailService = require("../services/emailService");
-} catch (e) {
+} catch (_) {
   EmailService = null;
 }
 
@@ -133,46 +135,35 @@ function envBool(key, def = false) {
 
 const FLAGS = {
   EMAIL_ON_FULFILLMENT: envBool("EMAIL_ON_FULFILLMENT", true),
-  EMAIL_ON_PAYMENT_STATUS: envBool("EMAIL_ON_PAYMENT_STATUS", false), // opcional
+  EMAIL_ON_PAYMENT_STATUS: envBool("EMAIL_ON_PAYMENT_STATUS", false),
   EMAIL_VERBOSE_LOGS: envBool("EMAIL_VERBOSE_LOGS", true),
 
-  // Si lo enciendes, bloquea cambios “peligrosos” de fulfillment cuando la orden no está pagada (excepto cancelado).
   ENFORCE_FULFILLMENT_REQUIRES_PAID: envBool(
     "ENFORCE_FULFILLMENT_REQUIRES_PAID",
     true
   ),
 
-  // Si lo enciendes, impide cambiar el pago por admin a "pagado" si no hay evidencia (útil si solo Stripe debe hacerlo)
   ENFORCE_PAYMENT_IS_STRIPE_ONLY: envBool(
     "ENFORCE_PAYMENT_IS_STRIPE_ONLY",
     false
   ),
 
-  // ============================
-  // 🔥 TIMELINE AMAZON-LIKE FLAGS
-  // ============================
   TIMELINE_ON_FULFILLMENT: envBool("TIMELINE_ON_FULFILLMENT", true),
   TIMELINE_ON_PAYMENT: envBool("TIMELINE_ON_PAYMENT", true),
   TIMELINE_VERBOSE_LOGS: envBool("TIMELINE_VERBOSE_LOGS", true),
 
-  // ============================
-  // 🔥 REALTIME FLAGS
-  // ============================
   REALTIME_ON_ADMIN_UPDATE: envBool("REALTIME_ON_ADMIN_UPDATE", true),
-  REALTIME_ON_EMAIL_LEDGER: envBool("REALTIME_ON_EMAIL_LEDGER", false), // normalmente no hace falta
+  REALTIME_ON_EMAIL_LEDGER: envBool("REALTIME_ON_EMAIL_LEDGER", false),
 
-  // ============================
-  // ✅ PAYOUTS AUTOMÁTICOS (Stripe Connect)
-  // ============================
   AUTO_PAYOUT_ON_DELIVERED: envBool("AUTO_PAYOUT_ON_DELIVERED", true),
   AUTO_PAYOUT_REQUIRE_PAID: envBool("AUTO_PAYOUT_REQUIRE_PAID", true),
-
-  // Si está activo, solo intenta payouts si hay stripeService disponible
   AUTO_PAYOUT_REQUIRE_STRIPE: envBool("AUTO_PAYOUT_REQUIRE_STRIPE", true),
 
-  // Environments:
-  // STRIPE_VENDOR_ACCOUNTS_JSON='{"local":"acct_123","proveedorX":"acct_456"}'
-  STRIPE_VENDOR_ACCOUNTS_JSON: safeString(process.env.STRIPE_VENDOR_ACCOUNTS_JSON || process.env.STRIPE_VENDOR_ACCOUNTS || ""),
+  STRIPE_VENDOR_ACCOUNTS_JSON: safeString(
+    process.env.STRIPE_VENDOR_ACCOUNTS_JSON ||
+      process.env.STRIPE_VENDOR_ACCOUNTS ||
+      ""
+  ),
 };
 
 // ==========================================================
@@ -193,7 +184,6 @@ function log(level, msg, ctx = {}) {
     msg,
     ...ctx,
   };
-  // eslint-disable-next-line no-console
   console.log(JSON.stringify(payload));
 }
 
@@ -209,11 +199,11 @@ function emitRealtimeSafe(ordenDocOrLean, ctx = {}) {
     if (!ordenId) return;
 
     const payload =
-      ordenDocOrLean?.toObject && typeof ordenDocOrLean.toObject === "function"
+      ordenDocOrLean?.toObject &&
+      typeof ordenDocOrLean.toObject === "function"
         ? ordenDocOrLean.toObject()
         : ordenDocOrLean;
 
-    // ✅ Firma correcta: (ordenId, payload)
     emitOrdenUpdate(ordenId, payload);
   } catch (e) {
     log("warn", "Realtime emit error (no bloquea)", {
@@ -225,8 +215,16 @@ function emitRealtimeSafe(ordenDocOrLean, ctx = {}) {
 
 // ==========================================================
 // Enums (alineados con tu schema Orden)
+// ✅ AÑADIDO: reembolsado_parcial
 // ==========================================================
-const ESTADOS_PAGO = new Set(["pendiente", "pagado", "fallido", "reembolsado"]);
+const ESTADOS_PAGO = new Set([
+  "pendiente",
+  "pagado",
+  "fallido",
+  "reembolsado",
+  "reembolsado_parcial",
+]);
+
 const ESTADOS_FULFILLMENT = new Set([
   "pendiente",
   "procesando",
@@ -308,7 +306,7 @@ function pushHistorial(orden, estado, meta = null) {
 }
 
 // ==========================================================
-// 🔥 TIMELINE AMAZON-LIKE
+// TIMELINE AMAZON-LIKE
 // ==========================================================
 function timelineKey(kind) {
   return `timeline_${String(kind || "").toLowerCase()}`.slice(0, 60);
@@ -422,7 +420,6 @@ async function safeSendEmail({
       return { sent: false, reason: "UNKNOWN_EMAIL_TYPE" };
     }
 
-    // Ledger idempotente
     if (ledgerKey) {
       pushHistorial(orden, ledgerKey, {
         type,
@@ -431,10 +428,8 @@ async function safeSendEmail({
         at: new Date().toISOString(),
       });
 
-      // Best effort save (no rompe)
       await orden.save().catch(() => {});
 
-      // ✅ (opcional) emitir por ledger si lo quieres (por defecto lo dejo apagado)
       if (FLAGS.REALTIME_ON_EMAIL_LEDGER) {
         emitRealtimeSafe(orden, { reqId, source: "email_ledger" });
       }
@@ -460,7 +455,7 @@ async function safeSendEmail({
 }
 
 // ==========================================================
-// ✅ PAYOUTS AUTOMÁTICOS (Stripe Connect) — helpers
+// PAYOUTS AUTOMÁTICOS (Stripe Connect)
 // ==========================================================
 function toCents(amount) {
   const n = Number(amount);
@@ -473,7 +468,10 @@ function normalizeCurrency(v) {
 }
 
 function buildPayoutLedgerKey(proveedor) {
-  return `payout_${String(proveedor || "unknown").toLowerCase()}`.slice(0, 120);
+  return `payout_${String(proveedor || "unknown").toLowerCase()}`.slice(
+    0,
+    120
+  );
 }
 
 function hasPayoutLedger(orden, proveedor) {
@@ -491,7 +489,6 @@ function parseVendorAccountsMap() {
     if (!obj || typeof obj !== "object") return {};
     return obj;
   } catch {
-    // permitir formato "a=acct_x,b=acct_y"
     try {
       const out = {};
       String(raw)
@@ -509,14 +506,6 @@ function parseVendorAccountsMap() {
   }
 }
 
-/**
- * Procesa payouts por proveedor usando Stripe Transfers (Connect)
- * - Fuente de verdad: items[].ingresoVendedor (si existe)
- * - Fallback: si no existe ingresoVendedor, usa (subtotal - comisionMonto) si existe
- * - Idempotencia: historial estado "payout_<proveedor>"
- * - Guarda transferId en proveedores[].referenciaProveedor y marca estadoPagoProveedor="pagado"
- * - Si no hay mapping proveedor -> account, NO rompe: registra historial "payout_skipped_*"
- */
 async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
   const result = {
     attempted: false,
@@ -528,13 +517,11 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
   try {
     if (!FLAGS.AUTO_PAYOUT_ON_DELIVERED) return result;
 
-    // Si exiges Stripe y no está disponible, no intentamos
     if (FLAGS.AUTO_PAYOUT_REQUIRE_STRIPE && !stripe) {
       result.skipped.push({ reason: "STRIPE_NOT_AVAILABLE" });
       return result;
     }
 
-    // Requiere pagada (recomendado)
     if (FLAGS.AUTO_PAYOUT_REQUIRE_PAID && orden?.estadoPago !== "pagado") {
       result.skipped.push({ reason: "ORDER_NOT_PAID" });
       return result;
@@ -548,15 +535,11 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
 
     const vendorMap = parseVendorAccountsMap();
 
-    // Agrupar por proveedor
-    const byProveedor = new Map(); // proveedor -> { amount, currency }
+    const byProveedor = new Map();
     for (const it of items) {
       const proveedor = safeString(it?.proveedor, "local") || "local";
 
-      // ingreso vendedor preferido (tu Orden.js ya lo calcula)
       const ingresoVendedor = Number(it?.ingresoVendedor);
-
-      // fallback
       const subtotal = Number(it?.subtotal);
       const comisionMonto = Number(it?.comisionMonto);
 
@@ -566,7 +549,6 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
       } else if (Number.isFinite(subtotal) && Number.isFinite(comisionMonto)) {
         amount = subtotal - comisionMonto;
       } else if (Number.isFinite(subtotal)) {
-        // último fallback: subtotal
         amount = subtotal;
       }
 
@@ -585,21 +567,21 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
 
     result.attempted = true;
 
-    // Ejecutar por proveedor
     for (const [proveedor, data] of byProveedor.entries()) {
       const amount = Math.round((Number(data.amount) || 0) * 100) / 100;
       const ledgerKey = buildPayoutLedgerKey(proveedor);
 
-      // idempotencia
       if (hasPayoutLedger(orden, proveedor)) {
         result.skipped.push({ proveedor, reason: "ALREADY_PAID_OUT" });
         continue;
       }
 
-      // resolver account id por ENV mapping
-      const destAccount = vendorMap?.[proveedor] || vendorMap?.[String(proveedor).toLowerCase()] || null;
+      const destAccount =
+        vendorMap?.[proveedor] ||
+        vendorMap?.[String(proveedor).toLowerCase()] ||
+        null;
+
       if (!destAccount) {
-        // registra y sigue (no rompe)
         pushHistorial(orden, ledgerKey, {
           status: "skipped",
           reason: "MISSING_VENDOR_ACCOUNT_MAPPING",
@@ -609,7 +591,10 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
           adminId,
         });
 
-        result.skipped.push({ proveedor, reason: "MISSING_VENDOR_ACCOUNT_MAPPING" });
+        result.skipped.push({
+          proveedor,
+          reason: "MISSING_VENDOR_ACCOUNT_MAPPING",
+        });
         continue;
       }
 
@@ -629,7 +614,6 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
       }
 
       try {
-        // Stripe Transfer (Connect)
         const transfer = await stripe.transfers.create(
           {
             amount: cents,
@@ -642,12 +626,13 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
             },
           },
           {
-            // idempotencia Stripe por orden+proveedor
-            idempotencyKey: `payout_${ordenId}_${String(proveedor).toLowerCase()}`.slice(0, 255),
+            idempotencyKey: `payout_${ordenId}_${String(proveedor).toLowerCase()}`.slice(
+              0,
+              255
+            ),
           }
         );
 
-        // Ledger en historial (idempotencia)
         pushHistorial(orden, ledgerKey, {
           status: "paid",
           proveedor,
@@ -661,14 +646,16 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
           adminId,
         });
 
-        // Marcar proveedor pagado en proveedores[] (si existe)
         if (Array.isArray(orden.proveedores)) {
           const row = orden.proveedores.find(
-            (x) => safeString(x?.proveedor, "").trim() === String(proveedor).trim()
+            (x) =>
+              safeString(x?.proveedor, "").trim() === String(proveedor).trim()
           );
           if (row) {
             row.estadoPagoProveedor = "pagado";
-            row.referenciaProveedor = transfer?.id ? String(transfer.id) : row.referenciaProveedor;
+            row.referenciaProveedor = transfer?.id
+              ? String(transfer.id)
+              : row.referenciaProveedor;
           }
         }
 
@@ -681,7 +668,6 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
           transferId: transfer?.id || null,
         });
       } catch (e) {
-        // Registra error pero NO rompe endpoint
         pushHistorial(orden, ledgerKey, {
           status: "failed",
           proveedor,
@@ -702,7 +688,6 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
       }
     }
 
-    // Guardar cambios de historial/proveedores (best effort)
     await orden.save().catch(() => {});
     return result;
   } catch (e) {
@@ -712,7 +697,7 @@ async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
 }
 
 // ==========================================================
-// GET /api/ordenes/admin
+// GET /api/ordenes/admin/ordenes
 // ==========================================================
 exports.adminListarOrdenes = async (req, res) => {
   const reqId = getRequestId(req);
@@ -738,8 +723,9 @@ exports.adminListarOrdenes = async (req, res) => {
     const filter = {};
 
     if (estadoPago !== "all") filter.estadoPago = estadoPago;
-    if (estadoFulfillment !== "all")
+    if (estadoFulfillment !== "all") {
       filter.estadoFulfillment = estadoFulfillment;
+    }
 
     const minTotal = safeFloat(req.query.minTotal, NaN);
     const maxTotal = safeFloat(req.query.maxTotal, NaN);
@@ -895,7 +881,7 @@ exports.adminListarOrdenes = async (req, res) => {
 };
 
 // ==========================================================
-// GET /api/ordenes/admin/:id
+// GET /api/ordenes/admin/ordenes/:id
 // ==========================================================
 exports.adminObtenerOrden = async (req, res) => {
   const reqId = getRequestId(req);
@@ -927,7 +913,7 @@ exports.adminObtenerOrden = async (req, res) => {
 };
 
 // ==========================================================
-// PUT /api/ordenes/admin/:id/estado
+// PUT /api/ordenes/admin/ordenes/:id/estado
 // Body: { estadoPago?, estadoFulfillment? }
 // ==========================================================
 exports.adminActualizarEstado = async (req, res) => {
@@ -958,7 +944,6 @@ exports.adminActualizarEstado = async (req, res) => {
       });
     }
 
-    // populate usuario para email
     const orden = await Orden.findById(id).populate("usuario", "email nombre");
     if (!orden) return notFound(res, "Orden no encontrada");
 
@@ -973,9 +958,6 @@ exports.adminActualizarEstado = async (req, res) => {
     const prevFulfillment = orden.estadoFulfillment;
     const prevPago = orden.estadoPago;
 
-    // --------------------------------------------
-    // Reglas opcionales (enterprise / compliance)
-    // --------------------------------------------
     if (FLAGS.ENFORCE_PAYMENT_IS_STRIPE_ONLY && estadoPago === "pagado") {
       return bad(
         res,
@@ -995,9 +977,6 @@ exports.adminActualizarEstado = async (req, res) => {
       );
     }
 
-    // --------------------------------------------
-    // Aplicar cambios
-    // --------------------------------------------
     if (estadoPago && orden.estadoPago !== estadoPago) {
       paymentCambioReal = true;
       cambios.estadoPago = { from: orden.estadoPago, to: estadoPago };
@@ -1017,26 +996,22 @@ exports.adminActualizarEstado = async (req, res) => {
       return ok(res, { message: "Sin cambios", data: orden, meta: { reqId } });
     }
 
-    // --------------------------------------------
-    // Audit trail admin
-    // --------------------------------------------
     pushHistorial(orden, "admin_update", { adminId, cambios, reqId });
 
-    if (paymentCambioReal)
+    if (paymentCambioReal) {
       pushHistorial(orden, `admin_payment_${orden.estadoPago}`, {
         from: prevPago,
         to: orden.estadoPago,
       });
+    }
 
-    if (fulfillmentCambioReal)
+    if (fulfillmentCambioReal) {
       pushHistorial(orden, `admin_fulfillment_${orden.estadoFulfillment}`, {
         from: prevFulfillment,
         to: orden.estadoFulfillment,
       });
+    }
 
-    // ======================================================
-    // 🔥 TIMELINE AMAZON-LIKE
-    // ======================================================
     if (fulfillmentCambioReal && FLAGS.TIMELINE_ON_FULFILLMENT) {
       const r = pushTimelineEventIdempotent(
         orden,
@@ -1079,17 +1054,10 @@ exports.adminActualizarEstado = async (req, res) => {
       }
     }
 
-    // ✅ Guardar TODO junto
     await orden.save();
 
-    // ✅ REALTIME: emitir SIEMPRE que haya cambio (no depende del email)
     emitRealtimeSafe(orden, { reqId, source: "adminActualizarEstado" });
 
-    // ======================================================
-    // ✅ PAYOUTS AUTOMÁTICOS (Stripe Connect)
-    // - Solo cuando cambia a "entregado"
-    // - NO rompe endpoint si falla
-    // ======================================================
     if (fulfillmentCambioReal && orden.estadoFulfillment === "entregado") {
       const payoutRes = await procesarPayoutsMarketplace({
         orden,
@@ -1097,7 +1065,6 @@ exports.adminActualizarEstado = async (req, res) => {
         adminId,
       });
 
-      // Log estructurado (no bloquea)
       log("info", "payouts_on_delivered", {
         reqId,
         ordenId: String(orden._id),
@@ -1107,7 +1074,6 @@ exports.adminActualizarEstado = async (req, res) => {
         errors: payoutRes.errors?.length || 0,
       });
 
-      // Si el payout tocó orden (historial/proveedores), emitimos realtime otra vez (best effort)
       if (
         (payoutRes.processed && payoutRes.processed.length) ||
         (payoutRes.errors && payoutRes.errors.length)
@@ -1116,9 +1082,6 @@ exports.adminActualizarEstado = async (req, res) => {
       }
     }
 
-    // ======================================================
-    // 📧 EMAIL: fulfillment
-    // ======================================================
     if (fulfillmentCambioReal && FLAGS.EMAIL_ON_FULFILLMENT) {
       const to = extractCustomerEmail(orden);
 
@@ -1142,9 +1105,6 @@ exports.adminActualizarEstado = async (req, res) => {
       });
     }
 
-    // ======================================================
-    // 📧 EMAIL: pago (opcional)
-    // ======================================================
     if (paymentCambioReal && FLAGS.EMAIL_ON_PAYMENT_STATUS) {
       const to = extractCustomerEmail(orden);
 
@@ -1212,7 +1172,18 @@ exports.adminMetrics = async (req, res) => {
             $sum: { $cond: [{ $eq: ["$estadoPago", "fallido"] }, 1, 0] },
           },
           reembolsadas: {
-            $sum: { $cond: [{ $eq: ["$estadoPago", "reembolsado"] }, 1, 0] },
+            $sum: {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ["$estadoPago", "reembolsado"] },
+                    { $eq: ["$estadoPago", "reembolsado_parcial"] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
           },
         },
       },
@@ -1255,30 +1226,15 @@ exports.adminMetrics = async (req, res) => {
     });
     return serverError(res, "Error interno en métricas", { reqId });
   }
-}; // ✅ <-- ESTA LLAVE/FIRMA ERA LA QUE TE FALTABA
+};
 
 // ==========================================================
 // WRAPPERS PARA ROUTER (compatibilidad)
 // ==========================================================
-//
-// Tu router usa:
-//   - adminActualizarFulfillment
-//   - adminActualizarPago
-//
-// Este controller tiene un endpoint universal:
-//   - adminActualizarEstado
-//
-// Estos wrappers adaptan las rutas SIN ROMPER tu diseño.
-// ==========================================================
-
-// PUT /ordenes/:id/fulfillment
 exports.adminActualizarFulfillment = async (req, res) => {
-  // No cambiamos estructura: solo delegamos.
   return exports.adminActualizarEstado(req, res);
 };
 
-// PUT /ordenes/:id/pago
 exports.adminActualizarPago = async (req, res) => {
-  // No cambiamos estructura: solo delegamos.
   return exports.adminActualizarEstado(req, res);
 };

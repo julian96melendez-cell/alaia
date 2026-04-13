@@ -1,36 +1,9 @@
-// ======================================================
-// stripeWebhookController.js — Stripe Webhook ENTERPRISE (ULTRA PRO FINAL)
-// ======================================================
-//
-// ✅ Verificación firma Stripe (RAW BODY)
-// ✅ Idempotencia por eventId (WebhookEvent unique)
-// ✅ Idempotencia por ORDEN (Orden.stripeEventIds con $addToSet + límite)
-// ✅ Anti-downgrade (si pagada no se marca fallida)
-// ✅ Validación antifraude: amount_total vs orden.total (centavos)
-// ✅ EMAIL idempotente SIN carreras (reserva atómica en historial antes de enviar)
-// ✅ Logs estructurados + reqId
-// ✅ Filtra livemode (evita mezclar test/live)
-// ✅ Soporte eventos Stripe principales + fallbacks
-//
-// 🛡️ (CAMBIO PRO SEGURIDAD):
-// ❌ NO se pagan vendedores al marcar pagada (evita riesgo de chargebacks/fraude)
-// ✅ Los payouts deben ejecutarse al marcar "entregado" (o +X días) desde Admin/Fulfillment.
-//
-// REQUIERE:
-// - Ruta con express.raw({ type: "application/json" }) SOLO para este endpoint
-// - Model: WebhookEvent con unique index en eventId
-// - Orden con campos: total, moneda, stripeEventIds[], etc.
-//
-// ======================================================
+"use strict";
 
 const Orden = require("../models/Orden");
 const WebhookEvent = require("../models/WebhookEvent");
 const { construirEventoDesdeWebhook, resumirEventoStripe } = require("./stripeService");
 const { enviarCorreoOrdenPagada } = require("../services/emailService");
-
-// Nota: mantenemos el import por compatibilidad, pero NO se usa aquí por máxima seguridad.
-// El payout debe ejecutarse al pasar a "entregado" (adminOrdenController.js) o en un job con delay.
-const { pagarVendedoresDeOrden } = require("../services/payoutService");
 
 // -----------------------------
 // Config / Feature flags
@@ -43,35 +16,20 @@ const envBool = (k, def = false) => {
 
 const FLAGS = {
   EMAIL_ON_PAYMENT: envBool("EMAIL_ON_PAYMENT", true),
-
-  // 🛡️ IMPORTANTE:
-  // En modo máxima seguridad, NO pagamos al pagar.
-  // El payout se hace al entregar (admin) o por un job programado.
-  PAYOUT_ON_PAYMENT: envBool("PAYOUT_ON_PAYMENT", false),
-
-  // Si STRIPE_LIVEMODE="true" => solo procesa livemode=true
-  // Si STRIPE_LIVEMODE="false" => solo procesa livemode=false
   ENFORCE_LIVEMODE: process.env.STRIPE_LIVEMODE !== undefined,
-
-  // Stripe Connect (opcional)
   STRIPE_ACCOUNT_ID: (process.env.STRIPE_ACCOUNT_ID || "").trim() || null,
-
-  // Robustez: devolver 200 aunque falle algo interno (evita reintentos infinitos)
   ALWAYS_200: envBool("STRIPE_WEBHOOK_ALWAYS_200", true),
-
-  // Anti-fraude: exige match de monto (recomendado true en producción)
   ENFORCE_AMOUNT_MATCH: envBool("STRIPE_ENFORCE_AMOUNT_MATCH", true),
+  ENFORCE_CURRENCY_MATCH: envBool("STRIPE_ENFORCE_CURRENCY_MATCH", true),
 };
 
-// -----------------------------
-// Helpers
-// -----------------------------
 const ok = (res) => res.status(200).json({ received: true });
 const safeStr = (v, fallback = "") => (v === null || v === undefined ? fallback : String(v));
 const now = () => new Date();
 
 function getReqId(req) {
   return (
+    req.reqId ||
     req.headers["x-request-id"] ||
     req.headers["x-correlation-id"] ||
     `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -79,7 +37,6 @@ function getReqId(req) {
 }
 
 function log(level, msg, ctx = {}) {
-  // eslint-disable-next-line no-console
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...ctx }));
 }
 
@@ -98,15 +55,21 @@ function getOrdenIdFromStripeObject(obj) {
   return obj?.metadata?.ordenId || obj?.metadata?.orderId || null;
 }
 
-// money utils
 const toCents = (amount) => {
   const n = Number(amount);
   if (!Number.isFinite(n)) return null;
   return Math.round(n * 100);
 };
 
+const normalizeCurrency = (v) => safeStr(v, "").trim().toLowerCase();
+
+// OJO: en tu schema actual NO existe "procesando" en estadoPago.
+// Solo dejamos estados realmente permitidos por Orden.js
+const PAYMENT_OPEN_STATES = ["pendiente"];
+const PAYMENT_FINAL_STATES = ["pagado", "reembolsado", "reembolsado_parcial"];
+
 // -----------------------------
-// EMAIL Ledger (idempotencia sin carreras)
+// EMAIL Ledger
 // -----------------------------
 const buildEmailLedgerKey = (type, value) =>
   `email_${type}_${String(value || "").toLowerCase()}`.slice(0, 120);
@@ -166,7 +129,12 @@ async function enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason, eventId }
       meta: { reason, eventId },
     });
 
-    log("info", "Email pago confirmado enviado", { reqId, ordenId, to: String(email), eventId });
+    log("info", "Email pago confirmado enviado", {
+      reqId,
+      ordenId,
+      to: String(email),
+      eventId,
+    });
   } catch (err) {
     log("warn", "Falló envío email (no bloquea)", {
       reqId,
@@ -178,78 +146,7 @@ async function enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason, eventId }
 }
 
 // -----------------------------
-// ✅ PAYOUT helpers (se mantienen por compatibilidad, pero NO se ejecuta aquí)
-// -----------------------------
-const buildPayoutLedgerKey = () => `payout_payment_pagado`.slice(0, 120);
-
-async function reservePayoutLedgerAtomic({ ordenId, ledgerKey, meta }) {
-  const res = await Orden.updateOne(
-    { _id: ordenId, "historial.estado": { $ne: ledgerKey } },
-    {
-      $push: {
-        historial: {
-          estado: ledgerKey,
-          fecha: new Date(),
-          meta: meta || null,
-        },
-      },
-    }
-  );
-  return { reserved: !!res?.modifiedCount };
-}
-
-// ⚠️ En modo máxima seguridad, NO lo llamamos aquí.
-// Si algún día quisieras activarlo (no recomendado), úsalo bajo tu propio riesgo.
-async function pagarVendedoresSafe({ reqId, ordenId, reason, eventId }) {
-  try {
-    if (!FLAGS.PAYOUT_ON_PAYMENT) return;
-
-    const ledgerKey = buildPayoutLedgerKey();
-
-    const reserved = await reservePayoutLedgerAtomic({
-      ordenId,
-      ledgerKey,
-      meta: { reason, eventId, at: new Date().toISOString() },
-    });
-
-    if (!reserved.reserved) {
-      log("info", "Payout ya reservado/ejecutado (ledger)", { reqId, ordenId, eventId });
-      return;
-    }
-
-    await pagarVendedoresDeOrden({ ordenId, eventId, reason });
-
-    log("info", "Payout ejecutado (vendedores)", { reqId, ordenId, eventId, reason });
-  } catch (err) {
-    log("warn", "Falló payout (no bloquea)", {
-      reqId,
-      ordenId,
-      eventId,
-      err: err?.message || String(err),
-    });
-
-    await Orden.updateOne(
-      { _id: ordenId },
-      {
-        $push: {
-          historial: {
-            estado: "payout_failed",
-            fecha: new Date(),
-            meta: {
-              eventId,
-              reason,
-              err: safeStr(err?.message || err).slice(0, 500),
-              at: new Date().toISOString(),
-            },
-          },
-        },
-      }
-    ).catch(() => {});
-  }
-}
-
-// -----------------------------
-// WebhookEvent persistence (idempotencia por eventId)
+// WebhookEvent persistence
 // -----------------------------
 async function markEvent({ event, status, ordenId = null, errorMessage = "", summary = {}, reqId }) {
   try {
@@ -267,27 +164,23 @@ async function markEvent({ event, status, ordenId = null, errorMessage = "", sum
     return { created: true, doc };
   } catch (err) {
     if (err?.code === 11000) {
-      return { created: false, doc: await WebhookEvent.findOne({ eventId: event.id }) };
+      return {
+        created: false,
+        doc: await WebhookEvent.findOne({ provider: "stripe", eventId: event.id }),
+      };
     }
     throw err;
   }
 }
 
-// -----------------------------
-// Orden: ledger Stripe eventIds (idempotencia por ORDEN)
-// ✅ guarda eventId en la orden y limita a últimos 50
-// -----------------------------
 async function addStripeEventIdToOrden({ ordenId, eventId }) {
   if (!ordenId || !eventId) return;
 
   await Orden.updateOne(
     { _id: ordenId },
-    {
-      $addToSet: { stripeEventIds: String(eventId) },
-    }
+    { $addToSet: { stripeEventIds: String(eventId) } }
   ).catch(() => {});
 
-  // Limitar a 50 (sin transacciones, pero suficiente)
   await Orden.updateOne(
     { _id: ordenId },
     {
@@ -301,9 +194,6 @@ async function addStripeEventIdToOrden({ ordenId, eventId }) {
   ).catch(() => {});
 }
 
-// -----------------------------
-// Auditoría Orden (campos Stripe)
-// -----------------------------
 function setOrdenAuditFields({ update, eventId, detail }) {
   if (!update.$set) update.$set = {};
   update.$set.stripeLatestEventId = safeStr(eventId, "");
@@ -311,63 +201,91 @@ function setOrdenAuditFields({ update, eventId, detail }) {
 }
 
 // -----------------------------
-// Anti-fraude: validar amount_total vs orden.total
-// - Stripe amount_total viene en centavos
-// - Orden.total está en dólares => convertimos
+// Anti-fraude
 // -----------------------------
-async function validarMontoSiAplica({ ordenId, stripeAmountTotal, reqId, eventId, eventType }) {
-  if (!FLAGS.ENFORCE_AMOUNT_MATCH) return { ok: true };
+async function validarMontoYMonedaSiAplica({
+  ordenId,
+  stripeAmountTotal,
+  stripeCurrency,
+  reqId,
+  eventId,
+  eventType,
+}) {
+  const orden = await Orden.findById(ordenId)
+    .select("total moneda estadoPago stripeAmountReceived stripeAmountTotal")
+    .lean();
 
-  if (stripeAmountTotal == null) return { ok: true };
-
-  const orden = await Orden.findById(ordenId).select("total moneda estadoPago").lean();
   if (!orden) return { ok: false, reason: "ORDER_NOT_FOUND" };
 
-  const totalCents = toCents(orden.total);
-  if (totalCents == null) return { ok: false, reason: "ORDER_TOTAL_INVALID" };
+  if (FLAGS.ENFORCE_AMOUNT_MATCH && stripeAmountTotal != null) {
+    const totalCents = toCents(orden.total);
+    if (totalCents == null) return { ok: false, reason: "ORDER_TOTAL_INVALID" };
 
-  const stripeCents = Number(stripeAmountTotal) || 0;
+    const stripeCents = Number(stripeAmountTotal) || 0;
+    const diff = Math.abs(totalCents - stripeCents);
 
-  // tolerancia 1 centavo
-  const diff = Math.abs(totalCents - stripeCents);
+    if (diff > 1) {
+      log("error", "Monto mismatch", {
+        reqId,
+        ordenId,
+        eventId,
+        eventType,
+        orderTotalCents: totalCents,
+        stripeAmountTotal: stripeCents,
+        diff,
+      });
 
-  if (diff > 1) {
-    log("error", "Monto mismatch (possible fraud/misconfig)", {
-      reqId,
-      ordenId,
-      eventId,
-      eventType,
-      orderTotalCents: totalCents,
-      stripeAmountTotal: stripeCents,
-      diff,
-    });
+      await Orden.updateOne(
+        { _id: ordenId },
+        {
+          $set: {
+            paymentStatusDetail: `amount_mismatch order=${totalCents} stripe=${stripeCents}`,
+            stripeLatestEventId: String(eventId),
+          },
+        }
+      ).catch(() => {});
 
-    await Orden.updateOne(
-      { _id: ordenId },
-      {
-        $set: {
-          paymentStatusDetail: `amount_mismatch order=${totalCents} stripe=${stripeCents}`,
-          stripeLatestEventId: String(eventId),
-        },
-      }
-    ).catch(() => {});
+      return { ok: false, reason: "AMOUNT_MISMATCH" };
+    }
+  }
 
-    return { ok: false, reason: "AMOUNT_MISMATCH" };
+  if (FLAGS.ENFORCE_CURRENCY_MATCH && stripeCurrency) {
+    const orderCurrency = normalizeCurrency(orden?.moneda);
+    const webhookCurrency = normalizeCurrency(stripeCurrency);
+
+    if (orderCurrency && webhookCurrency && orderCurrency !== webhookCurrency) {
+      log("error", "Currency mismatch", {
+        reqId,
+        ordenId,
+        eventId,
+        eventType,
+        orderCurrency,
+        webhookCurrency,
+      });
+
+      await Orden.updateOne(
+        { _id: ordenId },
+        {
+          $set: {
+            paymentStatusDetail: `currency_mismatch order=${orderCurrency} stripe=${webhookCurrency}`,
+            stripeLatestEventId: String(eventId),
+          },
+        }
+      ).catch(() => {});
+
+      return { ok: false, reason: "CURRENCY_MISMATCH" };
+    }
   }
 
   return { ok: true };
 }
 
-/**
- * Marca PAGADA de forma atómica (no duplica, no downgrade)
- */
 async function marcarOrdenPagadaAtomico({ ordenId, sessionLike, eventId, detail = "" }) {
   const update = {
     $set: {
       estadoPago: "pagado",
       metodoPago: "stripe",
       paymentProvider: "stripe",
-      estadoFulfillment: "pendiente",
       paidAt: now(),
       failedAt: null,
       refundedAt: null,
@@ -379,8 +297,6 @@ async function marcarOrdenPagadaAtomico({ ordenId, sessionLike, eventId, detail 
   if (obj?.id) update.$set.stripeSessionId = safeStr(obj.id);
   if (obj?.payment_intent) update.$set.stripePaymentIntentId = safeStr(obj.payment_intent);
   if (obj?.currency) update.$set.moneda = safeStr(obj.currency, "usd").toLowerCase();
-
-  // Auditoría monetaria (si tu Orden schema lo soporta, si no, no rompe)
   if (obj?.amount_total != null) update.$set.stripeAmountTotal = Number(obj.amount_total) || 0;
   if (obj?.amount_received != null) update.$set.stripeAmountReceived = Number(obj.amount_received) || 0;
   if (obj?.customer) update.$set.stripeCustomerId = safeStr(obj.customer);
@@ -388,7 +304,10 @@ async function marcarOrdenPagadaAtomico({ ordenId, sessionLike, eventId, detail 
   setOrdenAuditFields({ update, eventId, detail });
 
   return await Orden.findOneAndUpdate(
-    { _id: ordenId, estadoPago: { $ne: "pagado" } },
+    {
+      _id: ordenId,
+      estadoPago: { $nin: PAYMENT_FINAL_STATES },
+    },
     update,
     { new: true }
   );
@@ -409,30 +328,67 @@ async function marcarOrdenFallidaAtomico({ ordenId, eventId, detail = "", clearS
   setOrdenAuditFields({ update, eventId, detail });
 
   return await Orden.findOneAndUpdate(
-    { _id: ordenId, estadoPago: { $ne: "pagado" } },
+    {
+      _id: ordenId,
+      estadoPago: { $in: PAYMENT_OPEN_STATES },
+    },
     update,
     { new: true }
   );
 }
 
-async function marcarOrdenReembolsadaAtomico({ ordenId, eventId, detail = "" }) {
+async function marcarOrdenReembolsoAtomico({
+  ordenId,
+  eventId,
+  detail = "",
+  refundAmountCents = null,
+  chargeAmountCents = null,
+}) {
+  let estadoPago = "reembolsado";
+
+  if (
+    Number.isFinite(refundAmountCents) &&
+    Number.isFinite(chargeAmountCents) &&
+    refundAmountCents > 0 &&
+    refundAmountCents < chargeAmountCents
+  ) {
+    estadoPago = "reembolsado_parcial";
+  }
+
   const update = {
     $set: {
-      estadoPago: "reembolsado",
+      estadoPago,
       metodoPago: "stripe",
       paymentProvider: "stripe",
       refundedAt: now(),
     },
   };
 
+  if (refundAmountCents != null) {
+    update.$set.stripeRefundAmount = Number(refundAmountCents) || 0;
+  }
+
   setOrdenAuditFields({ update, eventId, detail });
 
   return await Orden.findOneAndUpdate({ _id: ordenId }, update, { new: true });
 }
 
-// -----------------------------
-// Livemode enforcement
-// -----------------------------
+async function obtenerMontoReferenciaOrden(ordenId) {
+  const orden = await Orden.findById(ordenId)
+    .select("stripeAmountReceived stripeAmountTotal total")
+    .lean();
+
+  if (!orden) return null;
+
+  const candidates = [
+    Number(orden?.stripeAmountReceived),
+    Number(orden?.stripeAmountTotal),
+    toCents(orden?.total),
+  ].filter(Number.isFinite);
+
+  return candidates.length ? Math.max(...candidates) : null;
+}
+
 function enforceLivemodeOrSkip({ event, reqId }) {
   if (!FLAGS.ENFORCE_LIVEMODE) return { ok: true };
 
@@ -456,7 +412,6 @@ function enforceLivemodeOrSkip({ event, reqId }) {
   return { ok: true };
 }
 
-// Stripe Connect enforcement (opcional)
 function enforceAccountOrSkip({ req, event, reqId }) {
   if (!FLAGS.STRIPE_ACCOUNT_ID) return { ok: true };
 
@@ -477,9 +432,6 @@ function enforceAccountOrSkip({ req, event, reqId }) {
   return { ok: true };
 }
 
-// ======================================================
-// Controller principal
-// ======================================================
 exports.procesarWebhookStripe = async (req, res) => {
   const reqId = getReqId(req);
 
@@ -515,11 +467,13 @@ exports.procesarWebhookStripe = async (req, res) => {
   const obj = event?.data?.object || {};
   const ordenId = summary?.ordenId || getOrdenIdFromStripeObject(obj);
 
-  log("info", "Stripe webhook received", { reqId, eventId, eventType, ordenId: ordenId || null });
+  log("info", "Stripe webhook received", {
+    reqId,
+    eventId,
+    eventType,
+    ordenId: ordenId || null,
+  });
 
-  // ------------------------------------------------------
-  // Idempotencia por EVENTO
-  // ------------------------------------------------------
   let eventRow;
   try {
     const result = await markEvent({
@@ -533,11 +487,19 @@ exports.procesarWebhookStripe = async (req, res) => {
     eventRow = result.doc;
 
     if (!result.created) {
-      log("info", "Evento duplicado ignorado (eventId)", { reqId, eventId, eventType });
+      log("info", "Evento duplicado ignorado (eventId)", {
+        reqId,
+        eventId,
+        eventType,
+      });
       return ok(res);
     }
   } catch (err) {
-    log("error", "Error guardando WebhookEvent (no bloquea)", { reqId, eventId, err: err?.message || String(err) });
+    log("error", "Error guardando WebhookEvent (no bloquea)", {
+      reqId,
+      eventId,
+      err: err?.message || String(err),
+    });
     return ok(res);
   }
 
@@ -550,37 +512,46 @@ exports.procesarWebhookStripe = async (req, res) => {
       return ok(res);
     }
 
-    // Guardar eventId también en ORDEN (idempotencia por orden / auditoría)
     await addStripeEventIdToOrden({ ordenId, eventId });
 
-    // =============================
-    // checkout.session.completed
-    // =============================
     if (eventType === "checkout.session.completed") {
       const session = obj;
 
       if (session?.mode && session.mode !== "payment") {
         const msg = "Session mode != payment";
-        await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "skipped", errorMessage: msg } });
-        await Orden.updateOne({ _id: ordenId }, { $set: { stripeLatestEventId: eventId, paymentStatusDetail: msg } }).catch(() => {});
+        await WebhookEvent.updateOne(
+          { _id: eventRow._id },
+          { $set: { status: "skipped", errorMessage: msg } }
+        );
+        await Orden.updateOne(
+          { _id: ordenId },
+          { $set: { stripeLatestEventId: eventId, paymentStatusDetail: msg } }
+        ).catch(() => {});
         return ok(res);
       }
 
       if (session?.payment_status && session.payment_status !== "paid") {
         const msg = `payment_status != paid (${session.payment_status})`;
-        await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "skipped", errorMessage: msg } });
-        await Orden.updateOne({ _id: ordenId }, { $set: { stripeLatestEventId: eventId, paymentStatusDetail: msg } }).catch(() => {});
+        await WebhookEvent.updateOne(
+          { _id: eventRow._id },
+          { $set: { status: "skipped", errorMessage: msg } }
+        );
+        await Orden.updateOne(
+          { _id: ordenId },
+          { $set: { stripeLatestEventId: eventId, paymentStatusDetail: msg } }
+        ).catch(() => {});
         return ok(res);
       }
 
-      // ✅ Anti-fraude por monto
-      const amountCheck = await validarMontoSiAplica({
+      const amountCheck = await validarMontoYMonedaSiAplica({
         ordenId,
         stripeAmountTotal: session?.amount_total,
+        stripeCurrency: session?.currency,
         reqId,
         eventId,
         eventType,
       });
+
       if (!amountCheck.ok) {
         await WebhookEvent.updateOne(
           { _id: eventRow._id },
@@ -597,32 +568,38 @@ exports.procesarWebhookStripe = async (req, res) => {
       });
 
       if (ordenActualizada) {
-        await enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason: "checkout.session.completed", eventId });
-
-        // 🛡️ MÁXIMA SEGURIDAD:
-        // ❌ NO pagamos vendedores aquí.
-        // ✅ Payout se ejecuta al marcar "entregado" en adminOrdenController.js (o en un job con delay).
+        await enviarEmailPagoConfirmadoSafe({
+          reqId,
+          ordenId,
+          reason: "checkout.session.completed",
+          eventId,
+        });
       }
 
-      await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "processed", ordenId, summary } });
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
       return ok(res);
     }
 
-    // =============================
-    // checkout.session.async_payment_succeeded
-    // =============================
     if (eventType === "checkout.session.async_payment_succeeded") {
       const session = obj;
 
-      const amountCheck = await validarMontoSiAplica({
+      const amountCheck = await validarMontoYMonedaSiAplica({
         ordenId,
         stripeAmountTotal: session?.amount_total,
+        stripeCurrency: session?.currency,
         reqId,
         eventId,
         eventType,
       });
+
       if (!amountCheck.ok) {
-        await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "skipped", errorMessage: amountCheck.reason } });
+        await WebhookEvent.updateOne(
+          { _id: eventRow._id },
+          { $set: { status: "skipped", errorMessage: amountCheck.reason } }
+        );
         return ok(res);
       }
 
@@ -634,47 +611,83 @@ exports.procesarWebhookStripe = async (req, res) => {
       });
 
       if (ordenActualizada) {
-        await enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason: "checkout.session.async_payment_succeeded", eventId });
-
-        // 🛡️ MÁXIMA SEGURIDAD: NO payout aquí.
+        await enviarEmailPagoConfirmadoSafe({
+          reqId,
+          ordenId,
+          reason: "checkout.session.async_payment_succeeded",
+          eventId,
+        });
       }
 
-      await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "processed", ordenId, summary } });
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
       return ok(res);
     }
 
-    // =============================
-    // checkout.session.async_payment_failed
-    // =============================
     if (eventType === "checkout.session.async_payment_failed") {
-      await marcarOrdenFallidaAtomico({ ordenId, eventId, detail: "checkout.session.async_payment_failed" });
-      await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "processed", ordenId, summary } });
+      await marcarOrdenFallidaAtomico({
+        ordenId,
+        eventId,
+        detail: "checkout.session.async_payment_failed",
+      });
+
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
       return ok(res);
     }
 
-    // =============================
-    // checkout.session.expired
-    // =============================
     if (eventType === "checkout.session.expired") {
-      await marcarOrdenFallidaAtomico({ ordenId, eventId, detail: "checkout.session.expired", clearSession: true });
-      await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "processed", ordenId, summary } });
+      await marcarOrdenFallidaAtomico({
+        ordenId,
+        eventId,
+        detail: "checkout.session.expired",
+        clearSession: true,
+      });
+
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
       return ok(res);
     }
 
-    // =============================
-    // payment_intent.payment_failed
-    // =============================
     if (eventType === "payment_intent.payment_failed") {
-      await marcarOrdenFallidaAtomico({ ordenId, eventId, detail: "payment_intent.payment_failed" });
-      await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "processed", ordenId, summary } });
+      await marcarOrdenFallidaAtomico({
+        ordenId,
+        eventId,
+        detail: "payment_intent.payment_failed",
+      });
+
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
       return ok(res);
     }
 
-    // =============================
-    // payment_intent.succeeded (fallback)
-    // =============================
     if (eventType === "payment_intent.succeeded") {
       const intent = obj;
+
+      const amountCheck = await validarMontoYMonedaSiAplica({
+        ordenId,
+        stripeAmountTotal: intent?.amount_received ?? intent?.amount,
+        stripeCurrency: intent?.currency,
+        reqId,
+        eventId,
+        eventType,
+      });
+
+      if (!amountCheck.ok) {
+        await WebhookEvent.updateOne(
+          { _id: eventRow._id },
+          { $set: { status: "skipped", errorMessage: amountCheck.reason } }
+        );
+        return ok(res);
+      }
 
       const ordenActualizada = await marcarOrdenPagadaAtomico({
         ordenId,
@@ -690,19 +703,40 @@ exports.procesarWebhookStripe = async (req, res) => {
       });
 
       if (ordenActualizada) {
-        await enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason: "payment_intent.succeeded", eventId });
-        // 🛡️ MÁXIMA SEGURIDAD: NO payout aquí.
+        await enviarEmailPagoConfirmadoSafe({
+          reqId,
+          ordenId,
+          reason: "payment_intent.succeeded",
+          eventId,
+        });
       }
 
-      await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "processed", ordenId, summary } });
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
       return ok(res);
     }
 
-    // =============================
-    // charge.succeeded (fallback)
-    // =============================
     if (eventType === "charge.succeeded") {
       const charge = obj;
+
+      const amountCheck = await validarMontoYMonedaSiAplica({
+        ordenId,
+        stripeAmountTotal: charge?.amount_captured ?? charge?.amount,
+        stripeCurrency: charge?.currency,
+        reqId,
+        eventId,
+        eventType,
+      });
+
+      if (!amountCheck.ok) {
+        await WebhookEvent.updateOne(
+          { _id: eventRow._id },
+          { $set: { status: "skipped", errorMessage: amountCheck.reason } }
+        );
+        return ok(res);
+      }
 
       const ordenActualizada = await marcarOrdenPagadaAtomico({
         ordenId,
@@ -718,25 +752,83 @@ exports.procesarWebhookStripe = async (req, res) => {
       });
 
       if (ordenActualizada) {
-        await enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason: "charge.succeeded", eventId });
-        // 🛡️ MÁXIMA SEGURIDAD: NO payout aquí.
+        await enviarEmailPagoConfirmadoSafe({
+          reqId,
+          ordenId,
+          reason: "charge.succeeded",
+          eventId,
+        });
       }
 
-      await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "processed", ordenId, summary } });
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
       return ok(res);
     }
 
-    // =============================
-    // refunds
-    // =============================
-    if (eventType === "charge.refunded" || eventType === "refund.updated") {
-      await marcarOrdenReembolsadaAtomico({ ordenId, eventId, detail: eventType });
-      await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "processed", ordenId, summary } });
+    if (eventType === "charge.refunded") {
+      const charge = obj;
+      const refundAmount = Number(charge?.amount_refunded) || 0;
+      const chargeAmount = Number(charge?.amount) || 0;
+
+      await marcarOrdenReembolsoAtomico({
+        ordenId,
+        eventId,
+        detail: "charge.refunded",
+        refundAmountCents: refundAmount,
+        chargeAmountCents: chargeAmount,
+      });
+
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
       return ok(res);
     }
 
-    // No manejado
-    await WebhookEvent.updateOne({ _id: eventRow._id }, { $set: { status: "skipped", ordenId, summary } });
+    if (eventType === "refund.updated") {
+      const refund = obj;
+
+      if (refund?.status !== "succeeded") {
+        await WebhookEvent.updateOne(
+          { _id: eventRow._id },
+          {
+            $set: {
+              status: "skipped",
+              ordenId,
+              summary,
+              errorMessage: `refund_status_${safeStr(refund?.status, "unknown")}`,
+            },
+          }
+        );
+        return ok(res);
+      }
+
+      const referenceAmount =
+        Number(refund?.charge_details?.amount) ||
+        Number(refund?.payment_intent_details?.amount) ||
+        (await obtenerMontoReferenciaOrden(ordenId));
+
+      await marcarOrdenReembolsoAtomico({
+        ordenId,
+        eventId,
+        detail: "refund.updated",
+        refundAmountCents: Number(refund?.amount) || 0,
+        chargeAmountCents: Number.isFinite(referenceAmount) ? referenceAmount : null,
+      });
+
+      await WebhookEvent.updateOne(
+        { _id: eventRow._id },
+        { $set: { status: "processed", ordenId, summary } }
+      );
+      return ok(res);
+    }
+
+    await WebhookEvent.updateOne(
+      { _id: eventRow._id },
+      { $set: { status: "skipped", ordenId, summary } }
+    );
 
     await Orden.updateOne(
       { _id: ordenId },
@@ -755,12 +847,24 @@ exports.procesarWebhookStripe = async (req, res) => {
 
     await WebhookEvent.updateOne(
       { _id: eventRow?._id },
-      { $set: { status: "failed", errorMessage: safeStr(err?.message || err).slice(0, 500), ordenId: ordenId || null, summary } }
+      {
+        $set: {
+          status: "failed",
+          errorMessage: safeStr(err?.message || err).slice(0, 500),
+          ordenId: ordenId || null,
+          summary,
+        },
+      }
     ).catch(() => {});
 
     await Orden.updateOne(
       { _id: ordenId },
-      { $set: { stripeLatestEventId: eventId, paymentStatusDetail: `webhook_failed:${safeStr(err?.message || err).slice(0, 250)}` } }
+      {
+        $set: {
+          stripeLatestEventId: eventId,
+          paymentStatusDetail: `webhook_failed:${safeStr(err?.message || err).slice(0, 250)}`,
+        },
+      }
     ).catch(() => {});
 
     if (FLAGS.ALWAYS_200) return ok(res);

@@ -3,7 +3,6 @@
 const Orden = require("../models/Orden");
 const Vendedor = require("../models/Vendedor");
 
-// Usa tu stripeService actual (ajusta el path si está en otro sitio)
 let stripe = null;
 try {
   ({ stripe } = require("../payments/stripeService"));
@@ -29,44 +28,19 @@ function safeStr(v, fallback = "") {
   return v === null || v === undefined ? fallback : String(v);
 }
 
-// Ledger helpers
-function buildOrderLedgerKey({ mode, runId }) {
-  // mode: "webhook" | "scheduler"
-  // runId: identificador estable del “tipo de corrida”
-  return `payouts_${mode}_${safeStr(runId || "default").slice(0, 80)}`.slice(0, 120);
-}
-
-function buildItemLedgerKey({ vendedorId, ordenId, itemKey }) {
-  // itemKey debe ser determinista aunque item no tenga _id
-  return `payout_item_${safeStr(vendedorId)}_${safeStr(ordenId)}_${safeStr(itemKey)}`.slice(0, 160);
-}
-
 function normalizeCurrency(v) {
   const c = safeStr(v, "usd").trim().toLowerCase();
   return c || "usd";
 }
 
-/**
- * =========================================================
- * 🔥 PAYOUT SERVICE — BLINDADO + 7 DÍAS READY
- * =========================================================
- *
- * ✅ Idempotente por orden (ledger atómico)
- * ✅ Idempotente por item (ledger atómico)
- * ✅ Stripe idempotencyKey estable (sin depender de item._id)
- * ✅ No usa Producto.populate (usa snapshot de Orden.items)
- * ✅ Validación de vendedor (estado/KYC/flags)
- * ✅ Fail-safe: errores por item no rompen el proceso
- *
- * =========================================================
- *
- * Params:
- * - ordenId: required
- * - mode: "webhook" | "scheduler" (default "webhook")
- * - runId: string estable para idempotencia global por orden
- *          Ej: eventId (webhook) o "hold_7d" (scheduler)
- * - reason: texto libre
- */
+function buildOrderLedgerKey({ mode, runId }) {
+  return `payouts_${mode}_${safeStr(runId || "default").slice(0, 80)}`.slice(0, 120);
+}
+
+function buildTransferGroup({ ordenId }) {
+  return `order_${safeStr(ordenId)}`.slice(0, 120);
+}
+
 exports.pagarVendedoresDeOrden = async ({
   ordenId,
   eventId = "",
@@ -78,20 +52,19 @@ exports.pagarVendedoresDeOrden = async ({
 
   if (!ordenId) return;
 
-  // Para compatibilidad: si viene eventId y no runId, úsalo como runId
-  const finalRunId = safeStr(runId || eventId || "").trim() || (mode === "scheduler" ? "hold_7d" : "event");
+  const finalRunId =
+    safeStr(runId || eventId || "").trim() ||
+    (mode === "scheduler" ? "payout_release" : "event");
+
   const finalMode = mode === "scheduler" ? "scheduler" : "webhook";
+  const orderLedgerKey = buildOrderLedgerKey({
+    mode: finalMode,
+    runId: finalRunId,
+  });
 
-  // 1) Validar orden
-  const ordenLean = await Orden.findById(ordenId).lean();
-  if (!ordenLean) return;
-
-  // Solo si pagada
-  if (ordenLean.estadoPago !== "pagado") return;
-
-  // 2) Ledger global de orden (atómico) para NO repetir
-  const orderLedgerKey = buildOrderLedgerKey({ mode: finalMode, runId: finalRunId });
-
+  // ======================================================
+  // 1) Reservar ledger global por orden + run
+  // ======================================================
   const reserve = await Orden.updateOne(
     { _id: ordenId, "historial.estado": { $ne: orderLedgerKey } },
     {
@@ -100,164 +73,159 @@ exports.pagarVendedoresDeOrden = async ({
           estado: orderLedgerKey,
           fecha: new Date(),
           source: "system",
-          meta: { eventId: safeStr(eventId), reason: safeStr(reason), mode: finalMode, runId: finalRunId },
+          meta: {
+            eventId: safeStr(eventId),
+            reason: safeStr(reason),
+            mode: finalMode,
+            runId: finalRunId,
+          },
         },
       },
     }
   );
 
   if (!reserve?.modifiedCount) {
-    // ya se ejecutó este payout para esa orden+runId
     return;
   }
 
-  // 3) Releer orden (con items)
-  const ordenFull = await Orden.findById(ordenId).lean();
-  if (!ordenFull) return;
+  // ======================================================
+  // 2) Cargar orden completa
+  // ======================================================
+  const orden = await Orden.findById(ordenId);
+  if (!orden) return;
 
-  const moneda = normalizeCurrency(ordenFull.moneda || "usd");
-  const items = Array.isArray(ordenFull.items) ? ordenFull.items : [];
+  if (orden.estadoPago !== "pagado") return;
+  if (orden.payoutBlocked === true) return;
 
-  // 4) Iterar items (SIN populate Producto)
-  for (let idx = 0; idx < items.length; idx++) {
-    const item = items[idx];
-    if (!item) continue;
+  const moneda = normalizeCurrency(orden.moneda || "usd");
+  const transferGroup = buildTransferGroup({ ordenId });
 
-    // SOLO productos de vendedores externos
-    // (en tu Orden.js: item.sellerType existe)
-    if (safeStr(item.sellerType, "platform") !== "seller") continue;
+  const payouts = Array.isArray(orden.vendedorPayouts) ? orden.vendedorPayouts : [];
+  if (!payouts.length) return;
 
-    const vendedorId = item.vendedor ? safeStr(item.vendedor) : "";
-    if (!vendedorId) continue;
+  for (const payout of payouts) {
+    if (!payout?.vendedor) continue;
 
-    // Validar vendedor en DB
-    const vendedor = await Vendedor.findOne({ usuario: vendedorId }).lean();
-    if (!vendedor?.stripeAccountId) continue;
+    const vendedorId = String(payout.vendedor);
+    const payoutStatus = safeStr(payout.status, "pendiente");
 
-    // ✅ Blindaje extra (seguridad máxima)
-    // - Debe estar activo
-    // - Debe permitir retirar
-    // - Stripe payouts enabled
-    if (safeStr(vendedor.estado, "pendiente") !== "activo") continue;
-    if (vendedor.puedeRetirar === false) continue;
-    if (vendedor.payoutsEnabled === false) continue;
+    if (!["pendiente", "fallido"].includes(payoutStatus)) {
+      continue;
+    }
 
-    const ingreso = round2(item.ingresoVendedor || 0);
-    const amount = toCents(ingreso);
+    const monto = round2(payout.monto || 0);
+    const amount = toCents(monto);
     if (amount <= 0) continue;
 
-    // ItemKey determinista (NO depende de item._id)
-    // Usa: index + productoId + cantidad + subtotal (muy estable)
-    const productoId = item.producto ? safeStr(item.producto) : "no_producto";
-    const itemKey = `${idx}_${productoId}_${safeStr(item.cantidad)}_${safeStr(item.subtotal)}`;
+    const vendedor = await Vendedor.findOne({ usuario: vendedorId }).lean();
+    if (!vendedor?.stripeAccountId) {
+      orden.setVendedorPayoutStatus(vendedorId, "fallido", {
+        source: "system",
+        reason: "missing_stripe_account",
+        mode: finalMode,
+        runId: finalRunId,
+      });
+      await orden.save().catch(() => {});
+      continue;
+    }
 
-    // 5) Ledger por item (atómico) para evitar duplicado por item
-    const itemLedgerKey = buildItemLedgerKey({
-      vendedorId,
-      ordenId,
-      itemKey,
-    });
+    if (safeStr(vendedor.estado, "pendiente") !== "activo") {
+      orden.setVendedorPayoutStatus(vendedorId, "bloqueado", {
+        source: "system",
+        reason: "vendor_not_active",
+        mode: finalMode,
+        runId: finalRunId,
+      });
+      await orden.save().catch(() => {});
+      continue;
+    }
 
-    const reserveItem = await Orden.updateOne(
-      { _id: ordenId, "historial.estado": { $ne: itemLedgerKey } },
-      {
-        $push: {
-          historial: {
-            estado: itemLedgerKey,
-            fecha: new Date(),
-            source: "system",
-            meta: {
-              vendedor: vendedorId,
-              producto: productoId,
-              amount,
-              currency: moneda,
-              eventId: safeStr(eventId),
-              reason: safeStr(reason),
-              mode: finalMode,
-              runId: finalRunId,
-              idx,
-            },
-          },
-        },
-      }
-    );
-
-    if (!reserveItem?.modifiedCount) {
-      // ya se pagó ese item
+    if (vendedor.puedeRetirar === false || vendedor.payoutsEnabled === false) {
+      orden.setVendedorPayoutStatus(vendedorId, "bloqueado", {
+        source: "system",
+        reason: "vendor_payouts_disabled",
+        mode: finalMode,
+        runId: finalRunId,
+      });
+      await orden.save().catch(() => {});
       continue;
     }
 
     try {
-      // 6) Stripe Transfer (Connect)
-      // IdempotencyKey estable por orden + vendedor + itemKey
-      const idemKey = `transfer_${ordenId}_${vendedorId}_${itemKey}`.slice(0, 255);
+      orden.setVendedorPayoutStatus(vendedorId, "procesando", {
+        source: "system",
+        mode: finalMode,
+        runId: finalRunId,
+      });
+      await orden.save();
+
+      const idemKey = `transfer_${ordenId}_${vendedorId}_${finalRunId}`.slice(0, 255);
 
       const transfer = await stripe.transfers.create(
         {
           amount,
           currency: moneda,
           destination: vendedor.stripeAccountId,
+          transfer_group: transferGroup,
           metadata: {
             ordenId: safeStr(ordenId),
             vendedor: vendedorId,
-            productoId: productoId,
-            itemNombre: safeStr(item.nombre || ""),
-            itemIndex: String(idx),
             mode: finalMode,
             runId: finalRunId,
+            reason: safeStr(reason),
           },
         },
         { idempotencyKey: idemKey }
       );
 
-      // Historial OK
-      await Orden.updateOne(
-        { _id: ordenId },
-        {
-          $push: {
-            historial: {
-              estado: "payout_transfer_ok",
-              fecha: new Date(),
-              source: "system",
-              meta: {
-                vendedor: vendedorId,
-                stripeAccountId: safeStr(vendedor.stripeAccountId),
-                transferId: transfer?.id || "",
-                amount,
-                currency: moneda,
-                idx,
-                itemKey,
-                mode: finalMode,
-                runId: finalRunId,
-              },
-            },
-          },
-        }
-      );
+      orden.setVendedorPayoutStatus(vendedorId, "pagado", {
+        source: "system",
+        stripeTransferId: transfer?.id || "",
+        stripeTransferGroup: transferGroup,
+        mode: finalMode,
+        runId: finalRunId,
+      });
+
+      orden.pushHistorial("payout_transfer_ok", {
+        vendedor: vendedorId,
+        stripeAccountId: safeStr(vendedor.stripeAccountId),
+        transferId: transfer?.id || "",
+        transferGroup,
+        amount,
+        currency: moneda,
+        mode: finalMode,
+        runId: finalRunId,
+      });
+
+      await orden.save();
     } catch (err) {
-      // Fail-safe: no rompe el loop
-      await Orden.updateOne(
-        { _id: ordenId },
-        {
-          $push: {
-            historial: {
-              estado: "payout_transfer_error",
-              fecha: new Date(),
-              source: "system",
-              meta: {
-                vendedor: vendedorId,
-                amount,
-                currency: moneda,
-                idx,
-                itemKey,
-                mode: finalMode,
-                runId: finalRunId,
-                error: safeStr(err?.message || err).slice(0, 800),
-              },
-            },
-          },
-        }
-      );
+      orden.setVendedorPayoutStatus(vendedorId, "fallido", {
+        source: "system",
+        mode: finalMode,
+        runId: finalRunId,
+        error: safeStr(err?.message || err).slice(0, 800),
+      });
+
+      orden.pushHistorial("payout_transfer_error", {
+        vendedor: vendedorId,
+        amount,
+        currency: moneda,
+        mode: finalMode,
+        runId: finalRunId,
+        error: safeStr(err?.message || err).slice(0, 800),
+      });
+
+      await orden.save().catch(() => {});
     }
+  }
+
+  // Si todos los payouts quedaron pagados, marcar releasedAt
+  if (
+    Array.isArray(orden.vendedorPayouts) &&
+    orden.vendedorPayouts.length > 0 &&
+    orden.vendedorPayouts.every((p) => p.status === "pagado")
+  ) {
+    orden.payoutReleasedAt = orden.payoutReleasedAt || new Date();
+    await orden.save().catch(() => {});
   }
 };

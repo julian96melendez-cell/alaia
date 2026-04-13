@@ -2,8 +2,48 @@
 // Usuario.js — Modelo Usuario Enterprise ULTRA (Marketplace Ready)
 // ==========================================================
 
+"use strict";
+
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
+
+// ==========================================================
+// Constantes
+// ==========================================================
+const ROLES = ["usuario", "admin", "vendedor"];
+const PUSH_PLATFORMS = ["ios", "android", "web"];
+
+function safeStr(v, fallback = "") {
+  if (v === null || v === undefined) return fallback;
+  return String(v).trim();
+}
+
+function normalizeEmail(email) {
+  return safeStr(email).toLowerCase();
+}
+
+function uniqPushTokens(tokens = []) {
+  const seen = new Set();
+  const out = [];
+
+  for (const item of tokens) {
+    const token = safeStr(item?.token);
+    const platform = safeStr(item?.platform);
+
+    if (!token) continue;
+    if (!PUSH_PLATFORMS.includes(platform)) continue;
+    if (seen.has(token)) continue;
+
+    seen.add(token);
+    out.push({
+      token,
+      platform,
+      createdAt: item?.createdAt || new Date(),
+    });
+  }
+
+  return out;
+}
 
 // ==========================================================
 // Subschema Push Tokens
@@ -17,7 +57,7 @@ const PushTokenSchema = new mongoose.Schema(
     },
     platform: {
       type: String,
-      enum: ["ios", "android", "web"],
+      enum: PUSH_PLATFORMS,
       required: true,
     },
     createdAt: {
@@ -44,7 +84,6 @@ const UsuarioSchema = new mongoose.Schema(
     email: {
       type: String,
       required: true,
-      unique: true,
       lowercase: true,
       trim: true,
       index: true,
@@ -59,11 +98,11 @@ const UsuarioSchema = new mongoose.Schema(
     },
 
     // ======================================================
-    // 🔥 ROLES (Marketplace preparado)
+    // ROLES
     // ======================================================
     rol: {
       type: String,
-      enum: ["usuario", "admin", "vendedor"],
+      enum: ROLES,
       default: "usuario",
       index: true,
     },
@@ -92,13 +131,47 @@ const UsuarioSchema = new mongoose.Schema(
     },
 
     // ======================================================
-    // 🔥 STRIPE CONNECT (Marketplace)
+    // SEGURIDAD / AUDITORÍA
+    // ======================================================
+    ultimoLoginAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    ultimoLoginIp: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    failedLoginCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    lockedUntil: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    passwordChangedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    // ======================================================
+    // STRIPE CONNECT (Marketplace)
     // ======================================================
     stripeAccountId: {
       type: String,
       trim: true,
       default: null,
       index: true,
+      sparse: true,
     },
 
     stripeOnboardingComplete: {
@@ -116,9 +189,12 @@ const UsuarioSchema = new mongoose.Schema(
     stripePayoutsEnabled: {
       type: Boolean,
       default: false,
+      index: true,
     },
 
-    // 🔔 PUSH NOTIFICATIONS
+    // ======================================================
+    // PUSH NOTIFICATIONS
+    // ======================================================
     pushTokens: {
       type: [PushTokenSchema],
       default: [],
@@ -126,26 +202,39 @@ const UsuarioSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    versionKey: false,
+    versionKey: "__v",
+    optimisticConcurrency: true,
   }
 );
 
 // ==========================================================
-// 🔐 Pre-save: normalización + hash
+// Pre-validate: normalización
 // ==========================================================
-UsuarioSchema.pre("save", async function () {
-  if (this.email) {
-    this.email = this.email.toLowerCase().trim();
+UsuarioSchema.pre("validate", function () {
+  this.nombre = safeStr(this.nombre);
+  this.email = normalizeEmail(this.email);
+
+  if (!ROLES.includes(this.rol)) {
+    this.rol = "usuario";
   }
 
+  this.ultimoLoginIp = safeStr(this.ultimoLoginIp);
+  this.pushTokens = uniqPushTokens(this.pushTokens);
+});
+
+// ==========================================================
+// Pre-save: hash password
+// ==========================================================
+UsuarioSchema.pre("save", async function () {
   if (!this.isModified("password")) return;
 
   const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
+  this.passwordChangedAt = new Date();
 });
 
 // ==========================================================
-// 🔐 Comparar password
+// Comparar password
 // ==========================================================
 UsuarioSchema.methods.compararPassword = async function (passwordPlano) {
   if (!this.password) return false;
@@ -153,17 +242,55 @@ UsuarioSchema.methods.compararPassword = async function (passwordPlano) {
 };
 
 // ==========================================================
-// 🔐 Ocultar campos sensibles
+// Estado de bloqueo
+// ==========================================================
+UsuarioSchema.methods.estaBloqueadoTemporalmente = function () {
+  if (!this.lockedUntil) return false;
+  return new Date(this.lockedUntil).getTime() > Date.now();
+};
+
+// ==========================================================
+// Registrar login exitoso
+// ==========================================================
+UsuarioSchema.methods.registrarLoginExitoso = function (ip = "") {
+  this.ultimoLoginAt = new Date();
+  this.ultimoLoginIp = safeStr(ip);
+  this.failedLoginCount = 0;
+  this.lockedUntil = null;
+};
+
+// ==========================================================
+// Registrar login fallido
+// ==========================================================
+UsuarioSchema.methods.registrarLoginFallido = function ({
+  maxIntentos = 5,
+  bloqueoMinutos = 15,
+} = {}) {
+  this.failedLoginCount = Number(this.failedLoginCount || 0) + 1;
+
+  if (this.failedLoginCount >= maxIntentos) {
+    const lockedUntil = new Date();
+    lockedUntil.setMinutes(lockedUntil.getMinutes() + bloqueoMinutos);
+    this.lockedUntil = lockedUntil;
+  }
+};
+
+// ==========================================================
+// Ocultar campos sensibles
 // ==========================================================
 UsuarioSchema.methods.toJSON = function () {
   const obj = this.toObject();
+
   delete obj.password;
   delete obj.tokenVersion;
+  delete obj.failedLoginCount;
+  delete obj.lockedUntil;
+
   return obj;
 };
 
 // ==========================================================
-// 👑 Helpers de roles
+// Helpers de roles
 // ==========================================================
 UsuarioSchema.methods.esAdmin = function () {
   return this.rol === "admin";
@@ -173,30 +300,46 @@ UsuarioSchema.methods.esVendedor = function () {
   return this.rol === "vendedor";
 };
 
+UsuarioSchema.methods.esUsuario = function () {
+  return this.rol === "usuario";
+};
+
 // ==========================================================
-// 🔔 Añadir push token (evita duplicados)
+// Push tokens
 // ==========================================================
 UsuarioSchema.methods.addPushToken = function ({ token, platform }) {
-  if (!token) return;
+  const cleanToken = safeStr(token);
+  const cleanPlatform = safeStr(platform);
 
-  const exists = this.pushTokens.some((t) => t.token === token);
-  if (!exists) {
-    this.pushTokens.push({ token, platform });
-  }
+  if (!cleanToken) return false;
+  if (!PUSH_PLATFORMS.includes(cleanPlatform)) return false;
+
+  const exists = this.pushTokens.some((t) => t.token === cleanToken);
+  if (exists) return false;
+
+  this.pushTokens.push({
+    token: cleanToken,
+    platform: cleanPlatform,
+    createdAt: new Date(),
+  });
+
+  return true;
 };
 
-// ==========================================================
-// 🔔 Eliminar push token
-// ==========================================================
 UsuarioSchema.methods.removePushToken = function (token) {
-  this.pushTokens = this.pushTokens.filter((t) => t.token !== token);
+  const cleanToken = safeStr(token);
+  const before = this.pushTokens.length;
+  this.pushTokens = this.pushTokens.filter((t) => t.token !== cleanToken);
+  return this.pushTokens.length !== before;
 };
 
 // ==========================================================
-// Índices compuestos importantes
+// Índices
 // ==========================================================
 UsuarioSchema.index({ email: 1 }, { unique: true });
 UsuarioSchema.index({ rol: 1, activo: 1 });
-UsuarioSchema.index({ stripeAccountId: 1 });
+UsuarioSchema.index({ stripeAccountId: 1 }, { sparse: true });
+UsuarioSchema.index({ createdAt: -1 });
+UsuarioSchema.index({ ultimoLoginAt: -1 });
 
 module.exports = mongoose.model("Usuario", UsuarioSchema);

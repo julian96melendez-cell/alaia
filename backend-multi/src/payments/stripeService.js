@@ -2,32 +2,38 @@
 // stripeService.js — Servicio Stripe ENTERPRISE (PRO)
 // ======================================================
 
-const Stripe = require('stripe');
+const Stripe = require("stripe");
 
 // ==============================
 // Validación ENV
 // ==============================
 if (!process.env.STRIPE_SECRET_KEY) {
-  throw new Error('❌ FALTA STRIPE_SECRET_KEY en el archivo .env');
+  throw new Error("❌ FALTA STRIPE_SECRET_KEY en el archivo .env");
 }
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2023-10-16',
-  timeout: 20000, // 20s (producción segura)
+  apiVersion: "2023-10-16",
+  timeout: 20000,
 });
 
 // ==============================
 // Helpers
 // ==============================
-const normalizeCurrency = (c) =>
-  String(c || 'usd').toLowerCase();
+const normalizeCurrency = (c) => String(c || "usd").toLowerCase();
 
 const safeInt = (n) => {
   const v = Number(n);
+
   if (!Number.isFinite(v) || v <= 0) {
-    throw new Error('Stripe: unit_amount inválido');
+    throw new Error("Stripe: unit_amount inválido");
   }
+
   return Math.round(v);
+};
+
+const normalizeEmail = (email) => {
+  const value = String(email || "").trim().toLowerCase();
+  return value || null;
 };
 
 // ==============================
@@ -35,31 +41,28 @@ const safeInt = (n) => {
 // ==============================
 const getBaseUrl = () => {
   if (process.env.FRONTEND_URL) return process.env.FRONTEND_URL;
-  return 'https://example.com';
+
+  throw new Error("❌ Falta FRONTEND_URL en el archivo .env");
 };
 
 const withQuery = (url, query) => {
-  const sep = url.includes('?') ? '&' : '?';
+  const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}${query}`;
 };
 
 const getSuccessUrl = (ordenId) => {
-  const base =
-    process.env.STRIPE_SUCCESS_URL ||
-    `${getBaseUrl()}/pago-exitoso`;
+  const base = process.env.STRIPE_SUCCESS_URL || `${getBaseUrl()}/pago-exitoso`;
 
   return withQuery(
     base,
-    `ordenId=${ordenId}&session_id={CHECKOUT_SESSION_ID}`
+    `ordenId=${encodeURIComponent(ordenId)}&session_id={CHECKOUT_SESSION_ID}`
   );
 };
 
 const getCancelUrl = (ordenId) => {
-  const base =
-    process.env.STRIPE_CANCEL_URL ||
-    `${getBaseUrl()}/pago-cancelado`;
+  const base = process.env.STRIPE_CANCEL_URL || `${getBaseUrl()}/pago-cancelado`;
 
-  return withQuery(base, `ordenId=${ordenId}`);
+  return withQuery(base, `ordenId=${encodeURIComponent(ordenId)}`);
 };
 
 // ==============================
@@ -67,15 +70,11 @@ const getCancelUrl = (ordenId) => {
 // ==============================
 const normalizarLineItems = (items = []) => {
   if (!Array.isArray(items) || items.length === 0) {
-    throw new Error('Stripe: lineItems inválidos o vacíos.');
+    throw new Error("Stripe: lineItems inválidos o vacíos.");
   }
 
   return items.map((it, i) => {
-    if (
-      !it.price_data ||
-      !it.price_data.unit_amount ||
-      !it.quantity
-    ) {
+    if (!it?.price_data || !it?.price_data?.unit_amount || !it?.quantity) {
       throw new Error(`Stripe: lineItem inválido en índice ${i}`);
     }
 
@@ -83,9 +82,7 @@ const normalizarLineItems = (items = []) => {
       price_data: {
         currency: normalizeCurrency(it.price_data.currency),
         product_data: {
-          name:
-            it.price_data.product_data?.name ||
-            'Producto',
+          name: it.price_data.product_data?.name || "Producto",
         },
         unit_amount: safeInt(it.price_data.unit_amount),
       },
@@ -104,17 +101,19 @@ const crearSesionPago = async ({
   idempotencyKey = null,
 }) => {
   const ordenId = metadata?.ordenId;
+
   if (!ordenId) {
-    throw new Error('Stripe: Falta ordenId en metadata.');
+    throw new Error("Stripe: Falta ordenId en metadata.");
   }
 
   const normalizedItems = normalizarLineItems(lineItems);
+  const email = normalizeEmail(clienteEmail);
 
   try {
     const session = await stripe.checkout.sessions.create(
       {
-        mode: 'payment',
-        payment_method_types: ['card'],
+        mode: "payment",
+        payment_method_types: ["card"],
         line_items: normalizedItems,
 
         success_url: getSuccessUrl(ordenId),
@@ -122,21 +121,18 @@ const crearSesionPago = async ({
 
         metadata,
 
-        // MUY IMPORTANTE PARA WEBHOOKS ENTERPRISE
         payment_intent_data: {
           metadata,
         },
 
-        customer_email: clienteEmail || undefined,
+        customer_email: email || undefined,
       },
-      idempotencyKey
-        ? { idempotencyKey }
-        : undefined
+      idempotencyKey ? { idempotencyKey } : undefined
     );
 
     return session;
   } catch (err) {
-    console.error('❌ Stripe Checkout Error:', err.message);
+    console.error("❌ Stripe Checkout Error:", err.message);
     throw err;
   }
 };
@@ -146,37 +142,31 @@ const crearSesionPago = async ({
 // ==============================
 const construirEventoDesdeWebhook = (signature, rawBody) => {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
+
   if (!secret) {
-    throw new Error('❌ Falta STRIPE_WEBHOOK_SECRET en el archivo .env');
+    throw new Error("❌ Falta STRIPE_WEBHOOK_SECRET en el archivo .env");
   }
 
-  return stripe.webhooks.constructEvent(
-    rawBody,
-    signature,
-    secret
-  );
+  return stripe.webhooks.constructEvent(rawBody, signature, secret);
 };
 
 // ==============================
 // Utilidades Stripe
 // ==============================
-const extraerOrdenId = (obj) =>
-  obj?.metadata?.ordenId || null;
+const extraerOrdenId = (obj) => obj?.metadata?.ordenId || null;
 
 const resumirEventoStripe = (event) => {
   const obj = event?.data?.object || {};
 
   return {
-    eventId: event?.id || '',
-    eventType: event?.type || '',
-    objectType: obj?.object || '',
-    sessionId: obj?.id || '',
-    paymentIntent: obj?.payment_intent || '',
-    amountTotal:
-      typeof obj?.amount_total === 'number'
-        ? obj.amount_total
-        : 0,
-    currency: obj?.currency || '',
+    eventId: event?.id || "",
+    eventType: event?.type || "",
+    objectType: obj?.object || "",
+    objectId: obj?.id || "",
+    sessionId: obj?.object === "checkout.session" ? obj?.id || "" : "",
+    paymentIntent: obj?.payment_intent || "",
+    amountTotal: typeof obj?.amount_total === "number" ? obj.amount_total : 0,
+    currency: obj?.currency || "",
     ordenId: extraerOrdenId(obj),
     livemode: !!event?.livemode,
   };
@@ -187,12 +177,10 @@ const resumirEventoStripe = (event) => {
 // ==============================
 const crearReembolso = async ({
   paymentIntentId,
-  motivo = 'requested_by_customer',
+  motivo = "requested_by_customer",
 }) => {
   if (!paymentIntentId) {
-    throw new Error(
-      'Stripe: paymentIntentId requerido para reembolso.'
-    );
+    throw new Error("Stripe: paymentIntentId requerido para reembolso.");
   }
 
   return stripe.refunds.create({

@@ -94,6 +94,16 @@ const DEFAULT_COMMISSION_PCT = clamp(
   100
 );
 
+// ============================================================
+// ✅ Payment providers
+// ============================================================
+const PAYMENT_PROVIDERS = Object.freeze([
+  "stripe",
+  "paypal",
+  "manual",
+  "contraentrega",
+]);
+
 function normalizePct(v, fallbackPct = DEFAULT_COMMISSION_PCT) {
   const n = toNumber(v, fallbackPct);
   return clamp(n, 0, 100);
@@ -103,7 +113,7 @@ function normalizePct(v, fallbackPct = DEFAULT_COMMISSION_PCT) {
 // ✅ MODO A (ESCROW) — Config de hold (seguridad)
 // ============================================================
 const DEFAULT_PAYOUT_HOLD_DAYS = clamp(
-  toNumber(process.env.PAYOUT_HOLD_DAYS, 7), // recomendado 7–14
+  toNumber(process.env.PAYOUT_HOLD_DAYS, 7),
   0,
   60
 );
@@ -116,7 +126,9 @@ const ESTADOS_PAGO = Object.freeze([
   "pagado",
   "fallido",
   "reembolsado",
+  "reembolsado_parcial",
 ]);
+
 const ESTADOS_FUL = Object.freeze([
   "pendiente",
   "procesando",
@@ -124,11 +136,13 @@ const ESTADOS_FUL = Object.freeze([
   "entregado",
   "cancelado",
 ]);
+
 const TIPOS_PRODUCTO = Object.freeze([
   "marketplace",
   "dropshipping",
   "afiliado",
 ]);
+
 const METODOS_PAGO = Object.freeze([
   "stripe",
   "paypal",
@@ -136,7 +150,7 @@ const METODOS_PAGO = Object.freeze([
   "contraentrega",
 ]);
 
-const PROVEEDOR_PAGO = Object.freeze(["pendiente", "pagado"]);
+const ESTADOS_PAGO_PROVEEDOR = Object.freeze(["pendiente", "pagado"]);
 
 // ✅ NUEVO: payouts por vendedor (snapshot)
 const VENDEDOR_PAYOUT_STATUS = Object.freeze([
@@ -149,7 +163,7 @@ const VENDEDOR_PAYOUT_STATUS = Object.freeze([
 
 // ✅ NUEVO: payout policy (modo A)
 const PAYOUT_POLICY = Object.freeze([
-  "escrow_delivered_hold", // ✅ MODO A
+  "escrow_delivered_hold",
 ]);
 
 // ============================================================
@@ -157,9 +171,10 @@ const PAYOUT_POLICY = Object.freeze([
 // ============================================================
 const PAGO_TRANSITIONS = {
   pendiente: new Set(["pendiente", "pagado", "fallido"]),
-  pagado: new Set(["pagado", "reembolsado"]),
+  pagado: new Set(["pagado", "reembolsado", "reembolsado_parcial"]),
   fallido: new Set(["fallido", "pendiente"]),
   reembolsado: new Set(["reembolsado"]),
+  reembolsado_parcial: new Set(["reembolsado_parcial", "reembolsado"]),
 };
 
 const FUL_TRANSITIONS = {
@@ -196,7 +211,6 @@ const ItemSchema = new mongoose.Schema(
       index: true,
     },
 
-    // snapshot
     nombre: { type: String, required: true, trim: true },
 
     cantidad: { type: Number, required: true, min: 1 },
@@ -213,12 +227,12 @@ const ItemSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ✅ para diferenciar producto de plataforma vs vendedor
     sellerType: {
       type: String,
       enum: ["platform", "seller"],
       default: "platform",
     },
+
     vendedor: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Usuario",
@@ -229,15 +243,13 @@ const ItemSchema = new mongoose.Schema(
     subtotal: { type: Number, required: true, min: 0 },
     ganancia: { type: Number, required: true },
 
-    // ======================================================
-    // ✅ COMISIONES
-    // ======================================================
     comisionPorcentaje: {
       type: Number,
       default: DEFAULT_COMMISSION_PCT,
       min: 0,
       max: 100,
     },
+
     comisionMonto: { type: Number, default: 0, min: 0 },
     ingresoVendedor: { type: Number, default: 0 },
   },
@@ -259,9 +271,9 @@ ItemSchema.pre("validate", function () {
   this.nombre = toStringSafe(this.nombre).trim();
   this.proveedor = toStringSafe(this.proveedor, "local").trim() || "local";
 
-  // sellerType/vendedor normalización segura (NO rompe):
   const st = toStringSafe(this.sellerType, "platform").trim().toLowerCase();
   this.sellerType = st === "seller" ? "seller" : "platform";
+
   if (this.sellerType === "seller") {
     if (!this.vendedor || !isObjectId(this.vendedor)) {
       this.vendedor = null;
@@ -271,10 +283,6 @@ ItemSchema.pre("validate", function () {
     this.vendedor = null;
   }
 
-  // ======================================================
-  // ✅ COMISIONES (CÁLCULO CONSISTENTE)
-  // - afiliado => comisión 0
-  // ======================================================
   const tipo = toStringSafe(this.tipoProducto).trim().toLowerCase();
   const pct =
     tipo === "afiliado" ? 0 : normalizePct(this.comisionPorcentaje, DEFAULT_COMMISSION_PCT);
@@ -283,8 +291,6 @@ ItemSchema.pre("validate", function () {
 
   const comision = round2(Math.max(0, (this.subtotal * pct) / 100));
   this.comisionMonto = comision;
-
-  // ingreso “del vendedor”
   this.ingresoVendedor = round2(this.subtotal - this.comisionMonto);
 });
 
@@ -297,7 +303,7 @@ const ProveedorSchema = new mongoose.Schema(
 
     estadoPagoProveedor: {
       type: String,
-      enum: PROVEEDOR_PAGO,
+      enum: ESTADOS_PAGO_PROVEEDOR,
       default: "pendiente",
       index: true,
     },
@@ -319,7 +325,8 @@ const VendedorPayoutSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
-    stripeAccountId: { type: String, default: "", trim: true, index: true }, // snapshot
+
+    stripeAccountId: { type: String, default: "", trim: true, index: true },
 
     monto: { type: Number, default: 0, min: 0 },
 
@@ -365,7 +372,6 @@ const HistorialSchema = new mongoose.Schema(
 // ============================================================
 const OrdenSchema = new mongoose.Schema(
   {
-    // Human order number
     orderNumber: { type: Number, index: true },
 
     usuario: {
@@ -396,11 +402,9 @@ const OrdenSchema = new mongoose.Schema(
     totalCostoProveedor: { type: Number, required: true, min: 0 },
     gananciaTotal: { type: Number, required: true },
 
-    // ✅ Comisiones
     comisionTotal: { type: Number, default: 0, min: 0 },
     ingresoVendedorTotal: { type: Number, default: 0 },
 
-    // ✅ payouts por vendedor (multi-vendor)
     vendedorPayouts: { type: [VendedorPayoutSchema], default: [] },
 
     // ==============================
@@ -412,9 +416,10 @@ const OrdenSchema = new mongoose.Schema(
       default: "stripe",
       index: true,
     },
+
     paymentProvider: {
       type: String,
-      enum: METODOS_PAGO,
+      enum: PAYMENT_PROVIDERS,
       default: "stripe",
       index: true,
     },
@@ -427,6 +432,7 @@ const OrdenSchema = new mongoose.Schema(
       default: "pendiente",
       index: true,
     },
+
     estadoFulfillment: {
       type: String,
       enum: ESTADOS_FUL,
@@ -447,12 +453,11 @@ const OrdenSchema = new mongoose.Schema(
     stripePaymentIntentId: { type: String, trim: true, default: "" },
     stripeLatestEventId: { type: String, trim: true, default: "" },
 
-    // auditoría monetaria
     stripeAmountTotal: { type: Number, default: 0 },
     stripeAmountReceived: { type: Number, default: 0 },
+    stripeRefundAmount: { type: Number, default: 0 },
     stripeCustomerId: { type: String, trim: true, default: "" },
 
-    // Ledger: últimos N event ids (idempotencia)
     stripeEventIds: { type: [String], default: [] },
 
     // ==============================
@@ -465,16 +470,10 @@ const OrdenSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Hold configurado en el momento de la orden (snapshot)
     payoutHoldDays: { type: Number, default: DEFAULT_PAYOUT_HOLD_DAYS, min: 0, max: 60 },
-
-    // Cuándo la orden se vuelve elegible para payout (solo si pagada+entregada)
     payoutEligibleAt: { type: Date, default: null, index: true },
-
-    // Marcadores operativos
     payoutReleasedAt: { type: Date, default: null, index: true },
 
-    // Bloqueo de payouts por riesgo/reembolso/disputa
     payoutBlocked: { type: Boolean, default: false, index: true },
     payoutBlockedReason: { type: String, trim: true, default: "" },
 
@@ -550,13 +549,16 @@ function normalizeStripeId(v) {
 // Agrupar payouts por vendedor desde items
 // ============================================================
 function buildVendedorPayoutsFromItems(items = [], prevPayouts = []) {
-  const map = new Map(); // vendedorId -> monto
+  const map = new Map();
+
   for (const it of items || []) {
     if (toStringSafe(it.sellerType, "platform") !== "seller") continue;
     if (!it.vendedor) continue;
+
     const vid = String(it.vendedor);
     const monto = round2(toNumber(it.ingresoVendedor, 0));
     if (monto <= 0) continue;
+
     map.set(vid, round2((map.get(vid) || 0) + monto));
   }
 
@@ -586,18 +588,19 @@ function buildVendedorPayoutsFromItems(items = [], prevPayouts = []) {
 }
 
 function hasSellerItems(items = []) {
-  return (items || []).some((it) => toStringSafe(it?.sellerType, "platform") === "seller" && it?.vendedor);
+  return (items || []).some(
+    (it) => toStringSafe(it?.sellerType, "platform") === "seller" && it?.vendedor
+  );
 }
 
 function shouldBlockPayoutByPaymentStatus(estadoPago) {
-  return estadoPago === "reembolsado" || estadoPago === "fallido";
+  return ["reembolsado", "reembolsado_parcial", "fallido"].includes(estadoPago);
 }
 
 // ============================================================
 // Validaciones y normalizaciones pre-validate (core consistency)
 // ============================================================
 OrdenSchema.pre("validate", async function () {
-  // orderNumber solo al crear
   if (this.isNew && !this.orderNumber) {
     try {
       this.orderNumber = await nextOrderNumber();
@@ -606,23 +609,18 @@ OrdenSchema.pre("validate", async function () {
     }
   }
 
-  // Asegurar items array
   const items = Array.isArray(this.items) ? this.items : [];
 
-  // subtotal desde items
   const subtotalItems = round2(items.reduce((acc, it) => acc + toNumber(it.subtotal, 0), 0));
   this.subtotal = Math.max(0, subtotalItems);
 
-  // breakdown
   this.shipping = round2(Math.max(0, toNumber(this.shipping, 0)));
   this.tax = round2(Math.max(0, toNumber(this.tax, 0)));
   this.discount = round2(Math.max(0, toNumber(this.discount, 0)));
 
-  // total final
   const computedTotal = round2(this.subtotal + this.shipping + this.tax - this.discount);
   this.total = Math.max(0, computedTotal);
 
-  // costo proveedor
   this.totalCostoProveedor = round2(
     items.reduce((acc, it) => {
       const costoU = Math.max(0, toNumber(it.costoProveedorUnitario, 0));
@@ -631,46 +629,43 @@ OrdenSchema.pre("validate", async function () {
     }, 0)
   );
 
-  // ganancia total
   this.gananciaTotal = round2(this.total - this.totalCostoProveedor);
 
-  // totales comisiones
   const comisionTotal = round2(items.reduce((acc, it) => acc + toNumber(it.comisionMonto, 0), 0));
-  const ingresoVendedorTotal = round2(items.reduce((acc, it) => acc + toNumber(it.ingresoVendedor, 0), 0));
+  const ingresoVendedorTotal = round2(
+    items.reduce((acc, it) => acc + toNumber(it.ingresoVendedor, 0), 0)
+  );
 
   this.comisionTotal = Math.max(0, comisionTotal);
   this.ingresoVendedorTotal = ingresoVendedorTotal;
 
-  // payouts por vendedor (multi-vendor)
   this.vendedorPayouts = buildVendedorPayoutsFromItems(items, this.vendedorPayouts);
 
-  // Stripe strings
   this.stripeSessionId = normalizeStripeId(this.stripeSessionId);
   this.stripePaymentIntentId = normalizeStripeId(this.stripePaymentIntentId);
   this.stripeLatestEventId = normalizeStripeId(this.stripeLatestEventId);
   this.stripeCustomerId = normalizeStripeId(this.stripeCustomerId);
 
-  // Auditoría monetaria safe
   this.stripeAmountTotal = Math.max(0, toNumber(this.stripeAmountTotal, 0));
   this.stripeAmountReceived = Math.max(0, toNumber(this.stripeAmountReceived, 0));
+  this.stripeRefundAmount = Math.max(0, toNumber(this.stripeRefundAmount, 0));
 
-  // ledger stripeEventIds limitado + normalizado + único
   this.stripeEventIds = uniqStrings(this.stripeEventIds).slice(-50);
 
-  // currency/provider consistency
   this.moneda = normalizeCurrency(this.moneda);
 
-  if (!this.paymentProvider) this.paymentProvider = this.metodoPago || "stripe";
-  if (!this.metodoPago) this.metodoPago = this.paymentProvider || "stripe";
+  if (!this.paymentProvider) this.paymentProvider = "stripe";
+  if (!PAYMENT_PROVIDERS.includes(this.paymentProvider)) this.paymentProvider = "stripe";
+
+  if (!this.metodoPago) this.metodoPago = "stripe";
+  if (!METODOS_PAGO.includes(this.metodoPago)) this.metodoPago = "stripe";
 
   this.paymentStatusDetail = toStringSafe(this.paymentStatusDetail).trim();
 
-  // payout config snapshot
   this.payoutHoldDays = clamp(toNumber(this.payoutHoldDays, DEFAULT_PAYOUT_HOLD_DAYS), 0, 60);
   if (!this.payoutPolicy) this.payoutPolicy = "escrow_delivered_hold";
   if (!PAYOUT_POLICY.includes(this.payoutPolicy)) this.payoutPolicy = "escrow_delivered_hold";
 
-  // Sync proveedores[] desde items (un proveedor por nombre)
   const proveedoresSet = new Set(
     items.map((it) => toStringSafe(it.proveedor, "").trim()).filter(Boolean)
   );
@@ -680,21 +675,37 @@ OrdenSchema.pre("validate", async function () {
 
   for (const p of proveedoresSet) {
     const found = existing.find((x) => toStringSafe(x.proveedor).trim() === p);
-    out.push(found || { proveedor: p, estadoPagoProveedor: "pendiente", referenciaProveedor: "", tracking: "" });
+    out.push(
+      found || {
+        proveedor: p,
+        estadoPagoProveedor: "pendiente",
+        referenciaProveedor: "",
+        tracking: "",
+      }
+    );
   }
 
   for (const pr of out) {
     pr.proveedor = toStringSafe(pr.proveedor).trim();
     pr.referenciaProveedor = toStringSafe(pr.referenciaProveedor).trim();
     pr.tracking = toStringSafe(pr.tracking).trim();
-    if (!PROVEEDOR_PAGO.includes(pr.estadoPagoProveedor)) pr.estadoPagoProveedor = "pendiente";
+    if (!ESTADOS_PAGO_PROVEEDOR.includes(pr.estadoPagoProveedor)) {
+      pr.estadoPagoProveedor = "pendiente";
+    }
   }
 
   this.proveedores = out;
 
-  // Sanitiza dirección
   if (this.direccionEntrega) {
-    for (const k of ["nombre", "direccion", "ciudad", "provincia", "pais", "codigoPostal", "telefono"]) {
+    for (const k of [
+      "nombre",
+      "direccion",
+      "ciudad",
+      "provincia",
+      "pais",
+      "codigoPostal",
+      "telefono",
+    ]) {
       this.direccionEntrega[k] = toStringSafe(this.direccionEntrega[k]).trim();
     }
   }
@@ -703,11 +714,6 @@ OrdenSchema.pre("validate", async function () {
 // ============================================================
 // Métodos de instancia (Historial / Stripe ledger / helpers)
 // ============================================================
-
-/**
- * pushHistorial
- * - Inserta un evento de historial con idempotencia por fingerprint
- */
 OrdenSchema.methods.pushHistorial = function (estado, meta = null, opts = {}) {
   ensureHistorialArray(this);
 
@@ -722,10 +728,6 @@ OrdenSchema.methods.pushHistorial = function (estado, meta = null, opts = {}) {
   return true;
 };
 
-/**
- * addStripeEventId
- * - Agrega eventId si no existe (idempotencia)
- */
 OrdenSchema.methods.addStripeEventId = function (eventId) {
   const id = normalizeStripeId(eventId);
   if (!id) return false;
@@ -751,31 +753,25 @@ OrdenSchema.methods.setPaymentDetail = function (detail, meta = null, source = "
   this.pushHistorial("payment_detail", meta || { detail: this.paymentStatusDetail }, { source });
 };
 
-/**
- * breakdown por vendedor (solo sellerType==='seller')
- */
 OrdenSchema.methods.getBreakdownPorVendedor = function () {
   const out = {};
   const items = Array.isArray(this.items) ? this.items : [];
+
   for (const it of items) {
     if (toStringSafe(it.sellerType, "platform") !== "seller") continue;
     const vid = it.vendedor ? String(it.vendedor) : "";
     if (!vid) continue;
+
     if (!out[vid]) out[vid] = { monto: 0, itemsCount: 0 };
     out[vid].monto = round2(out[vid].monto + toNumber(it.ingresoVendedor, 0));
     out[vid].itemsCount += 1;
   }
+
   return out;
 };
 
 /**
  * ✅ MODO A: ¿La orden es elegible para payout?
- * Requisitos:
- * - pagada
- * - entregada
- * - NO bloqueada
- * - payoutEligibleAt <= now
- * - debe tener items de seller
  */
 OrdenSchema.methods.isPayoutEligible = function () {
   if (this.payoutPolicy !== "escrow_delivered_hold") return false;
@@ -790,9 +786,6 @@ OrdenSchema.methods.isPayoutEligible = function () {
   return new Date(this.payoutEligibleAt).getTime() <= Date.now();
 };
 
-/**
- * Cambiar status de payout por vendedor (safe)
- */
 OrdenSchema.methods.setVendedorPayoutStatus = function (vendedorId, status, opts = {}) {
   const vid = toStringSafe(vendedorId, "").trim();
   if (!vid) throw new Error("vendedorId requerido");
@@ -813,8 +806,13 @@ OrdenSchema.methods.setVendedorPayoutStatus = function (vendedorId, status, opts
   if (st === "pagado") row.paidAt = row.paidAt || nowDate();
   if (st === "fallido") row.failedAt = row.failedAt || nowDate();
 
-  if (isNonEmptyString(opts.stripeTransferId)) row.stripeTransferId = String(opts.stripeTransferId).trim();
-  if (isNonEmptyString(opts.stripeTransferGroup)) row.stripeTransferGroup = String(opts.stripeTransferGroup).trim();
+  if (isNonEmptyString(opts.stripeTransferId)) {
+    row.stripeTransferId = String(opts.stripeTransferId).trim();
+  }
+
+  if (isNonEmptyString(opts.stripeTransferGroup)) {
+    row.stripeTransferGroup = String(opts.stripeTransferGroup).trim();
+  }
 
   this.pushHistorial(
     "vendedor_payout_update",
@@ -825,9 +823,6 @@ OrdenSchema.methods.setVendedorPayoutStatus = function (vendedorId, status, opts
   return true;
 };
 
-/**
- * Reservar ledger en historial (idempotencia simple)
- */
 OrdenSchema.methods.reserveLedger = function (ledgerKey, meta = null, source = "system") {
   const key = toStringSafe(ledgerKey, "").trim();
   if (!key) return false;
@@ -848,9 +843,6 @@ OrdenSchema.methods.reserveLedger = function (ledgerKey, meta = null, source = "
   return true;
 };
 
-/**
- * Actualiza estadoPago de forma segura (state machine + auditoría)
- */
 OrdenSchema.methods.setEstadoPago = function (nuevoEstado, meta = null, source = "system") {
   const to = toStringSafe(nuevoEstado).trim();
   if (!ESTADOS_PAGO.includes(to)) throw new Error(`estadoPago inválido: ${to}`);
@@ -865,9 +857,6 @@ OrdenSchema.methods.setEstadoPago = function (nuevoEstado, meta = null, source =
   return true;
 };
 
-/**
- * Actualiza estadoFulfillment de forma segura
- */
 OrdenSchema.methods.setEstadoFulfillment = function (nuevoEstado, meta = null, source = "system") {
   const to = toStringSafe(nuevoEstado).trim();
   if (!ESTADOS_FUL.includes(to)) throw new Error(`estadoFulfillment inválido: ${to}`);
@@ -882,10 +871,12 @@ OrdenSchema.methods.setEstadoFulfillment = function (nuevoEstado, meta = null, s
   return true;
 };
 
-/**
- * Marca proveedor como pagado
- */
-OrdenSchema.methods.marcarProveedorPagado = function (proveedorNombre, referencia = "", meta = null, source = "system") {
+OrdenSchema.methods.marcarProveedorPagado = function (
+  proveedorNombre,
+  referencia = "",
+  meta = null,
+  source = "system"
+) {
   const p = toStringSafe(proveedorNombre).trim();
   if (!p) return false;
 
@@ -900,31 +891,28 @@ OrdenSchema.methods.marcarProveedorPagado = function (proveedorNombre, referenci
   return true;
 };
 
-/**
- * ✅ MODO A: bloquear payouts (por disputa / reembolso / riesgo)
- */
 OrdenSchema.methods.blockPayouts = function (reason, meta = null, source = "system") {
   this.payoutBlocked = true;
   this.payoutBlockedReason = toStringSafe(reason).trim().slice(0, 300);
 
-  // bloquea vendedores que no estén pagados
   if (Array.isArray(this.vendedorPayouts)) {
     for (const vp of this.vendedorPayouts) {
       if (vp && vp.status !== "pagado") vp.status = "bloqueado";
     }
   }
 
-  this.pushHistorial("payouts_blocked", { reason: this.payoutBlockedReason, ...(meta || {}) }, { source });
+  this.pushHistorial(
+    "payouts_blocked",
+    { reason: this.payoutBlockedReason, ...(meta || {}) },
+    { source }
+  );
+
   return true;
 };
 
 // ============================================================
 // Hooks de estado (auditoría + timestamps + state machine)
 // ============================================================
-
-/**
- * Guardar prev states para state machine
- */
 OrdenSchema.pre("init", function (doc) {
   this.$locals = this.$locals || {};
   this.$locals.prevEstadoPago = doc.estadoPago;
@@ -956,11 +944,10 @@ OrdenSchema.pre("save", function () {
       this.refundedAt = null;
     } else if (to === "fallido") {
       if (!this.failedAt) this.failedAt = nowDate();
-    } else if (to === "reembolsado") {
+    } else if (to === "reembolsado" || to === "reembolsado_parcial") {
       if (!this.refundedAt) this.refundedAt = nowDate();
     }
 
-    // ✅ MODO A: si se vuelve fallido/reembolsado => bloquear payouts
     if (shouldBlockPayoutByPaymentStatus(to) && hasSellers) {
       this.payoutBlocked = true;
       this.payoutBlockedReason = `payment_${to}`;
@@ -984,7 +971,6 @@ OrdenSchema.pre("save", function () {
 
     this.pushHistorial(`fulfillment_${to}`, { from, to }, { source: "system" });
 
-    // ✅ MODO A: si se entrega y está pagada -> programar elegibilidad (hold)
     if (
       this.payoutPolicy === "escrow_delivered_hold" &&
       hasSellers &&
@@ -994,7 +980,6 @@ OrdenSchema.pre("save", function () {
     ) {
       const holdDays = clamp(toNumber(this.payoutHoldDays, DEFAULT_PAYOUT_HOLD_DAYS), 0, 60);
 
-      // Si no existía, lo fijamos. Si ya existe, no lo movemos (evita manipulación).
       if (!this.payoutEligibleAt) {
         this.payoutEligibleAt = addDays(nowDate(), holdDays);
         this.pushHistorial(
@@ -1005,7 +990,6 @@ OrdenSchema.pre("save", function () {
       }
     }
 
-    // ✅ Si cancelado: bloquear payouts (por seguridad)
     if (to === "cancelado" && hasSellers) {
       this.payoutBlocked = true;
       this.payoutBlockedReason = "fulfillment_cancelado";
@@ -1020,7 +1004,6 @@ OrdenSchema.pre("save", function () {
 // ============================================================
 // Statics (consultas comunes / helpers)
 // ============================================================
-
 OrdenSchema.statics.findByOrderNumber = function (orderNumber) {
   const n = Number(orderNumber);
   if (!Number.isFinite(n)) return Promise.resolve(null);
@@ -1039,12 +1022,10 @@ OrdenSchema.statics.findByStripePaymentIntentId = function (pi) {
   return this.findOne({ stripePaymentIntentId: id });
 };
 
-/**
- * buscar órdenes por vendedor (multi-vendor)
- */
 OrdenSchema.statics.findByVendedor = function (vendedorId, { limit = 50, skip = 0 } = {}) {
   const id = toStringSafe(vendedorId, "").trim();
   if (!id || !isObjectId(id)) return Promise.resolve([]);
+
   const lim = clamp(parseInt(limit, 10) || 50, 1, 200);
   const sk = Math.max(0, parseInt(skip, 10) || 0);
 
@@ -1054,9 +1035,6 @@ OrdenSchema.statics.findByVendedor = function (vendedorId, { limit = 50, skip = 
     .limit(lim);
 };
 
-/**
- * Búsqueda simple admin
- */
 OrdenSchema.statics.searchAdmin = function (q, limit = 50) {
   const query = toStringSafe(q).trim();
   const lim = clamp(parseInt(limit, 10) || 50, 1, 200);
@@ -1082,10 +1060,6 @@ OrdenSchema.statics.searchAdmin = function (q, limit = 50) {
   return this.find({ $or: or }).sort({ createdAt: -1 }).limit(lim);
 };
 
-/**
- * ✅ MODO A: encontrar órdenes elegibles para payout (para CRON/worker)
- * - pagadas + entregadas + payoutEligibleAt <= now + no bloqueadas
- */
 OrdenSchema.statics.findPayoutEligible = function ({ limit = 50, skip = 0 } = {}) {
   const lim = clamp(parseInt(limit, 10) || 50, 1, 200);
   const sk = Math.max(0, parseInt(skip, 10) || 0);
@@ -1096,7 +1070,7 @@ OrdenSchema.statics.findPayoutEligible = function ({ limit = 50, skip = 0 } = {}
     estadoPago: "pagado",
     estadoFulfillment: "entregado",
     payoutEligibleAt: { $ne: null, $lte: new Date() },
-    "vendedorPayouts.status": { $in: ["pendiente", "fallido"] }, // lo que falta por pagar
+    "vendedorPayouts.status": { $in: ["pendiente", "fallido"] },
   })
     .sort({ payoutEligibleAt: 1, createdAt: 1 })
     .skip(sk)
@@ -1106,37 +1080,27 @@ OrdenSchema.statics.findPayoutEligible = function ({ limit = 50, skip = 0 } = {}
 // ============================================================
 // Índices (PRO / escalabilidad)
 // ============================================================
-
-// Core timelines
 OrdenSchema.index({ createdAt: -1 });
 OrdenSchema.index({ usuario: 1, createdAt: -1 });
 OrdenSchema.index({ estadoPago: 1, estadoFulfillment: 1, createdAt: -1 });
 
-// Stripe lookups
 OrdenSchema.index({ stripeSessionId: 1, createdAt: -1 });
 OrdenSchema.index({ stripePaymentIntentId: 1 });
 OrdenSchema.index({ stripeLatestEventId: 1 });
 
-// Queries por pagos/moneda
 OrdenSchema.index({ paidAt: -1 });
 OrdenSchema.index({ moneda: 1, estadoPago: 1 });
 
-// Soporte
 OrdenSchema.index({ orderNumber: -1 });
 
-// Analítica / proveedor
 OrdenSchema.index({ "items.proveedor": 1, createdAt: -1 });
 
-// Analítica vendedor / payouts
 OrdenSchema.index({ "items.vendedor": 1, createdAt: -1 });
 OrdenSchema.index({ "vendedorPayouts.vendedor": 1, "vendedorPayouts.status": 1, createdAt: -1 });
 OrdenSchema.index({ "vendedorPayouts.stripeTransferId": 1 });
 
-// ✅ MODO A: payout scheduling queries
 OrdenSchema.index({ payoutPolicy: 1, payoutBlocked: 1, payoutEligibleAt: 1 });
 OrdenSchema.index({ payoutEligibleAt: 1, payoutReleasedAt: 1 });
-
-// Nota: no indexamos stripeEventIds como multikey por defecto.
 
 // ============================================================
 // Export

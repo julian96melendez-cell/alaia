@@ -1,18 +1,23 @@
 "use strict";
 
 /**
- * payoutHold7dWorker.js
- * ---------------------
- * Ejecuta payouts a vendedores SOLO si:
- * - orden.estadoPago === "pagado"
- * - orden.paidAt <= ahora - HOLD_DAYS
- * - no existe ledger "payouts_scheduler_hold_7d"
+ * payoutHoldWorker.js
+ * -------------------
+ * Ejecuta payouts a vendedores SOLO si la orden ya es elegible
+ * según la lógica oficial del modelo Orden:
+ *
+ * - payoutPolicy === "escrow_delivered_hold"
+ * - estadoPago === "pagado"
+ * - estadoFulfillment === "entregado"
+ * - payoutEligibleAt <= ahora
+ * - payoutBlocked === false
+ * - vendedorPayouts.status en ["pendiente", "fallido"]
  *
  * ✅ Idempotente
  * ✅ Multi-instancia safe
+ * ✅ Alineado con Orden.findPayoutEligible()
  * ✅ Fail-safe
  * ✅ No bloquea el proceso
- * ✅ No ejecuta si Stripe está en modo test y livemode enforced
  */
 
 const Orden = require("../models/Orden");
@@ -35,55 +40,48 @@ function log(level, msg, ctx = {}) {
 
 const FLAGS = {
   ENABLED: envBool("PAYOUT_SCHEDULER_ENABLED", true),
-  STRIPE_LIVEMODE: envBool("STRIPE_LIVEMODE", false),
 };
 
-const DAYS_HOLD = envInt("PAYOUT_HOLD_DAYS", 7);
 const INTERVAL_MS = envInt("PAYOUT_SCHEDULER_INTERVAL_MS", 60 * 60 * 1000);
 const BATCH_SIZE = envInt("PAYOUT_SCHEDULER_BATCH_SIZE", 50);
 
 function buildLedgerKey() {
-  return `payouts_scheduler_hold_7d`.slice(0, 120);
+  return "payout_scheduler_claim".slice(0, 120);
 }
 
 async function tick() {
   if (!FLAGS.ENABLED) return;
 
-  const cutoff = new Date(Date.now() - DAYS_HOLD * 24 * 60 * 60 * 1000);
+  const nowIso = new Date().toISOString();
   const ledgerKey = buildLedgerKey();
 
   try {
-    const candidates = await Orden.find({
-      estadoPago: "pagado",
-      paidAt: { $lte: cutoff },
-      "historial.estado": { $ne: ledgerKey },
-    })
-      .select("_id paidAt estadoPago moneda stripeLatestEventId")
-      .sort({ paidAt: 1 })
-      .limit(BATCH_SIZE)
+    const candidates = await Orden.findPayoutEligible({ limit: BATCH_SIZE, skip: 0 })
+      .select("_id payoutEligibleAt estadoPago estadoFulfillment payoutBlocked vendedorPayouts")
       .lean();
 
     if (!candidates.length) {
-      log("info", "payoutHold7d: no candidates", {
-        cutoff: cutoff.toISOString(),
-      });
+      log("info", "payoutWorker: no candidates", { at: nowIso });
       return;
     }
 
-    log("info", "payoutHold7d: candidates found", {
+    log("info", "payoutWorker: candidates found", {
       count: candidates.length,
-      cutoff: cutoff.toISOString(),
+      at: nowIso,
     });
 
     for (const o of candidates) {
       const ordenId = String(o._id);
 
-      // 🔒 Reserva atómica (multi-instancia safe)
       const reserved = await Orden.updateOne(
         {
           _id: ordenId,
-          estadoPago: "pagado", // doble validación
-          paidAt: { $lte: cutoff },
+          payoutPolicy: "escrow_delivered_hold",
+          payoutBlocked: false,
+          estadoPago: "pagado",
+          estadoFulfillment: "entregado",
+          payoutEligibleAt: { $ne: null, $lte: new Date() },
+          "vendedorPayouts.status": { $in: ["pendiente", "fallido"] },
           "historial.estado": { $ne: ledgerKey },
         },
         {
@@ -94,8 +92,8 @@ async function tick() {
               source: "system",
               meta: {
                 mode: "scheduler",
-                runId: "hold_7d",
-                cutoff: cutoff.toISOString(),
+                runId: "payout_release",
+                at: nowIso,
               },
             },
           },
@@ -103,20 +101,22 @@ async function tick() {
       );
 
       if (!reserved?.modifiedCount) {
-        continue; // otro proceso lo tomó
+        continue;
       }
 
       try {
         await pagarVendedoresDeOrden({
           ordenId,
           mode: "scheduler",
-          runId: "hold_7d",
-          reason: `hold_${DAYS_HOLD}d_after_paidAt`,
+          runId: "payout_release",
+          reason: "payoutEligibleAt_reached",
         });
 
-        log("info", "payoutHold7d: payout executed", { ordenId });
+        log("info", "payoutWorker: payout executed", {
+          ordenId,
+        });
       } catch (err) {
-        log("warn", "payoutHold7d: payout failed", {
+        log("warn", "payoutWorker: payout failed", {
           ordenId,
           err: err?.message || String(err),
         });
@@ -140,7 +140,7 @@ async function tick() {
       }
     }
   } catch (err) {
-    log("error", "payoutHold7d: fatal tick error", {
+    log("error", "payoutWorker: fatal tick error", {
       err: err?.message || String(err),
     });
   }
@@ -153,7 +153,6 @@ function start() {
   if (started) return;
   started = true;
 
-  // primera corrida inmediata
   tick().catch(() => {});
 
   timer = setInterval(() => {
@@ -162,9 +161,8 @@ function start() {
 
   if (typeof timer.unref === "function") timer.unref();
 
-  log("info", "payoutHold7dWorker started", {
+  log("info", "payoutWorker started", {
     enabled: FLAGS.ENABLED,
-    holdDays: DAYS_HOLD,
     intervalMs: INTERVAL_MS,
     batchSize: BATCH_SIZE,
   });

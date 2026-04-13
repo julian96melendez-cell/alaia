@@ -2,88 +2,83 @@
 // WebhookEvent.js — Idempotencia y auditoría de webhooks
 // ENTERPRISE FINAL (PRODUCCIÓN REAL)
 // ======================================================
-//
-// ✔ Idempotencia por eventId (unique)
-// ✔ Auditoría segura (sin datos sensibles)
-// ✔ Compatible con Stripe Webhook Controller ENTERPRISE
-// ✔ Preparado para debugging, métricas y soporte
-//
-// ======================================================
 
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const WebhookEventSchema = new mongoose.Schema(
   {
-    // Proveedor del webhook (futuro: paypal, mercadopago, etc.)
     provider: {
       type: String,
-      enum: ['stripe'],
-      default: 'stripe',
+      enum: ["stripe"],
+      default: "stripe",
+      required: true,
       index: true,
     },
 
-    // ID único del evento (Stripe event.id)
     eventId: {
       type: String,
       required: true,
-      unique: true,
-      index: true,
+      trim: true,
     },
 
-    // Tipo de evento Stripe (checkout.session.completed, etc.)
     eventType: {
       type: String,
       required: true,
+      trim: true,
       index: true,
     },
 
-    // Orden relacionada (si existe)
     ordenId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Orden',
+      ref: "Orden",
       default: null,
       index: true,
     },
 
-    // Estado del procesamiento del webhook
     status: {
       type: String,
-      enum: ['received', 'processed', 'skipped', 'failed'],
-      default: 'received',
+      enum: ["received", "processed", "skipped", "failed"],
+      default: "received",
+      required: true,
       index: true,
     },
 
-    // Mensaje de error si falló
     errorMessage: {
       type: String,
-      default: '',
+      default: "",
+      maxlength: 2000,
     },
 
-    // ==================================================
-    // Resumen seguro del evento (NO datos sensibles)
-    // Compatible con resumirEventoStripe()
-    // ==================================================
+    reqId: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
+    processedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
     summary: {
-      eventId: { type: String, default: '' },
-      eventType: { type: String, default: '' },
+      eventId: { type: String, default: "" },
+      eventType: { type: String, default: "" },
 
-      objectType: { type: String, default: '' },
+      objectType: { type: String, default: "" },
 
-      sessionId: { type: String, default: '' },
-      paymentIntent: { type: String, default: '' },
+      sessionId: { type: String, default: "" },
+      paymentIntent: { type: String, default: "" },
 
       amountTotal: { type: Number, default: 0 },
-      currency: { type: String, default: '' },
+      currency: { type: String, default: "" },
 
-      ordenId: { type: String, default: '' },
+      ordenId: { type: String, default: "" },
 
       livemode: { type: Boolean, default: false },
     },
 
-    // ==================================================
-    // Datos adicionales no sensibles (opcional)
-    // Útil para debugging sin guardar el body completo
-    // ==================================================
     raw: {
       type: mongoose.Schema.Types.Mixed,
       default: {},
@@ -95,12 +90,15 @@ const WebhookEventSchema = new mongoose.Schema(
   }
 );
 
-// ======================================================
-// Indexes PRO (consultas rápidas)
-// ======================================================
+// Unicidad real por proveedor + eventId
+WebhookEventSchema.index({ provider: 1, eventId: 1 }, { unique: true });
+
+// Consultas rápidas
 WebhookEventSchema.index({ createdAt: -1 });
 WebhookEventSchema.index({ provider: 1, eventType: 1 });
 WebhookEventSchema.index({ ordenId: 1, createdAt: -1 });
+WebhookEventSchema.index({ status: 1, createdAt: -1 });
+WebhookEventSchema.index({ reqId: 1, createdAt: -1 });
+WebhookEventSchema.index({ processedAt: -1 });
 
-// ======================================================
-module.exports = mongoose.model('WebhookEvent', WebhookEventSchema);
+module.exports = mongoose.model("WebhookEvent", WebhookEventSchema);

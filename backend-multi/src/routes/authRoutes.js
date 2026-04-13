@@ -1,9 +1,11 @@
 // ===========================================================
-// authRoutes.js — Rutas de Autenticación
+// authRoutes.js — Rutas de Autenticación (Enterprise Hardened)
 // ===========================================================
 
-const express = require('express');
-const { body } = require('express-validator');
+"use strict";
+
+const express = require("express");
+const { body, validationResult } = require("express-validator");
 const router = express.Router();
 
 // Controllers
@@ -12,46 +14,81 @@ const {
   login,
   refreshToken,
   logout,
-} = require('../controllers/authController');
+} = require("../controllers/authController");
 
 // Middleware de protección con JWT
-const { proteger } = require('../middleware/auth');
+const { proteger } = require("../middleware/auth");
+
+// ===========================================================
+// Helpers
+// ===========================================================
+function safeString(v) {
+  if (v === null || v === undefined) return "";
+  return String(v).trim();
+}
+
+function validateRequest(req, res, next) {
+  const errors = validationResult(req);
+
+  if (errors.isEmpty()) {
+    return next();
+  }
+
+  return res.status(400).json({
+    ok: false,
+    message: "Error de validación",
+    errors: errors.array().map((err) => ({
+      field: err.path,
+      message: err.msg,
+    })),
+    reqId: req.reqId || null,
+  });
+}
 
 // ===========================================================
 // VALIDACIONES
 // ===========================================================
 
-// Validar registro
+// Registro
 const validarRegistro = [
-  body('nombre')
-    .notEmpty()
-    .withMessage('El nombre es obligatorio'),
+  body("nombre")
+    .customSanitizer((v) => safeString(v))
+    .isLength({ min: 2, max: 100 })
+    .withMessage("El nombre debe tener entre 2 y 100 caracteres"),
 
-  body('email')
+  body("email")
+    .customSanitizer((v) => safeString(v).toLowerCase())
     .isEmail()
-    .withMessage('Email inválido'),
+    .withMessage("Email inválido")
+    .isLength({ max: 200 })
+    .withMessage("El email es demasiado largo"),
 
-  body('password')
-    .isLength({ min: 6 })
-    .withMessage('La contraseña debe tener al menos 6 caracteres'),
+  body("password")
+    .isString()
+    .withMessage("La contraseña es obligatoria")
+    .isLength({ min: 8, max: 200 })
+    .withMessage("La contraseña debe tener al menos 8 caracteres"),
 ];
 
-// Validar login
+// Login
 const validarLogin = [
-  body('email')
+  body("email")
+    .customSanitizer((v) => safeString(v).toLowerCase())
     .isEmail()
-    .withMessage('Email inválido'),
+    .withMessage("Email inválido"),
 
-  body('password')
+  body("password")
+    .isString()
+    .withMessage("La contraseña es obligatoria")
     .notEmpty()
-    .withMessage('La contraseña es obligatoria'),
+    .withMessage("La contraseña es obligatoria"),
 ];
 
-// Validar refresh token
+// Refresh
 const validarRefresh = [
-  body('refreshToken')
-    .notEmpty()
-    .withMessage('El refresh token es obligatorio'),
+  body("refreshToken")
+    .optional()
+    .customSanitizer((v) => safeString(v)),
 ];
 
 // ===========================================================
@@ -60,15 +97,16 @@ const validarRefresh = [
 
 // Registrar usuario
 // POST /api/auth/registrar
-router.post('/registrar', validarRegistro, registrar);
+router.post("/registrar", validarRegistro, validateRequest, registrar);
 
 // Iniciar sesión
 // POST /api/auth/login
-router.post('/login', validarLogin, login);
+router.post("/login", validarLogin, validateRequest, login);
 
 // Obtener nuevo access token usando refresh token
 // POST /api/auth/refresh
-router.post('/refresh', validarRefresh, refreshToken);
+// El controller puede leer refreshToken desde body o cookie
+router.post("/refresh", validarRefresh, validateRequest, refreshToken);
 
 // ===========================================================
 // RUTAS PROTEGIDAS
@@ -76,24 +114,33 @@ router.post('/refresh', validarRefresh, refreshToken);
 
 // Obtener datos del usuario autenticado
 // GET /api/auth/me
-router.get('/me', proteger, (req, res) => {
+router.get("/me", proteger, (req, res) => {
   const usuario = req.usuario;
 
-  return res.json({
+  return res.status(200).json({
     ok: true,
     data: {
       id: usuario._id,
       nombre: usuario.nombre,
       email: usuario.email,
       rol: usuario.rol,
+      activo: usuario.activo,
+      bloqueado: usuario.bloqueado,
+      emailVerificado: usuario.emailVerificado,
+      stripeAccountId: usuario.stripeAccountId || null,
+      stripeOnboardingComplete: !!usuario.stripeOnboardingComplete,
+      stripeChargesEnabled: !!usuario.stripeChargesEnabled,
+      stripePayoutsEnabled: !!usuario.stripePayoutsEnabled,
       createdAt: usuario.createdAt,
+      updatedAt: usuario.updatedAt,
     },
+    reqId: req.reqId || null,
   });
 });
 
 // Cerrar sesión
 // POST /api/auth/logout
-router.post('/logout', proteger, logout);
+router.post("/logout", proteger, logout);
 
 // ===========================================================
 module.exports = router;
