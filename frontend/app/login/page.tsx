@@ -13,7 +13,7 @@ type LoginResponse = {
       email: string;
       rol: string;
     };
-      tokens?: {
+    tokens?: {
       accessToken: string;
       refreshToken: string;
     };
@@ -48,7 +48,6 @@ export default function LoginPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        credentials: "include",
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
           password,
@@ -74,22 +73,23 @@ export default function LoginPage() {
 
       localStorage.setItem("accessToken", accessToken);
       localStorage.setItem("refreshToken", refreshToken);
-      localStorage.setItem("adminUser", JSON.stringify(data?.data?.usuario || null));
+      localStorage.setItem(
+        "adminUser",
+        JSON.stringify(data?.data?.usuario || null)
+      );
 
       if (rol !== "admin") {
-        setError("Tu cuenta no tiene permisos de administrador.");
         localStorage.removeItem("accessToken");
         localStorage.removeItem("refreshToken");
         localStorage.removeItem("adminUser");
-        setLoading(false);
-        return;
+        throw new Error("Tu cuenta no tiene permisos de administrador.");
       }
 
       router.push("/admin");
-      router.refresh();
     } catch (err: any) {
       console.error("LOGIN ERROR:", err);
       setError(err?.message || "No se pudo iniciar sesión.");
+    } finally {
       setLoading(false);
     }
   }
@@ -104,6 +104,8 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} style={styles.form}>
           <input
             type="email"
+            name="email"
+            id="email"
             placeholder="Correo electrónico"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -114,6 +116,8 @@ export default function LoginPage() {
 
           <input
             type="password"
+            name="password"
+            id="password"
             placeholder="Contraseña"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -128,6 +132,7 @@ export default function LoginPage() {
             style={{
               ...styles.button,
               opacity: loading ? 0.7 : 1,
+              cursor: loading ? "not-allowed" : "pointer",
             }}
           >
             {loading ? "Entrando..." : "Entrar"}
@@ -185,7 +190,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#ffffff",
     fontSize: 15,
     fontWeight: 700,
-    cursor: "pointer",
   },
   errorBox: {
     backgroundColor: "#fef2f2",
