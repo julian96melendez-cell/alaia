@@ -4,6 +4,7 @@
 
 "use strict";
 
+const jwt = require("jsonwebtoken");
 const Usuario = require("../models/Usuario");
 const catchAsync = require("../utils/catchAsync");
 const { success, error } = require("../utils/apiResponse");
@@ -98,9 +99,70 @@ function cuentaNoDisponible(res) {
 function getRefreshTokenFromRequest(req) {
   return (
     safeString(req.body?.refreshToken) ||
-    safeString(req.cookies?.refreshToken) ||
+    safeString(req.cookies?.alaia_refresh_token) ||
     ""
   );
+}
+
+function getAccessTokenFromRequest(req) {
+  const authHeader = safeString(req.headers?.authorization);
+
+  if (authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+
+  return safeString(req.cookies?.alaia_access_token);
+}
+
+function verificarAccessToken(token) {
+  return jwt.verify(token, process.env.JWT_SECRET);
+}
+
+function getCookieOptions(maxAgeMs) {
+  const isProd = process.env.NODE_ENV === "production";
+
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "lax",
+    path: "/",
+    maxAge: Math.floor(maxAgeMs / 1000),
+  };
+}
+
+function setAuthCookies(res, tokens) {
+  const accessMaxAgeMs = 15 * 60 * 1000; // 15 min
+  const refreshMaxAgeMs = 7 * 24 * 60 * 60 * 1000; // 7 días
+
+  res.cookie(
+    "alaia_access_token",
+    tokens.accessToken,
+    getCookieOptions(accessMaxAgeMs)
+  );
+
+  res.cookie(
+    "alaia_refresh_token",
+    tokens.refreshToken,
+    getCookieOptions(refreshMaxAgeMs)
+  );
+}
+
+function clearAuthCookies(res) {
+  const isProd = process.env.NODE_ENV === "production";
+
+  res.clearCookie("alaia_access_token", {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "lax",
+    path: "/",
+  });
+
+  res.clearCookie("alaia_refresh_token", {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "lax",
+    path: "/",
+  });
 }
 
 // =============================================
@@ -153,6 +215,7 @@ exports.registrar = catchAsync(async (req, res) => {
   });
 
   const tokens = generarTokens(usuario);
+  setAuthCookies(res, tokens);
 
   return success(res, {
     statusCode: 201,
@@ -178,7 +241,7 @@ exports.login = catchAsync(async (req, res) => {
     return credencialesInvalidas(res);
   }
 
-  const usuario = await buscarUsuarioPorEmail(email);
+  const usuario = await buscarUsuarioPorEmail(email).select("+password");
 
   if (!usuario) {
     return credencialesInvalidas(res);
@@ -217,12 +280,77 @@ exports.login = catchAsync(async (req, res) => {
   }
 
   const tokens = generarTokens(usuario);
+  setAuthCookies(res, tokens);
 
   return success(res, {
     message: "Inicio de sesión exitoso",
     data: {
       usuario: pickUsuarioPublico(usuario),
       tokens,
+    },
+  });
+});
+
+// =============================================
+// GET /api/auth/me
+// =============================================
+exports.me = catchAsync(async (req, res) => {
+  const accessToken = getAccessTokenFromRequest(req);
+
+  if (!accessToken) {
+    return error(res, {
+      statusCode: 401,
+      message: "No autenticado",
+    });
+  }
+
+  let payload;
+  try {
+    payload = verificarAccessToken(accessToken);
+  } catch (_) {
+    return error(res, {
+      statusCode: 401,
+      message: "Token inválido o expirado",
+    });
+  }
+
+  const userId = safeString(payload?.id || payload?._id || payload?.userId);
+
+  if (!userId) {
+    return error(res, {
+      statusCode: 401,
+      message: "Token inválido",
+    });
+  }
+
+  const usuario = await buscarUsuarioPorId(userId);
+
+  if (!usuario) {
+    return error(res, {
+      statusCode: 401,
+      message: "No autenticado",
+    });
+  }
+
+  if (usuario.activo === false || usuario.bloqueado === true) {
+    return cuentaNoDisponible(res);
+  }
+
+  if (
+    typeof payload.tokenVersion === "number" &&
+    typeof usuario.tokenVersion === "number" &&
+    usuario.tokenVersion !== payload.tokenVersion
+  ) {
+    return error(res, {
+      statusCode: 401,
+      message: "Token revocado",
+    });
+  }
+
+  return success(res, {
+    message: "Sesión válida",
+    data: {
+      usuario: pickUsuarioPublico(usuario),
     },
   });
 });
@@ -246,6 +374,7 @@ exports.refreshToken = catchAsync(async (req, res) => {
   try {
     payload = verificarRefreshToken(refreshToken);
   } catch (_) {
+    clearAuthCookies(res);
     return error(res, {
       statusCode: 401,
       message: "Refresh token inválido o expirado",
@@ -255,6 +384,7 @@ exports.refreshToken = catchAsync(async (req, res) => {
   const userId = safeString(payload?.id || payload?._id || payload?.userId);
 
   if (!userId) {
+    clearAuthCookies(res);
     return error(res, {
       statusCode: 401,
       message: "Refresh token inválido",
@@ -264,6 +394,7 @@ exports.refreshToken = catchAsync(async (req, res) => {
   const usuario = await buscarUsuarioPorId(userId);
 
   if (!usuario) {
+    clearAuthCookies(res);
     return error(res, {
       statusCode: 401,
       message: "Refresh token inválido o expirado",
@@ -271,11 +402,13 @@ exports.refreshToken = catchAsync(async (req, res) => {
   }
 
   if (usuario.activo === false || usuario.bloqueado === true) {
+    clearAuthCookies(res);
     return cuentaNoDisponible(res);
   }
 
   if (typeof usuario.estaBloqueadoTemporalmente === "function") {
     if (usuario.estaBloqueadoTemporalmente()) {
+      clearAuthCookies(res);
       return error(res, {
         statusCode: 403,
         message: "Cuenta bloqueada temporalmente",
@@ -288,6 +421,7 @@ exports.refreshToken = catchAsync(async (req, res) => {
     typeof usuario.tokenVersion === "number" &&
     usuario.tokenVersion !== payload.tokenVersion
   ) {
+    clearAuthCookies(res);
     return error(res, {
       statusCode: 401,
       message: "Refresh token revocado",
@@ -295,6 +429,7 @@ exports.refreshToken = catchAsync(async (req, res) => {
   }
 
   const tokens = generarTokens(usuario);
+  setAuthCookies(res, tokens);
 
   return success(res, {
     message: "Tokens renovados correctamente",
@@ -308,16 +443,26 @@ exports.refreshToken = catchAsync(async (req, res) => {
 // POST /api/auth/logout
 // =============================================
 exports.logout = catchAsync(async (req, res) => {
-  const usuarioId = req.usuario?._id?.toString?.() || req.usuario?.id;
+  let usuarioId = req.usuario?._id?.toString?.() || req.usuario?.id;
 
   if (!usuarioId) {
-    return error(res, {
-      statusCode: 401,
-      message: "No autenticado",
-    });
+    const refreshToken = getRefreshTokenFromRequest(req);
+
+    if (refreshToken) {
+      try {
+        const payload = verificarRefreshToken(refreshToken);
+        usuarioId = safeString(payload?.id || payload?._id || payload?.userId);
+      } catch (_) {
+        // noop
+      }
+    }
   }
 
-  await incrementarTokenVersion(usuarioId);
+  if (usuarioId) {
+    await incrementarTokenVersion(usuarioId);
+  }
+
+  clearAuthCookies(res);
 
   return success(res, {
     message: "Sesión cerrada correctamente",

@@ -12,12 +12,10 @@ const router = express.Router();
 const {
   registrar,
   login,
+  me,
   refreshToken,
   logout,
 } = require("../controllers/authController");
-
-// Middleware de protección con JWT
-const { proteger } = require("../middleware/auth");
 
 // ===========================================================
 // Helpers
@@ -103,44 +101,18 @@ router.post("/registrar", validarRegistro, validateRequest, registrar);
 // POST /api/auth/login
 router.post("/login", validarLogin, validateRequest, login);
 
+// Obtener usuario autenticado desde cookie o bearer token
+// GET /api/auth/me
+router.get("/me", me);
+
 // Obtener nuevo access token usando refresh token
 // POST /api/auth/refresh
 // El controller puede leer refreshToken desde body o cookie
 router.post("/refresh", validarRefresh, validateRequest, refreshToken);
 
-// ===========================================================
-// RUTAS PROTEGIDAS
-// ===========================================================
-
-// Obtener datos del usuario autenticado
-// GET /api/auth/me
-router.get("/me", proteger, (req, res) => {
-  const usuario = req.usuario;
-
-  return res.status(200).json({
-    ok: true,
-    data: {
-      id: usuario._id,
-      nombre: usuario.nombre,
-      email: usuario.email,
-      rol: usuario.rol,
-      activo: usuario.activo,
-      bloqueado: usuario.bloqueado,
-      emailVerificado: usuario.emailVerificado,
-      stripeAccountId: usuario.stripeAccountId || null,
-      stripeOnboardingComplete: !!usuario.stripeOnboardingComplete,
-      stripeChargesEnabled: !!usuario.stripeChargesEnabled,
-      stripePayoutsEnabled: !!usuario.stripePayoutsEnabled,
-      createdAt: usuario.createdAt,
-      updatedAt: usuario.updatedAt,
-    },
-    reqId: req.reqId || null,
-  });
-});
-
 // Cerrar sesión
 // POST /api/auth/logout
-router.post("/logout", proteger, logout);
+router.post("/logout", logout);
 
 // ===========================================================
 module.exports = router;
