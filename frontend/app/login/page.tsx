@@ -1,24 +1,73 @@
 "use client";
 
+import { setCurrentUser } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+
+type UserRole = "admin" | "vendedor" | "usuario";
+type SellerStatus = "pending" | "approved" | "suspended" | null;
 
 type LoginResponse = {
   ok: boolean;
   message?: string;
   data?: {
     usuario?: {
-      id: string;
+      id?: string;
+      _id?: string;
       nombre: string;
       email: string;
-      rol: string;
-    };
-    tokens?: {
-      accessToken: string;
-      refreshToken: string;
+      rol: UserRole;
+      activo?: boolean;
+      bloqueado?: boolean;
+      sellerStatus?: SellerStatus;
+      stripeAccountId?: string | null;
+      stripeOnboardingComplete?: boolean;
+      stripeChargesEnabled?: boolean;
+      stripePayoutsEnabled?: boolean;
     };
   };
 };
+
+function getApiBaseUrl() {
+  return (
+    process.env.NEXT_PUBLIC_BACKEND_URL?.trim() ||
+    process.env.NEXT_PUBLIC_API_URL?.trim() ||
+    ""
+  );
+}
+
+function buildLoginUrl() {
+  const apiUrl = getApiBaseUrl();
+
+  if (!apiUrl) {
+    throw new Error(
+      "Falta NEXT_PUBLIC_API_URL o NEXT_PUBLIC_BACKEND_URL en el frontend."
+    );
+  }
+
+  return `${apiUrl.replace(/\/$/, "")}/api/auth/login`;
+}
+
+function getRedirectByRole(
+  usuario: NonNullable<LoginResponse["data"]>["usuario"]
+) {
+  if (!usuario) return "/";
+
+  switch (usuario.rol) {
+    case "admin":
+      return "/admin";
+
+    case "vendedor":
+      if (usuario.sellerStatus === "suspended") {
+        return "/";
+      }
+      return "/seller";
+
+    case "usuario":
+    default:
+      return "/";
+  }
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -37,17 +86,12 @@ export default function LoginPage() {
     setError(null);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
-
-      if (!apiUrl) {
-        throw new Error("Falta NEXT_PUBLIC_API_URL en el frontend.");
-      }
-
-      const res = await fetch(`${apiUrl}/api/auth/login`, {
+      const res = await fetch(buildLoginUrl(), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
+        credentials: "include",
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
           password,
@@ -63,29 +107,28 @@ export default function LoginPage() {
         throw new Error(data?.message || "No se pudo iniciar sesión.");
       }
 
-      const accessToken = data?.data?.tokens?.accessToken || "";
-      const refreshToken = data?.data?.tokens?.refreshToken || "";
-      const rol = data?.data?.usuario?.rol || "";
+      const usuario = data?.data?.usuario;
 
-      if (!accessToken || !refreshToken) {
-        throw new Error("El backend no devolvió tokens válidos.");
+      if (!usuario) {
+        throw new Error("El backend no devolvió el usuario autenticado.");
       }
 
-      localStorage.setItem("accessToken", accessToken);
-      localStorage.setItem("refreshToken", refreshToken);
-      localStorage.setItem(
-        "adminUser",
-        JSON.stringify(data?.data?.usuario || null)
-      );
-
-      if (rol !== "admin") {
-        localStorage.removeItem("accessToken");
-        localStorage.removeItem("refreshToken");
-        localStorage.removeItem("adminUser");
-        throw new Error("Tu cuenta no tiene permisos de administrador.");
+      if (usuario.activo === false) {
+        throw new Error("Tu cuenta está inactiva.");
       }
 
-      router.push("/admin");
+      if (usuario.bloqueado === true) {
+        throw new Error("Tu cuenta está bloqueada.");
+      }
+
+      if (usuario.rol === "vendedor" && usuario.sellerStatus === "suspended") {
+        throw new Error("Tu cuenta de vendedor está suspendida.");
+      }
+
+      setCurrentUser(usuario);
+
+      router.push(getRedirectByRole(usuario));
+      router.refresh();
     } catch (err: any) {
       console.error("LOGIN ERROR:", err);
       setError(err?.message || "No se pudo iniciar sesión.");
@@ -97,7 +140,8 @@ export default function LoginPage() {
   return (
     <main style={styles.page}>
       <section style={styles.card}>
-        <h1 style={styles.title}>LOGIN WEB NUEVO BACKEND</h1>
+        <h1 style={styles.title}>Iniciar sesión</h1>
+        <p style={styles.subtitle}>Accede a tu cuenta de forma segura</p>
 
         {error && <div style={styles.errorBox}>{error}</div>}
 
@@ -164,10 +208,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   title: {
     margin: 0,
-    marginBottom: 20,
+    marginBottom: 8,
     fontSize: 28,
     fontWeight: 700,
     color: "#111827",
+  },
+  subtitle: {
+    margin: 0,
+    marginBottom: 20,
+    fontSize: 14,
+    color: "#6b7280",
   },
   form: {
     display: "grid",

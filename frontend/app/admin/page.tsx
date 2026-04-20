@@ -1,5 +1,69 @@
+"use client";
+
 import AdminLogoutButton from "@/components/AdminLogoutButton";
+import { api } from "@/lib/api";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+
+type UserRole = "admin" | "vendedor" | "usuario";
+
+type AuthUser = {
+  id: string;
+  nombre: string;
+  email: string;
+  rol: UserRole;
+  activo?: boolean;
+  bloqueado?: boolean;
+  emailVerificado?: boolean;
+  sellerStatus?: "pending" | "approved" | "suspended" | null;
+};
+
+type AuthMeResponse = {
+  ok: boolean;
+  message?: string;
+  data?: {
+    usuario?: AuthUser;
+  };
+};
+
+type OrdenMetrics = {
+  totalOrdenes: number;
+  totalIngresos: number;
+  totalCostoProveedor: number;
+  totalGanancia: number;
+  pagadas: number;
+  pendientes: number;
+  fallidas: number;
+  reembolsadas: number;
+};
+
+type PayoutMetrics = {
+  totalRows: number;
+  totalMonto: number;
+  pendientes: number;
+  procesando: number;
+  pagados: number;
+  fallidos: number;
+  bloqueados: number;
+  totalPendienteMonto: number;
+  totalPagadoMonto: number;
+  totalFallidoMonto: number;
+};
+
+function money(n: unknown, currency = "USD") {
+  const amount = Number(n || 0);
+
+  try {
+    return new Intl.NumberFormat("es-ES", {
+      style: "currency",
+      currency: String(currency || "USD").toUpperCase(),
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
+}
 
 function StatCard({
   label,
@@ -226,13 +290,216 @@ function MiniListItem({
   );
 }
 
-export default function AdminHome() {
+function FullPageMessage({
+  title,
+  description,
+  loading = false,
+}: {
+  title: string;
+  description: string;
+  loading?: boolean;
+}) {
   return (
     <main
       style={{
         minHeight: "100vh",
-        background:
-          "linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        background: "linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%)",
+      }}
+    >
+      <section
+        style={{
+          width: "100%",
+          maxWidth: 520,
+          background: "#fff",
+          border: "1px solid rgba(15,23,42,.08)",
+          borderRadius: 22,
+          padding: 28,
+          boxShadow: "0 12px 30px rgba(15,23,42,.06)",
+          display: "grid",
+          gap: 12,
+          textAlign: "center",
+        }}
+      >
+        <h1
+          style={{
+            margin: 0,
+            fontSize: 28,
+            lineHeight: 1.1,
+            fontWeight: 900,
+            color: "#0f172a",
+          }}
+        >
+          {title}
+        </h1>
+
+        <p
+          style={{
+            margin: 0,
+            fontSize: 15,
+            lineHeight: 1.7,
+            color: "rgba(15,23,42,.68)",
+          }}
+        >
+          {description}
+        </p>
+
+        {loading ? (
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 14,
+              fontWeight: 800,
+              color: "#4338ca",
+            }}
+          >
+            Cargando…
+          </div>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
+export default function AdminHome() {
+  const router = useRouter();
+
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [adminUser, setAdminUser] = useState<AuthUser | null>(null);
+
+  const [ordenMetrics, setOrdenMetrics] = useState<OrdenMetrics | null>(null);
+  const [payoutMetrics, setPayoutMetrics] = useState<PayoutMetrics | null>(null);
+  const [loadingDashboard, setLoadingDashboard] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+
+  async function validateAdminSession() {
+    setAuthChecking(true);
+    setAuthError(null);
+
+    try {
+      const meRes = await api.get<AuthMeResponse["data"]>("/api/auth/me", {
+        autoLogoutOn401: true,
+      } as any);
+
+      if (!meRes?.ok) {
+        throw new Error(meRes?.message || "No se pudo validar la sesión.");
+      }
+
+      const usuario = meRes?.data?.usuario;
+
+      if (!usuario) {
+        throw new Error("No se recibió información del usuario autenticado.");
+      }
+
+      if (usuario.rol !== "admin") {
+        localStorage.removeItem("currentUser");
+        router.replace("/");
+        return null;
+      }
+
+      localStorage.setItem("currentUser", JSON.stringify(usuario));
+      setAdminUser(usuario);
+      return usuario;
+    } catch (err: any) {
+      localStorage.removeItem("currentUser");
+      setAdminUser(null);
+      setAuthError(err?.message || "No se pudo validar la sesión.");
+      router.replace("/login");
+      return null;
+    } finally {
+      setAuthChecking(false);
+    }
+  }
+
+  async function loadDashboard() {
+    setLoadingDashboard(true);
+    setDashboardError(null);
+
+    try {
+      const [ordenesRes, payoutsRes] = await Promise.all([
+        api.get<OrdenMetrics>("/api/ordenes/admin/metrics", {
+          autoLogoutOn401: true,
+        } as any),
+        api.get<PayoutMetrics>("/api/admin/payouts/metrics", {
+          autoLogoutOn401: true,
+        } as any),
+      ]);
+
+      if (!ordenesRes.ok) {
+        throw new Error(
+          ordenesRes.message || "No se pudieron cargar las métricas de órdenes"
+        );
+      }
+
+      if (!payoutsRes.ok) {
+        throw new Error(
+          payoutsRes.message || "No se pudieron cargar las métricas de payouts"
+        );
+      }
+
+      setOrdenMetrics(ordenesRes.data || null);
+      setPayoutMetrics(payoutsRes.data || null);
+    } catch (err: any) {
+      setDashboardError(err?.message || "No se pudo cargar el dashboard");
+      setOrdenMetrics(null);
+      setPayoutMetrics(null);
+    } finally {
+      setLoadingDashboard(false);
+    }
+  }
+
+  async function bootstrap() {
+    const usuario = await validateAdminSession();
+    if (!usuario) return;
+    await loadDashboard();
+  }
+
+  useEffect(() => {
+    void bootstrap();
+  }, []);
+
+  const dashboard = useMemo(() => {
+    return {
+      totalOrdenes: ordenMetrics?.totalOrdenes || 0,
+      ordenesPendientes: ordenMetrics?.pendientes || 0,
+      ordenesPagadas: ordenMetrics?.pagadas || 0,
+      ingresos: ordenMetrics?.totalIngresos || 0,
+
+      payoutsPendientes: payoutMetrics?.pendientes || 0,
+      payoutsPagados: payoutMetrics?.pagados || 0,
+      payoutsFallidos: payoutMetrics?.fallidos || 0,
+      payoutsMontoPendiente: payoutMetrics?.totalPendienteMonto || 0,
+    };
+  }, [ordenMetrics, payoutMetrics]);
+
+  if (authChecking) {
+    return (
+      <FullPageMessage
+        title="Validando acceso"
+        description="Estamos comprobando tu sesión administrativa y los permisos de acceso."
+        loading
+      />
+    );
+  }
+
+  if (authError && !adminUser) {
+    return (
+      <FullPageMessage
+        title="Acceso restringido"
+        description={authError}
+      />
+    );
+  }
+
+  return (
+    <main
+      style={{
+        minHeight: "100vh",
+        background: "linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%)",
       }}
     >
       <div
@@ -299,9 +566,22 @@ export default function AdminHome() {
               }}
             >
               Centro de control operativo de Alaia. Desde aquí puedes supervisar
-              órdenes, pagos, logística y módulos críticos del sistema con una
-              estructura preparada para escalar.
+              órdenes, pagos, payouts, catálogo, usuarios, seguridad y módulos críticos
+              del sistema con una estructura preparada para escalar.
             </p>
+
+            {adminUser ? (
+              <p
+                style={{
+                  marginTop: 12,
+                  marginBottom: 0,
+                  fontSize: 14,
+                  color: "rgba(15,23,42,.62)",
+                }}
+              >
+                Sesión activa como <strong>{adminUser.nombre}</strong> · {adminUser.email}
+              </p>
+            ) : null}
           </div>
 
           <div
@@ -309,11 +589,45 @@ export default function AdminHome() {
               display: "flex",
               gap: 12,
               alignItems: "center",
+              flexWrap: "wrap",
             }}
           >
+            <button
+              onClick={() => void loadDashboard()}
+              disabled={loadingDashboard}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid rgba(15,23,42,.12)",
+                background: "#fff",
+                color: "#0f172a",
+                fontSize: 14,
+                fontWeight: 800,
+                cursor: loadingDashboard ? "not-allowed" : "pointer",
+                opacity: loadingDashboard ? 0.7 : 1,
+              }}
+            >
+              {loadingDashboard ? "Actualizando…" : "Recargar"}
+            </button>
+
             <AdminLogoutButton />
           </div>
         </header>
+
+        {dashboardError ? (
+          <div
+            style={{
+              background: "#fff3f3",
+              border: "1px solid #ffd3d3",
+              color: "#b00020",
+              padding: 14,
+              borderRadius: 12,
+              fontWeight: 800,
+            }}
+          >
+            {dashboardError}
+          </div>
+        ) : null}
 
         <section
           style={{
@@ -324,23 +638,23 @@ export default function AdminHome() {
         >
           <StatCard
             label="Órdenes"
-            value="—"
-            hint="Preparado para conectar con tus métricas reales"
+            value={loadingDashboard ? "—" : String(dashboard.totalOrdenes)}
+            hint="Total acumulado de órdenes en el sistema"
           />
           <StatCard
-            label="Pagos pendientes"
-            value="—"
-            hint="Pendiente de enlazar con órdenes y Stripe"
+            label="Pendientes"
+            value={loadingDashboard ? "—" : String(dashboard.ordenesPendientes)}
+            hint="Órdenes que aún no han completado el flujo de pago"
           />
           <StatCard
-            label="Productos activos"
-            value="—"
-            hint="Listo para integrarse con catálogo"
+            label="Payouts pendientes"
+            value={loadingDashboard ? "—" : String(dashboard.payoutsPendientes)}
+            hint="Pagos a vendedores aún retenidos o pendientes de liberar"
           />
           <StatCard
-            label="Sesiones admin"
-            value="Seguras"
-            hint="Autenticación protegida y auditada"
+            label="Monto retenido"
+            value={loadingDashboard ? "—" : money(dashboard.payoutsMontoPendiente, "USD")}
+            hint="Volumen pendiente de payout en vendedores"
           />
         </section>
 
@@ -353,46 +667,51 @@ export default function AdminHome() {
         >
           <ModuleCard
             title="Órdenes"
-            description="Consulta, filtra y administra todas las órdenes del sistema, incluyendo pagos, estados y flujo operativo."
+            description="Consulta, filtra y administra órdenes, pagos, estados y flujo operativo del sistema."
             href="/admin/ordenes"
             action="Gestionar órdenes"
           />
 
           <ModuleCard
-            title="Pagos"
-            description="Monitorea el estado de los pagos, conciliaciones y operaciones conectadas al flujo comercial."
-            href="/admin/ordenes"
-            action="Ver pagos"
-          />
-
-          <ModuleCard
             title="Fulfillment"
-            description="Gestiona procesamiento logístico, envíos, entregas y trazabilidad operativa."
-            href="/admin/ordenes"
+            description="Gestiona procesamiento logístico, tracking, transportistas, entregas y trazabilidad."
+            href="/admin/fulfillment"
             action="Ver fulfillment"
           />
 
           <ModuleCard
-            title="Métricas"
-            description="KPIs, ingresos, conversión y rendimiento general del sistema administrativo y comercial."
-            href="#"
-            action="Ver métricas"
-            disabled
-          />
-
-          <ModuleCard
-            title="Usuarios"
-            description="Gestión avanzada de usuarios, privilegios, roles administrativos y actividad reciente."
-            href="#"
-            action="Gestionar usuarios"
-            disabled
+            title="Payouts"
+            description="Supervisa payouts a vendedores, estados retenidos, fallidos, bloqueados y transferencias Stripe Connect."
+            href="/admin/payouts"
+            action="Ver payouts"
           />
 
           <ModuleCard
             title="Productos"
-            description="Administración de catálogo, visibilidad, edición de productos y mantenimiento del inventario."
-            href="/productos"
-            action="Ver productos"
+            description="Administra catálogo, visibilidad, stock, SKU, precios y mantenimiento de productos."
+            href="/admin/productos"
+            action="Gestionar productos"
+          />
+
+          <ModuleCard
+            title="Usuarios"
+            description="Gestión de usuarios, roles administrativos, activación y control de acceso."
+            href="/admin/usuarios"
+            action="Gestionar usuarios"
+          />
+
+          <ModuleCard
+            title="Seguridad"
+            description="Revisión de sesiones administrativas, alertas y actividad sospechosa del sistema."
+            href="/admin/security"
+            action="Ver seguridad"
+          />
+
+          <ModuleCard
+            title="Analytics"
+            description="Métricas, ingresos, órdenes por día y visualización del rendimiento del negocio."
+            href="/admin/analytics"
+            action="Ver analytics"
           />
         </section>
 
@@ -407,40 +726,64 @@ export default function AdminHome() {
             <div style={{ display: "grid", gap: 12 }}>
               <MiniListItem
                 title="Autenticación"
-                subtitle="Protegida con sesión segura, middleware y validación de administrador"
+                subtitle="Protegida con sesión segura, middleware, validación de administrador y recuperación de acceso"
               />
               <MiniListItem
                 title="Rate limiting"
                 subtitle="Activo para endurecer login y reducir abuso automatizado"
               />
               <MiniListItem
-                title="Anti-bot"
-                subtitle="Protección integrada para reforzar accesos y reducir intentos maliciosos"
+                title="Payouts marketplace"
+                subtitle={
+                  loadingDashboard
+                    ? "Cargando estado operativo de payouts…"
+                    : dashboard.payoutsFallidos > 0
+                    ? `Hay ${dashboard.payoutsFallidos} payout(s) fallido(s) que requieren revisión`
+                    : dashboard.payoutsPendientes > 0
+                    ? `${dashboard.payoutsPendientes} payout(s) pendiente(s) en flujo normal`
+                    : "Sin incidencias relevantes en payouts"
+                }
               />
               <MiniListItem
                 title="Auditoría"
-                subtitle="Base preparada para registrar sesiones administrativas"
+                subtitle="Sesiones administrativas y monitoreo de accesos preparados para revisión"
               />
             </div>
           </InfoPanel>
 
-          <InfoPanel title="Próximos módulos">
+          <InfoPanel title="Resumen operativo">
             <div style={{ display: "grid", gap: 12 }}>
               <MiniListItem
-                title="Dashboard con métricas reales"
-                subtitle="Totales, pendientes, conversión y actividad reciente"
+                title="Órdenes pagadas"
+                subtitle={
+                  loadingDashboard
+                    ? "Cargando métricas…"
+                    : `${dashboard.ordenesPagadas} orden(es) marcadas como pagadas`
+                }
               />
               <MiniListItem
-                title="Tabla de últimas órdenes"
-                subtitle="Visualización rápida de operaciones recientes"
+                title="Ingresos acumulados"
+                subtitle={
+                  loadingDashboard
+                    ? "Cargando métricas…"
+                    : `${money(dashboard.ingresos, "USD")} acumulados en órdenes`
+                }
               />
               <MiniListItem
-                title="Sesiones administrativas"
-                subtitle="Historial de accesos con IP, navegador y fecha"
+                title="Payouts pagados"
+                subtitle={
+                  loadingDashboard
+                    ? "Cargando métricas…"
+                    : `${dashboard.payoutsPagados} payout(s) completados correctamente`
+                }
               />
               <MiniListItem
-                title="Gestión avanzada de catálogo"
-                subtitle="Crear, editar, activar y desactivar productos"
+                title="Payouts fallidos"
+                subtitle={
+                  loadingDashboard
+                    ? "Cargando métricas…"
+                    : `${dashboard.payoutsFallidos} payout(s) con necesidad de revisión o reintento`
+                }
               />
             </div>
           </InfoPanel>

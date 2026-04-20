@@ -45,7 +45,7 @@ function buildAuthMeUrl() {
   return apiUrl ? `${apiUrl.replace(/\/$/, "")}/api/auth/me` : "/api/auth/me";
 }
 
-export default function AdminLayout({
+export default function SellerLayout({
   children,
 }: {
   children: React.ReactNode;
@@ -69,7 +69,7 @@ export default function AdminLayout({
       router.replace(redirectTo);
     }
 
-    async function verifyAdminAccess() {
+    async function verifySellerAccess() {
       try {
         const endpoint = buildAuthMeUrl();
 
@@ -92,8 +92,19 @@ export default function AdminLayout({
           return;
         }
 
-        if (usuario.rol !== "admin") {
+        if (usuario.rol !== "vendedor") {
           await denyAccess("/");
+          return;
+        }
+
+        // Endurecimiento: solo vendedores aprobados
+        if (usuario.sellerStatus && usuario.sellerStatus !== "approved") {
+          await denyAccess("/");
+          return;
+        }
+
+        if (usuario.activo === false || usuario.bloqueado === true) {
+          await denyAccess("/login");
           return;
         }
 
@@ -108,12 +119,12 @@ export default function AdminLayout({
       } catch (error: any) {
         if (error?.name === "AbortError") return;
 
-        console.error("ADMIN VERIFY ERROR:", error);
+        console.error("SELLER VERIFY ERROR:", error);
         await denyAccess("/login");
       }
     }
 
-    void verifyAdminAccess();
+    void verifySellerAccess();
 
     return () => {
       mounted = false;
@@ -122,7 +133,7 @@ export default function AdminLayout({
   }, [router]);
 
   if (loading) {
-    return <FullPageLoader text="Verificando acceso administrativo…" />;
+    return <FullPageLoader text="Verificando acceso de vendedor…" />;
   }
 
   if (!authorized) {

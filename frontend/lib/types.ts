@@ -1,28 +1,30 @@
 // ======================================================
-// types.ts — Tipos globales FRONTEND (ENTERPRISE ULTRA)
+// types.ts — Tipos globales FRONTEND (Enterprise Final)
 // ======================================================
 
 /* ======================================================
    PRIMITIVOS / UTILIDADES
 ====================================================== */
 export type ID = string;
-export type ISODateString = string; // "2026-02-18T12:34:56.000Z"
+export type ISODateString = string;
 export type Money = number;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
-export type JsonObject = { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue | undefined };
 
-/** Para meta flexible pero no "any" */
 export type Meta = {
   page?: number;
   limit?: number;
   total?: number;
   pages?: number;
-  [key: string]: JsonValue | undefined;
+  reqId?: string;
+  from?: string | Date;
+  to?: string | Date;
+  days?: number;
+  [key: string]: JsonValue | Date | undefined;
 };
 
-/** Error estándar (valida forms, backends, etc.) */
 export type ApiErrorItem = {
   campo?: string;
   mensaje?: string;
@@ -31,7 +33,7 @@ export type ApiErrorItem = {
 };
 
 /* ======================================================
-   API RESPONSE (NORMALIZADO)
+   API RESPONSE
 ====================================================== */
 export type ApiResponse<T> = {
   ok: boolean;
@@ -41,40 +43,60 @@ export type ApiResponse<T> = {
   errors?: ApiErrorItem[] | JsonValue;
 };
 
-/** Útil para endpoints que devuelven lista paginada */
 export type Paginated<T> = {
   items: T[];
   meta?: Meta;
 };
 
 /* ======================================================
-   USUARIO
+   AUTH / USUARIO
 ====================================================== */
-export type RolUsuario = "admin" | "user";
+export type RolUsuario = "admin" | "usuario" | "vendedor";
 
-/**
- * Nota: backend a veces usa _id, a veces id.
- * Lo soportamos sin romper tipado.
- */
+export type SellerStatus = "pending" | "approved" | "suspended" | null;
+
 export type UsuarioBase = {
   _id?: ID;
   id?: ID;
   nombre: string;
   email: string;
   rol: RolUsuario;
+
+  activo?: boolean;
+  bloqueado?: boolean;
+  emailVerificado?: boolean;
+
+  sellerStatus?: SellerStatus;
+
+  stripeAccountId?: string | null;
+  stripeOnboardingComplete?: boolean;
+  stripeChargesEnabled?: boolean;
+  stripePayoutsEnabled?: boolean;
+
+  createdAt?: ISODateString;
+  updatedAt?: ISODateString;
 };
 
-export type Usuario = Required<Pick<UsuarioBase, "nombre" | "email" | "rol">> & {
-  _id: ID; // en frontend lo tratamos como obligatorio
+export type Usuario = UsuarioBase & {
+  _id?: ID;
+  id?: ID;
 };
 
-/** Helpers de tipado (por si algún endpoint manda "usuario" parcial) */
 export type UsuarioRef = ID | UsuarioBase | Usuario;
+
+export type AuthMeData = {
+  usuario?: Usuario;
+};
 
 /* ======================================================
    ESTADOS DE ORDEN
 ====================================================== */
-export type EstadoPago = "pendiente" | "pagado" | "fallido" | "reembolsado";
+export type EstadoPago =
+  | "pendiente"
+  | "pagado"
+  | "fallido"
+  | "reembolsado"
+  | "reembolsado_parcial";
 
 export type EstadoFulfillment =
   | "pendiente"
@@ -84,25 +106,21 @@ export type EstadoFulfillment =
   | "cancelado";
 
 /* ======================================================
-   HISTORIAL (AUDITORÍA ENTERPRISE)
+   HISTORIAL / AUDITORÍA
 ====================================================== */
 export type HistorialOrden = {
   estado: string;
   fecha: ISODateString;
-  meta?: JsonObject; // evita any, sigue siendo flexible
+  source?: string;
+  fingerprint?: string;
+  meta?: JsonObject;
 };
 
 /* ======================================================
-   PRODUCTO / ITEM DE ORDEN
+   PRODUCTO / ORDEN ITEM
 ====================================================== */
 export type TipoProducto = "marketplace" | "dropshipping" | "afiliado";
 
-/**
- * En orden, a veces backend manda producto como:
- * - string (id)
- * - objeto parcial
- * - o null
- */
 export type ProductoRef =
   | ID
   | {
@@ -128,12 +146,26 @@ export type OrdenItem = {
 
   proveedor?: string;
   tipoProducto?: TipoProducto;
+
+  sellerType?: "platform" | "seller";
+  vendedor?: ID | null;
+
+  comisionPct?: number;
+  comisionPorcentaje?: number;
+  comisionMonto?: Money;
+
+  netoVendedor?: Money;
+  ingresoVendedor?: Money;
 };
 
 /* ======================================================
-   STRIPE / PAGOS
+   PAGOS / STRIPE
 ====================================================== */
-export type MetodoPago = "stripe" | "paypal" | "transferencia" | "contraentrega";
+export type MetodoPago =
+  | "stripe"
+  | "paypal"
+  | "transferencia"
+  | "contraentrega";
 
 export type StripeInfo = {
   stripeSessionId?: string;
@@ -142,18 +174,98 @@ export type StripeInfo = {
 };
 
 /* ======================================================
+   PAYOUTS
+====================================================== */
+export type PayoutStatus =
+  | "pendiente"
+  | "procesando"
+  | "pagado"
+  | "fallido"
+  | "bloqueado";
+
+export type VendedorPayout = {
+  vendedor: ID | UsuarioRef;
+  stripeAccountId?: string;
+  monto: Money;
+  status: PayoutStatus;
+  stripeTransferId?: string;
+  stripeTransferGroup?: string;
+  processingAt?: ISODateString | null;
+  paidAt?: ISODateString | null;
+  failedAt?: ISODateString | null;
+  meta?: JsonObject | null;
+};
+
+export type PayoutMetrics = {
+  totalRows: number;
+  totalMonto: number;
+  pendientes: number;
+  procesando: number;
+  pagados: number;
+  fallidos: number;
+  bloqueados: number;
+  totalPendienteMonto: number;
+  totalPagadoMonto: number;
+  totalFallidoMonto: number;
+  totalBloqueadoMonto?: number;
+};
+
+export type AdminPayoutRow = {
+  ordenId: ID;
+  orderNumber?: number;
+  estadoPago?: EstadoPago;
+  estadoFulfillment?: EstadoFulfillment;
+  payoutPolicy?: string;
+  payoutEligibleAt?: ISODateString | null;
+  payoutReleasedAt?: ISODateString | null;
+  payoutBlocked?: boolean;
+  payoutBlockedReason?: string;
+  moneda?: string;
+  createdAt?: ISODateString;
+  updatedAt?: ISODateString;
+  vendedor?: {
+    _id?: ID;
+    nombre?: string;
+    email?: string;
+  };
+  payout?: {
+    monto?: Money;
+    status?: PayoutStatus;
+    stripeAccountId?: string;
+    stripeTransferId?: string;
+    stripeTransferGroup?: string;
+    processingAt?: ISODateString | null;
+    paidAt?: ISODateString | null;
+    failedAt?: ISODateString | null;
+    meta?: JsonObject | null;
+  };
+};
+
+/* ======================================================
    ORDEN
 ====================================================== */
 export type Orden = {
   _id: ID;
+  orderNumber?: number;
 
   usuario: UsuarioRef;
 
   items: OrdenItem[];
 
+  subtotal?: Money;
+  shipping?: Money;
+  tax?: Money;
+  discount?: Money;
+
   total: Money;
   totalCostoProveedor?: Money;
   gananciaTotal?: Money;
+
+  // compatibilidad con variantes de backend
+  totalComisiones?: Money;
+  totalNetoVendedores?: Money;
+  comisionTotal?: Money;
+  ingresoVendedorTotal?: Money;
 
   metodoPago?: MetodoPago;
   paymentProvider?: string;
@@ -164,7 +276,6 @@ export type Orden = {
 
   paymentStatusDetail?: string;
 
-  // Stripe (separado para claridad)
   stripeSessionId?: StripeInfo["stripeSessionId"];
   stripePaymentIntentId?: StripeInfo["stripePaymentIntentId"];
   stripeLatestEventId?: StripeInfo["stripeLatestEventId"];
@@ -172,6 +283,15 @@ export type Orden = {
   paidAt?: ISODateString | null;
   failedAt?: ISODateString | null;
   refundedAt?: ISODateString | null;
+
+  payoutPolicy?: string;
+  payoutHoldDays?: number;
+  payoutEligibleAt?: ISODateString | null;
+  payoutReleasedAt?: ISODateString | null;
+  payoutBlocked?: boolean;
+  payoutBlockedReason?: string;
+
+  vendedorPayouts?: VendedorPayout[];
 
   historial?: HistorialOrden[];
 
@@ -187,7 +307,6 @@ export type AdminMetrics = {
   totalIngresos: Money;
   totalCostoProveedor: Money;
   totalGanancia: Money;
-
   pagadas: number;
   pendientes: number;
   fallidas: number;
@@ -195,11 +314,74 @@ export type AdminMetrics = {
 };
 
 /* ======================================================
-   TIPOS ÚTILES PARA UI
+   ANALYTICS ADMIN
+====================================================== */
+export type AdminAnalyticsOverview = {
+  totalOrdenes: number;
+  ingresosBrutos: Money;
+  totalCostoProveedor: Money;
+  totalGanancia: Money;
+  totalComisiones: Money;
+  totalNetoVendedores: Money;
+  pagadas: number;
+  pendientes: number;
+  fallidas: number;
+  reembolsadas: number;
+  payoutsPendientes: number;
+  payoutsPagados: number;
+  payoutsFallidos: number;
+  payoutsBloqueados: number;
+};
+
+export type AdminAnalyticsSeriesRow = {
+  date: ISODateString;
+  totalOrdenes: number;
+  ingresos: Money;
+  ganancia: Money;
+  pagadas: number;
+  pendientes: number;
+  fallidas: number;
+};
+
+export type AdminAnalyticsTopProducto = {
+  productoId?: ID;
+  nombre: string;
+  cantidadVendida: number;
+  ingresos: Money;
+  ganancia: Money;
+};
+
+export type AdminAnalyticsTopVendedor = {
+  vendedorId?: ID;
+  nombre: string;
+  email: string;
+  montoTotal: Money;
+  payoutsCount: number;
+  pagadosCount: number;
+  pendientesCount: number;
+  fallidosCount: number;
+};
+
+/* ======================================================
+   UI
 ====================================================== */
 export type LoadingState = "idle" | "loading" | "success" | "error";
 
-/** Útil para normalizar si backend manda {id} o {_id} */
+/* ======================================================
+   HELPERS
+====================================================== */
 export function getId(x: { _id?: ID; id?: ID } | null | undefined): ID | null {
-  return (x?._id || x?.id || null) as ID | null;
+  return x?._id || x?.id || null;
+}
+
+export function isAdmin(user: UsuarioBase | null | undefined): boolean {
+  return user?.rol === "admin";
+}
+
+export function isSeller(user: UsuarioBase | null | undefined): boolean {
+  return user?.rol === "vendedor";
+}
+
+export function isCustomer(user: UsuarioBase | null | undefined): boolean {
+  return user?.rol === "usuario";
 }

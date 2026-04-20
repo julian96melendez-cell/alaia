@@ -1,12 +1,9 @@
 "use client";
 
-import "@/firebase/firebaseConfig";
-import { getAuth, signOut } from "firebase/auth";
-import { useRouter } from "next/navigation";
+import { clearCurrentUser, logout } from "@/lib/auth";
 import { useState } from "react";
 
 export default function AdminLogoutButton() {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
 
   async function handleLogout() {
@@ -15,24 +12,28 @@ export default function AdminLogoutButton() {
     setLoading(true);
 
     try {
-      await fetch("/api/session-logout", {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
+      // 🔐 Primero intenta cerrar sesión en backend
+      await logout({
+        redirect: false, // controlamos nosotros el redirect
+        silent: false,
       });
 
-      await signOut(getAuth());
+      // 🧹 Luego limpia estado local
+      clearCurrentUser();
 
-      router.replace("/login");
-      router.refresh();
+      // 🔁 Redirección controlada
+      if (typeof window !== "undefined") {
+        window.location.href = "/login";
+      }
     } catch (error) {
       console.error("LOGOUT ERROR:", error);
 
-      try {
-        await signOut(getAuth());
-      } catch {}
+      // 🔥 FORZAR limpieza aunque falle backend
+      clearCurrentUser();
 
-      router.replace("/login");
+      if (typeof window !== "undefined") {
+        window.location.href = "/login";
+      }
     } finally {
       setLoading(false);
     }
