@@ -1,14 +1,9 @@
-// ===========================================================
-// authRoutes.js — Rutas de Autenticación (Enterprise Hardened)
-// ===========================================================
-
 "use strict";
 
 const express = require("express");
 const { body, validationResult } = require("express-validator");
 const router = express.Router();
 
-// Controllers
 const {
   registrar,
   login,
@@ -17,9 +12,8 @@ const {
   logout,
 } = require("../controllers/authController");
 
-// ===========================================================
-// Helpers
-// ===========================================================
+const { proteger } = require("../middleware/auth");
+
 function safeString(v) {
   if (v === null || v === undefined) return "";
   return String(v).trim();
@@ -43,11 +37,6 @@ function validateRequest(req, res, next) {
   });
 }
 
-// ===========================================================
-// VALIDACIONES
-// ===========================================================
-
-// Registro
 const validarRegistro = [
   body("nombre")
     .customSanitizer((v) => safeString(v))
@@ -68,7 +57,6 @@ const validarRegistro = [
     .withMessage("La contraseña debe tener al menos 8 caracteres"),
 ];
 
-// Login
 const validarLogin = [
   body("email")
     .customSanitizer((v) => safeString(v).toLowerCase())
@@ -82,37 +70,17 @@ const validarLogin = [
     .withMessage("La contraseña es obligatoria"),
 ];
 
-// Refresh
+// Refresh via cookie HTTP-only; body se deja opcional por compatibilidad
 const validarRefresh = [
   body("refreshToken")
     .optional()
     .customSanitizer((v) => safeString(v)),
 ];
 
-// ===========================================================
-// RUTAS PÚBLICAS
-// ===========================================================
-
-// Registrar usuario
-// POST /api/auth/registrar
 router.post("/registrar", validarRegistro, validateRequest, registrar);
-
-// Iniciar sesión
-// POST /api/auth/login
 router.post("/login", validarLogin, validateRequest, login);
-
-// Obtener usuario autenticado desde cookie o bearer token
-// GET /api/auth/me
-router.get("/me", me);
-
-// Obtener nuevo access token usando refresh token
-// POST /api/auth/refresh
-// El controller puede leer refreshToken desde body o cookie
+router.get("/me", proteger, me);
 router.post("/refresh", validarRefresh, validateRequest, refreshToken);
+router.post("/logout", proteger, logout);
 
-// Cerrar sesión
-// POST /api/auth/logout
-router.post("/logout", logout);
-
-// ===========================================================
 module.exports = router;

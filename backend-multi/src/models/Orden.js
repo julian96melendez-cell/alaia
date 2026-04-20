@@ -1,26 +1,3 @@
-/**
- * Orden.js (TAICHIGO FULL / Production-grade) — ULTRA PRO (MAX) + ✅ MODO A (ESCROW ULTRA SEGURO)
- * ------------------------------------------------------------
- * ✅ Mantiene TODO lo que tú enviaste
- * ✅ NO rompe compatibilidad: solo añade campos / helpers / índices nuevos
- *
- * ✅ MODO A (RECOMENDADO — MÁXIMA SEGURIDAD / BLINDAJE):
- * - Los payouts a vendedores NO se consideran “elegibles” al pagarse.
- * - Se consideran elegibles SOLO cuando:
- *    1) estadoPago === "pagado"
- *    2) estadoFulfillment === "entregado"
- *    3) y pasan N días de hold (PAYOUT_HOLD_DAYS) -> ventana anti-fraude/chargeback
- * - Esto te protege de:
- *    - fraude
- *    - contracargos
- *    - reembolsos tardíos
- *    - disputas
- *
- * 🧩 Lo que habilita este modelo:
- * - Un CRON/worker puede buscar órdenes “payout eligible” y ejecutar Stripe Connect Transfers.
- * - El modelo deja todo preparado con timestamps + status por vendedor + bloqueo automático.
- */
-
 "use strict";
 
 const mongoose = require("mongoose");
@@ -84,9 +61,7 @@ function isObjectId(id) {
 }
 
 // ============================================================
-// ✅ Comisiones (config)
-// - Default por ENV: PLATFORM_COMMISSION_PCT
-// - Puedes sobreescribir por item con item.comisionPorcentaje
+// Config
 // ============================================================
 const DEFAULT_COMMISSION_PCT = clamp(
   toNumber(process.env.PLATFORM_COMMISSION_PCT, 0),
@@ -94,8 +69,14 @@ const DEFAULT_COMMISSION_PCT = clamp(
   100
 );
 
+const DEFAULT_PAYOUT_HOLD_DAYS = clamp(
+  toNumber(process.env.PAYOUT_HOLD_DAYS, 7),
+  0,
+  60
+);
+
 // ============================================================
-// ✅ Payment providers
+// Enums
 // ============================================================
 const PAYMENT_PROVIDERS = Object.freeze([
   "stripe",
@@ -104,23 +85,6 @@ const PAYMENT_PROVIDERS = Object.freeze([
   "contraentrega",
 ]);
 
-function normalizePct(v, fallbackPct = DEFAULT_COMMISSION_PCT) {
-  const n = toNumber(v, fallbackPct);
-  return clamp(n, 0, 100);
-}
-
-// ============================================================
-// ✅ MODO A (ESCROW) — Config de hold (seguridad)
-// ============================================================
-const DEFAULT_PAYOUT_HOLD_DAYS = clamp(
-  toNumber(process.env.PAYOUT_HOLD_DAYS, 7),
-  0,
-  60
-);
-
-// ============================================================
-// Enums (Single Source of Truth)
-// ============================================================
 const ESTADOS_PAGO = Object.freeze([
   "pendiente",
   "pagado",
@@ -150,9 +114,11 @@ const METODOS_PAGO = Object.freeze([
   "contraentrega",
 ]);
 
-const ESTADOS_PAGO_PROVEEDOR = Object.freeze(["pendiente", "pagado"]);
+const ESTADOS_PAGO_PROVEEDOR = Object.freeze([
+  "pendiente",
+  "pagado",
+]);
 
-// ✅ NUEVO: payouts por vendedor (snapshot)
 const VENDEDOR_PAYOUT_STATUS = Object.freeze([
   "pendiente",
   "procesando",
@@ -161,13 +127,12 @@ const VENDEDOR_PAYOUT_STATUS = Object.freeze([
   "bloqueado",
 ]);
 
-// ✅ NUEVO: payout policy (modo A)
 const PAYOUT_POLICY = Object.freeze([
   "escrow_delivered_hold",
 ]);
 
 // ============================================================
-// State Machine (última línea de defensa)
+// State machine
 // ============================================================
 const PAGO_TRANSITIONS = {
   pendiente: new Set(["pendiente", "pagado", "fallido"]),
@@ -191,17 +156,36 @@ function canTransition(map, from, to) {
   return set.has(to);
 }
 
+function normalizePct(v, fallbackPct = DEFAULT_COMMISSION_PCT) {
+  const n = toNumber(v, fallbackPct);
+  return clamp(n, 0, 100);
+}
+
+function getItemSellerId(item) {
+  return (
+    item?.vendedor ||
+    item?.vendedorId ||
+    item?.sellerId ||
+    null
+  );
+}
+
+function getItemIngresoVendedor(item) {
+  if (item?.ingresoVendedor !== undefined && item?.ingresoVendedor !== null) {
+    return toNumber(item.ingresoVendedor, 0);
+  }
+
+  if (item?.netoVendedor !== undefined && item?.netoVendedor !== null) {
+    return toNumber(item.netoVendedor, 0);
+  }
+
+  return 0;
+}
+
 // ============================================================
 // Subschemas
 // ============================================================
 
-/**
- * ITEM
- * - snapshot de compra
- * - recalcula subtotal/ganancia
- * ✅ comisiones por item (plataforma)
- * ✅ vendedor + sellerType (marketplace multi-vendor)
- */
 const ItemSchema = new mongoose.Schema(
   {
     producto: {
@@ -211,14 +195,36 @@ const ItemSchema = new mongoose.Schema(
       index: true,
     },
 
-    nombre: { type: String, required: true, trim: true },
+    nombre: {
+      type: String,
+      required: true,
+      trim: true,
+    },
 
-    cantidad: { type: Number, required: true, min: 1 },
+    cantidad: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
 
-    precioUnitario: { type: Number, required: true, min: 0 },
-    costoProveedorUnitario: { type: Number, required: true, min: 0 },
+    precioUnitario: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
 
-    proveedor: { type: String, required: true, trim: true, index: true },
+    costoProveedorUnitario: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    proveedor: {
+      type: String,
+      required: true,
+      trim: true,
+      index: true,
+    },
 
     tipoProducto: {
       type: String,
@@ -240,9 +246,18 @@ const ItemSchema = new mongoose.Schema(
       index: true,
     },
 
-    subtotal: { type: Number, required: true, min: 0 },
-    ganancia: { type: Number, required: true },
+    subtotal: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
 
+    ganancia: {
+      type: Number,
+      required: true,
+    },
+
+    // Campo canon
     comisionPorcentaje: {
       type: Number,
       default: DEFAULT_COMMISSION_PCT,
@@ -250,11 +265,53 @@ const ItemSchema = new mongoose.Schema(
       max: 100,
     },
 
-    comisionMonto: { type: Number, default: 0, min: 0 },
-    ingresoVendedor: { type: Number, default: 0 },
+    comisionMonto: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    // Campo canon
+    ingresoVendedor: {
+      type: Number,
+      default: 0,
+    },
   },
-  { _id: false }
+  { _id: false, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
+
+// Compatibilidad de nombres
+ItemSchema.virtual("comisionPct")
+  .get(function () {
+    return this.comisionPorcentaje;
+  })
+  .set(function (value) {
+    this.comisionPorcentaje = value;
+  });
+
+ItemSchema.virtual("netoVendedor")
+  .get(function () {
+    return this.ingresoVendedor;
+  })
+  .set(function (value) {
+    this.ingresoVendedor = value;
+  });
+
+ItemSchema.virtual("vendedorId")
+  .get(function () {
+    return this.vendedor || null;
+  })
+  .set(function (value) {
+    this.vendedor = value || null;
+  });
+
+ItemSchema.virtual("sellerId")
+  .get(function () {
+    return this.vendedor || null;
+  })
+  .set(function (value) {
+    this.vendedor = value || null;
+  });
 
 ItemSchema.pre("validate", function () {
   const qty = Math.max(1, parseInt(this.cantidad, 10) || 1);
@@ -285,7 +342,9 @@ ItemSchema.pre("validate", function () {
 
   const tipo = toStringSafe(this.tipoProducto).trim().toLowerCase();
   const pct =
-    tipo === "afiliado" ? 0 : normalizePct(this.comisionPorcentaje, DEFAULT_COMMISSION_PCT);
+    tipo === "afiliado"
+      ? 0
+      : normalizePct(this.comisionPorcentaje, DEFAULT_COMMISSION_PCT);
 
   this.comisionPorcentaje = round2(pct);
 
@@ -294,12 +353,13 @@ ItemSchema.pre("validate", function () {
   this.ingresoVendedor = round2(this.subtotal - this.comisionMonto);
 });
 
-/**
- * PROVEEDOR (agregado por proveedor único)
- */
 const ProveedorSchema = new mongoose.Schema(
   {
-    proveedor: { type: String, trim: true, default: "" },
+    proveedor: {
+      type: String,
+      trim: true,
+      default: "",
+    },
 
     estadoPagoProveedor: {
       type: String,
@@ -308,15 +368,21 @@ const ProveedorSchema = new mongoose.Schema(
       index: true,
     },
 
-    referenciaProveedor: { type: String, trim: true, default: "" },
-    tracking: { type: String, trim: true, default: "" },
+    referenciaProveedor: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    tracking: {
+      type: String,
+      trim: true,
+      default: "",
+    },
   },
   { _id: false }
 );
 
-/**
- * ✅ VendedorPayout (snapshot por vendedor)
- */
 const VendedorPayoutSchema = new mongoose.Schema(
   {
     vendedor: {
@@ -326,9 +392,18 @@ const VendedorPayoutSchema = new mongoose.Schema(
       index: true,
     },
 
-    stripeAccountId: { type: String, default: "", trim: true, index: true },
+    stripeAccountId: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
 
-    monto: { type: Number, default: 0, min: 0 },
+    monto: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
 
     status: {
       type: String,
@@ -337,42 +412,86 @@ const VendedorPayoutSchema = new mongoose.Schema(
       index: true,
     },
 
-    stripeTransferId: { type: String, default: "", trim: true, index: true },
-    stripeTransferGroup: { type: String, default: "", trim: true, index: true },
+    stripeTransferId: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
 
-    processingAt: { type: Date, default: null },
-    paidAt: { type: Date, default: null },
-    failedAt: { type: Date, default: null },
+    stripeTransferGroup: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
 
-    meta: { type: mongoose.Schema.Types.Mixed, default: null },
+    processingAt: {
+      type: Date,
+      default: null,
+    },
+
+    paidAt: {
+      type: Date,
+      default: null,
+    },
+
+    failedAt: {
+      type: Date,
+      default: null,
+    },
+
+    meta: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
   },
   { _id: false }
 );
 
-/**
- * HISTORIAL
- * - source + fingerprint para idempotencia
- */
 const HistorialSchema = new mongoose.Schema(
   {
-    estado: { type: String, required: true, trim: true },
-    fecha: { type: Date, default: Date.now },
+    estado: {
+      type: String,
+      required: true,
+      trim: true,
+    },
 
-    source: { type: String, trim: true, default: "system", index: true },
+    fecha: {
+      type: Date,
+      default: Date.now,
+    },
 
-    fingerprint: { type: String, trim: true, default: "" },
+    source: {
+      type: String,
+      trim: true,
+      default: "system",
+      index: true,
+    },
 
-    meta: { type: mongoose.Schema.Types.Mixed, default: null },
+    fingerprint: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    meta: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
   },
   { _id: false }
 );
 
 // ============================================================
-// Orden Schema
+// Orden schema
 // ============================================================
 const OrdenSchema = new mongoose.Schema(
   {
-    orderNumber: { type: Number, index: true },
+    orderNumber: {
+      type: Number,
+      index: true,
+    },
 
     usuario: {
       type: mongoose.Schema.Types.ObjectId,
@@ -390,26 +509,65 @@ const OrdenSchema = new mongoose.Schema(
       },
     },
 
-    // ==============================
-    // Breakdown totales
-    // ==============================
-    subtotal: { type: Number, default: 0, min: 0 },
-    shipping: { type: Number, default: 0, min: 0 },
-    tax: { type: Number, default: 0, min: 0 },
-    discount: { type: Number, default: 0, min: 0 },
+    subtotal: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
 
-    total: { type: Number, required: true, min: 0 },
-    totalCostoProveedor: { type: Number, required: true, min: 0 },
-    gananciaTotal: { type: Number, required: true },
+    shipping: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
 
-    comisionTotal: { type: Number, default: 0, min: 0 },
-    ingresoVendedorTotal: { type: Number, default: 0 },
+    tax: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
 
-    vendedorPayouts: { type: [VendedorPayoutSchema], default: [] },
+    discount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
 
-    // ==============================
-    // Pago / Provider
-    // ==============================
+    total: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    totalCostoProveedor: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    gananciaTotal: {
+      type: Number,
+      required: true,
+    },
+
+    // Campo canon
+    comisionTotal: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    // Campo canon
+    ingresoVendedorTotal: {
+      type: Number,
+      default: 0,
+    },
+
+    vendedorPayouts: {
+      type: [VendedorPayoutSchema],
+      default: [],
+    },
+
     metodoPago: {
       type: String,
       enum: METODOS_PAGO,
@@ -424,7 +582,13 @@ const OrdenSchema = new mongoose.Schema(
       index: true,
     },
 
-    moneda: { type: String, default: "usd", trim: true, lowercase: true, index: true },
+    moneda: {
+      type: String,
+      default: "usd",
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
 
     estadoPago: {
       type: String,
@@ -440,29 +604,72 @@ const OrdenSchema = new mongoose.Schema(
       index: true,
     },
 
-    paymentStatusDetail: { type: String, trim: true, default: "" },
+    paymentStatusDetail: {
+      type: String,
+      trim: true,
+      default: "",
+    },
 
-    paidAt: { type: Date, default: null, index: true },
-    failedAt: { type: Date, default: null },
-    refundedAt: { type: Date, default: null },
+    paidAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
 
-    // ==============================
-    // Stripe fields
-    // ==============================
-    stripeSessionId: { type: String, trim: true, default: "" },
-    stripePaymentIntentId: { type: String, trim: true, default: "" },
-    stripeLatestEventId: { type: String, trim: true, default: "" },
+    failedAt: {
+      type: Date,
+      default: null,
+    },
 
-    stripeAmountTotal: { type: Number, default: 0 },
-    stripeAmountReceived: { type: Number, default: 0 },
-    stripeRefundAmount: { type: Number, default: 0 },
-    stripeCustomerId: { type: String, trim: true, default: "" },
+    refundedAt: {
+      type: Date,
+      default: null,
+    },
 
-    stripeEventIds: { type: [String], default: [] },
+    stripeSessionId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
 
-    // ==============================
-    // ✅ MODO A (ESCROW) — Payout Security Layer
-    // ==============================
+    stripePaymentIntentId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    stripeLatestEventId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    stripeAmountTotal: {
+      type: Number,
+      default: 0,
+    },
+
+    stripeAmountReceived: {
+      type: Number,
+      default: 0,
+    },
+
+    stripeRefundAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    stripeCustomerId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    stripeEventIds: {
+      type: [String],
+      default: [],
+    },
+
     payoutPolicy: {
       type: String,
       enum: PAYOUT_POLICY,
@@ -470,21 +677,42 @@ const OrdenSchema = new mongoose.Schema(
       index: true,
     },
 
-    payoutHoldDays: { type: Number, default: DEFAULT_PAYOUT_HOLD_DAYS, min: 0, max: 60 },
-    payoutEligibleAt: { type: Date, default: null, index: true },
-    payoutReleasedAt: { type: Date, default: null, index: true },
+    payoutHoldDays: {
+      type: Number,
+      default: DEFAULT_PAYOUT_HOLD_DAYS,
+      min: 0,
+      max: 60,
+    },
 
-    payoutBlocked: { type: Boolean, default: false, index: true },
-    payoutBlockedReason: { type: String, trim: true, default: "" },
+    payoutEligibleAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
 
-    // ==============================
-    // Proveedores agregados
-    // ==============================
-    proveedores: { type: [ProveedorSchema], default: [] },
+    payoutReleasedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
 
-    // ==============================
-    // Dirección (snapshot)
-    // ==============================
+    payoutBlocked: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    payoutBlockedReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    proveedores: {
+      type: [ProveedorSchema],
+      default: [],
+    },
+
     direccionEntrega: {
       nombre: { type: String, trim: true, default: "" },
       direccion: { type: String, trim: true, default: "" },
@@ -495,21 +723,40 @@ const OrdenSchema = new mongoose.Schema(
       telefono: { type: String, trim: true, default: "" },
     },
 
-    // ==============================
-    // Historial
-    // ==============================
-    historial: { type: [HistorialSchema], default: [] },
+    historial: {
+      type: [HistorialSchema],
+      default: [],
+    },
   },
   {
     timestamps: true,
     versionKey: "__v",
     optimisticConcurrency: true,
     minimize: false,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
   }
 );
 
+// Compatibilidad de nombres a nivel orden
+OrdenSchema.virtual("totalComisiones")
+  .get(function () {
+    return this.comisionTotal;
+  })
+  .set(function (value) {
+    this.comisionTotal = value;
+  });
+
+OrdenSchema.virtual("totalNetoVendedores")
+  .get(function () {
+    return this.ingresoVendedorTotal;
+  })
+  .set(function (value) {
+    this.ingresoVendedorTotal = value;
+  });
+
 // ============================================================
-// Auto-increment orderNumber (Counter)
+// Auto increment
 // ============================================================
 async function nextOrderNumber() {
   const doc = await Counter.findOneAndUpdate(
@@ -522,7 +769,7 @@ async function nextOrderNumber() {
 }
 
 // ============================================================
-// Helpers internos (historial / fingerprint / safe arrays)
+// Helpers internos
 // ============================================================
 function ensureHistorialArray(doc) {
   if (!doc) return;
@@ -545,21 +792,19 @@ function normalizeStripeId(v) {
   return toStringSafe(v, "").trim();
 }
 
-// ============================================================
-// Agrupar payouts por vendedor desde items
-// ============================================================
 function buildVendedorPayoutsFromItems(items = [], prevPayouts = []) {
   const map = new Map();
 
   for (const it of items || []) {
     if (toStringSafe(it.sellerType, "platform") !== "seller") continue;
-    if (!it.vendedor) continue;
 
-    const vid = String(it.vendedor);
-    const monto = round2(toNumber(it.ingresoVendedor, 0));
+    const vendedorId = getItemSellerId(it);
+    if (!vendedorId) continue;
+
+    const monto = round2(getItemIngresoVendedor(it));
     if (monto <= 0) continue;
 
-    map.set(vid, round2((map.get(vid) || 0) + monto));
+    map.set(String(vendedorId), round2((map.get(String(vendedorId)) || 0) + monto));
   }
 
   const prev = Array.isArray(prevPayouts) ? prevPayouts : [];
@@ -567,6 +812,7 @@ function buildVendedorPayoutsFromItems(items = [], prevPayouts = []) {
 
   for (const [vendedorId, monto] of map.entries()) {
     const old = prev.find((p) => String(p?.vendedor) === String(vendedorId));
+
     out.push({
       vendedor: vendedorId,
       stripeAccountId: toStringSafe(old?.stripeAccountId, "").trim(),
@@ -588,9 +834,11 @@ function buildVendedorPayoutsFromItems(items = [], prevPayouts = []) {
 }
 
 function hasSellerItems(items = []) {
-  return (items || []).some(
-    (it) => toStringSafe(it?.sellerType, "platform") === "seller" && it?.vendedor
-  );
+  return (items || []).some((it) => {
+    const sellerType = toStringSafe(it?.sellerType, "platform");
+    const sellerId = getItemSellerId(it);
+    return sellerType === "seller" && sellerId;
+  });
 }
 
 function shouldBlockPayoutByPaymentStatus(estadoPago) {
@@ -598,7 +846,7 @@ function shouldBlockPayoutByPaymentStatus(estadoPago) {
 }
 
 // ============================================================
-// Validaciones y normalizaciones pre-validate (core consistency)
+// Pre validate
 // ============================================================
 OrdenSchema.pre("validate", async function () {
   if (this.isNew && !this.orderNumber) {
@@ -611,7 +859,9 @@ OrdenSchema.pre("validate", async function () {
 
   const items = Array.isArray(this.items) ? this.items : [];
 
-  const subtotalItems = round2(items.reduce((acc, it) => acc + toNumber(it.subtotal, 0), 0));
+  const subtotalItems = round2(
+    items.reduce((acc, it) => acc + toNumber(it.subtotal, 0), 0)
+  );
   this.subtotal = Math.max(0, subtotalItems);
 
   this.shipping = round2(Math.max(0, toNumber(this.shipping, 0)));
@@ -631,9 +881,12 @@ OrdenSchema.pre("validate", async function () {
 
   this.gananciaTotal = round2(this.total - this.totalCostoProveedor);
 
-  const comisionTotal = round2(items.reduce((acc, it) => acc + toNumber(it.comisionMonto, 0), 0));
+  const comisionTotal = round2(
+    items.reduce((acc, it) => acc + toNumber(it.comisionMonto, 0), 0)
+  );
+
   const ingresoVendedorTotal = round2(
-    items.reduce((acc, it) => acc + toNumber(it.ingresoVendedor, 0), 0)
+    items.reduce((acc, it) => acc + getItemIngresoVendedor(it), 0)
   );
 
   this.comisionTotal = Math.max(0, comisionTotal);
@@ -662,9 +915,16 @@ OrdenSchema.pre("validate", async function () {
 
   this.paymentStatusDetail = toStringSafe(this.paymentStatusDetail).trim();
 
-  this.payoutHoldDays = clamp(toNumber(this.payoutHoldDays, DEFAULT_PAYOUT_HOLD_DAYS), 0, 60);
+  this.payoutHoldDays = clamp(
+    toNumber(this.payoutHoldDays, DEFAULT_PAYOUT_HOLD_DAYS),
+    0,
+    60
+  );
+
   if (!this.payoutPolicy) this.payoutPolicy = "escrow_delivered_hold";
-  if (!PAYOUT_POLICY.includes(this.payoutPolicy)) this.payoutPolicy = "escrow_delivered_hold";
+  if (!PAYOUT_POLICY.includes(this.payoutPolicy)) {
+    this.payoutPolicy = "escrow_delivered_hold";
+  }
 
   const proveedoresSet = new Set(
     items.map((it) => toStringSafe(it.proveedor, "").trim()).filter(Boolean)
@@ -689,6 +949,7 @@ OrdenSchema.pre("validate", async function () {
     pr.proveedor = toStringSafe(pr.proveedor).trim();
     pr.referenciaProveedor = toStringSafe(pr.referenciaProveedor).trim();
     pr.tracking = toStringSafe(pr.tracking).trim();
+
     if (!ESTADOS_PAGO_PROVEEDOR.includes(pr.estadoPagoProveedor)) {
       pr.estadoPagoProveedor = "pendiente";
     }
@@ -712,14 +973,15 @@ OrdenSchema.pre("validate", async function () {
 });
 
 // ============================================================
-// Métodos de instancia (Historial / Stripe ledger / helpers)
+// Métodos de instancia
 // ============================================================
 OrdenSchema.methods.pushHistorial = function (estado, meta = null, opts = {}) {
   ensureHistorialArray(this);
 
   const source = toStringSafe(opts.source, "system").trim() || "system";
   const fingerprint =
-    toStringSafe(opts.fingerprint, "").trim() || buildFingerprint({ estado, source, meta });
+    toStringSafe(opts.fingerprint, "").trim() ||
+    buildFingerprint({ estado, source, meta });
 
   const last = this.historial[this.historial.length - 1];
   if (last && last.fingerprint && last.fingerprint === fingerprint) return false;
@@ -759,20 +1021,20 @@ OrdenSchema.methods.getBreakdownPorVendedor = function () {
 
   for (const it of items) {
     if (toStringSafe(it.sellerType, "platform") !== "seller") continue;
-    const vid = it.vendedor ? String(it.vendedor) : "";
+    const vid = getItemSellerId(it);
     if (!vid) continue;
 
-    if (!out[vid]) out[vid] = { monto: 0, itemsCount: 0 };
-    out[vid].monto = round2(out[vid].monto + toNumber(it.ingresoVendedor, 0));
-    out[vid].itemsCount += 1;
+    if (!out[String(vid)]) out[String(vid)] = { monto: 0, itemsCount: 0 };
+
+    out[String(vid)].monto = round2(
+      out[String(vid)].monto + getItemIngresoVendedor(it)
+    );
+    out[String(vid)].itemsCount += 1;
   }
 
   return out;
 };
 
-/**
- * ✅ MODO A: ¿La orden es elegible para payout?
- */
 OrdenSchema.methods.isPayoutEligible = function () {
   if (this.payoutPolicy !== "escrow_delivered_hold") return false;
   if (this.payoutBlocked) return false;
@@ -857,9 +1119,15 @@ OrdenSchema.methods.setEstadoPago = function (nuevoEstado, meta = null, source =
   return true;
 };
 
-OrdenSchema.methods.setEstadoFulfillment = function (nuevoEstado, meta = null, source = "system") {
+OrdenSchema.methods.setEstadoFulfillment = function (
+  nuevoEstado,
+  meta = null,
+  source = "system"
+) {
   const to = toStringSafe(nuevoEstado).trim();
-  if (!ESTADOS_FUL.includes(to)) throw new Error(`estadoFulfillment inválido: ${to}`);
+  if (!ESTADOS_FUL.includes(to)) {
+    throw new Error(`estadoFulfillment inválido: ${to}`);
+  }
 
   const from = this.estadoFulfillment;
   if (from && !canTransition(FUL_TRANSITIONS, from, to)) {
@@ -911,7 +1179,7 @@ OrdenSchema.methods.blockPayouts = function (reason, meta = null, source = "syst
 };
 
 // ============================================================
-// Hooks de estado (auditoría + timestamps + state machine)
+// Hooks de estado
 // ============================================================
 OrdenSchema.pre("init", function (doc) {
   this.$locals = this.$locals || {};
@@ -925,9 +1193,6 @@ OrdenSchema.pre("save", function () {
   const items = Array.isArray(this.items) ? this.items : [];
   const hasSellers = hasSellerItems(items);
 
-  // -----------------------------
-  // estadoPago
-  // -----------------------------
   if (this.isModified("estadoPago")) {
     const from = this.$locals?.prevEstadoPago ?? null;
     const to = this.estadoPago;
@@ -951,16 +1216,19 @@ OrdenSchema.pre("save", function () {
     if (shouldBlockPayoutByPaymentStatus(to) && hasSellers) {
       this.payoutBlocked = true;
       this.payoutBlockedReason = `payment_${to}`;
+
       for (const vp of this.vendedorPayouts || []) {
         if (vp && vp.status !== "pagado") vp.status = "bloqueado";
       }
-      this.pushHistorial("payouts_blocked", { reason: this.payoutBlockedReason }, { source: "system" });
+
+      this.pushHistorial(
+        "payouts_blocked",
+        { reason: this.payoutBlockedReason },
+        { source: "system" }
+      );
     }
   }
 
-  // -----------------------------
-  // estadoFulfillment
-  // -----------------------------
   if (this.isModified("estadoFulfillment")) {
     const from = this.$locals?.prevEstadoFulfillment ?? null;
     const to = this.estadoFulfillment;
@@ -978,13 +1246,21 @@ OrdenSchema.pre("save", function () {
       this.estadoPago === "pagado" &&
       !this.payoutBlocked
     ) {
-      const holdDays = clamp(toNumber(this.payoutHoldDays, DEFAULT_PAYOUT_HOLD_DAYS), 0, 60);
+      const holdDays = clamp(
+        toNumber(this.payoutHoldDays, DEFAULT_PAYOUT_HOLD_DAYS),
+        0,
+        60
+      );
 
       if (!this.payoutEligibleAt) {
         this.payoutEligibleAt = addDays(nowDate(), holdDays);
         this.pushHistorial(
           "payouts_scheduled",
-          { policy: this.payoutPolicy, holdDays, payoutEligibleAt: this.payoutEligibleAt },
+          {
+            policy: this.payoutPolicy,
+            holdDays,
+            payoutEligibleAt: this.payoutEligibleAt,
+          },
           { source: "system" }
         );
       }
@@ -993,16 +1269,22 @@ OrdenSchema.pre("save", function () {
     if (to === "cancelado" && hasSellers) {
       this.payoutBlocked = true;
       this.payoutBlockedReason = "fulfillment_cancelado";
+
       for (const vp of this.vendedorPayouts || []) {
         if (vp && vp.status !== "pagado") vp.status = "bloqueado";
       }
-      this.pushHistorial("payouts_blocked", { reason: this.payoutBlockedReason }, { source: "system" });
+
+      this.pushHistorial(
+        "payouts_blocked",
+        { reason: this.payoutBlockedReason },
+        { source: "system" }
+      );
     }
   }
 });
 
 // ============================================================
-// Statics (consultas comunes / helpers)
+// Statics
 // ============================================================
 OrdenSchema.statics.findByOrderNumber = function (orderNumber) {
   const n = Number(orderNumber);
@@ -1029,7 +1311,13 @@ OrdenSchema.statics.findByVendedor = function (vendedorId, { limit = 50, skip = 
   const lim = clamp(parseInt(limit, 10) || 50, 1, 200);
   const sk = Math.max(0, parseInt(skip, 10) || 0);
 
-  return this.find({ "items.vendedor": id, "items.sellerType": "seller" })
+  return this.find({
+    $or: [
+      { "items.vendedor": id, "items.sellerType": "seller" },
+      { "items.vendedorId": id, "items.sellerType": "seller" },
+      { "items.sellerId": id, "items.sellerType": "seller" },
+    ],
+  })
     .sort({ createdAt: -1 })
     .skip(sk)
     .limit(lim);
@@ -1078,7 +1366,7 @@ OrdenSchema.statics.findPayoutEligible = function ({ limit = 50, skip = 0 } = {}
 };
 
 // ============================================================
-// Índices (PRO / escalabilidad)
+// Índices
 // ============================================================
 OrdenSchema.index({ createdAt: -1 });
 OrdenSchema.index({ usuario: 1, createdAt: -1 });

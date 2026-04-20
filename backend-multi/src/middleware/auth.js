@@ -1,15 +1,14 @@
-// ==========================================================
-// auth.js — Middleware de Autenticación Enterprise ULTRA
-// ==========================================================
-
 "use strict";
 
-const jwt = require("jsonwebtoken");
 const Usuario = require("../models/Usuario");
+const { verificarAccessToken } = require("../services/authService");
 
-// ==========================================================
+const ACCESS_COOKIE_NAME =
+  process.env.ACCESS_COOKIE_NAME || "alaia_access_token";
+
+// ======================================================
 // Helpers respuesta estándar
-// ==========================================================
+// ======================================================
 function sendError(res, status, message, reqId = null) {
   return res.status(status).json({
     ok: false,
@@ -26,14 +25,18 @@ function send403(res, message = "Acceso denegado", reqId = null) {
   return sendError(res, 403, message, reqId);
 }
 
-// ==========================================================
+// ======================================================
 // Helpers seguridad
-// ==========================================================
+// ======================================================
 function safeString(v) {
   if (typeof v !== "string") return null;
   const s = v.trim();
   if (!s || s === "null" || s === "undefined") return null;
   return s;
+}
+
+function getUserIdFromPayload(payload) {
+  return safeString(payload?.id || payload?._id || payload?.userId);
 }
 
 function getTokenFromAuthorizationHeader(req) {
@@ -49,6 +52,7 @@ function getTokenFromAuthorizationHeader(req) {
 
 function getTokenFromCookies(req) {
   return (
+    safeString(req.cookies?.[ACCESS_COOKIE_NAME]) ||
     safeString(req.cookies?.accessToken) ||
     safeString(req.cookies?.token) ||
     null
@@ -57,18 +61,6 @@ function getTokenFromCookies(req) {
 
 function getTokenFromRequest(req) {
   return getTokenFromAuthorizationHeader(req) || getTokenFromCookies(req);
-}
-
-function verifyJwt(token) {
-  if (!process.env.JWT_SECRET) {
-    const err = new Error("JWT_SECRET faltante");
-    err.statusCode = 500;
-    throw err;
-  }
-
-  return jwt.verify(token, process.env.JWT_SECRET, {
-    algorithms: ["HS256"],
-  });
 }
 
 function isTemporaryLocked(usuario) {
@@ -81,9 +73,9 @@ function hasRole(usuario, allowedRoles = []) {
   return allowedRoles.includes(usuario.rol);
 }
 
-// ==========================================================
+// ======================================================
 // MIDDLEWARE: PROTEGER
-// ==========================================================
+// ======================================================
 async function proteger(req, res, next) {
   const reqId = req.reqId || null;
 
@@ -96,26 +88,24 @@ async function proteger(req, res, next) {
 
     let decoded;
     try {
-      decoded = verifyJwt(token);
+      decoded = verificarAccessToken(token);
     } catch (err) {
       if (err?.name === "TokenExpiredError") {
         return send401(res, "Token expirado", reqId);
       }
 
-      if (err?.statusCode === 500) {
-        console.error("❌ Auth config error:", err.message);
-        return sendError(res, 500, "Error configuración servidor", reqId);
-      }
-
       return send401(res, "Token inválido", reqId);
     }
 
-    const userId = safeString(decoded?.id || decoded?._id || decoded?.userId);
+    const userId = getUserIdFromPayload(decoded);
+
     if (!userId) {
       return send401(res, "Token inválido", reqId);
     }
 
-    const usuario = await Usuario.findById(userId).select("-password");
+    const usuario = await Usuario.findById(userId).select(
+      "+tokenVersion +lockedUntil -password"
+    );
 
     if (!usuario) {
       return send401(res, "Usuario no existe", reqId);
@@ -135,6 +125,7 @@ async function proteger(req, res, next) {
 
     if (
       typeof decoded?.tokenVersion === "number" &&
+      typeof usuario?.tokenVersion === "number" &&
       usuario.tokenVersion !== decoded.tokenVersion
     ) {
       return send401(res, "Sesión revocada", reqId);
@@ -158,9 +149,9 @@ async function proteger(req, res, next) {
   }
 }
 
-// ==========================================================
+// ======================================================
 // MIDDLEWARE: REQUIERE ROLES
-// ==========================================================
+// ======================================================
 function requireRoles(...roles) {
   const allowedRoles = roles.flat().filter(Boolean);
 
@@ -187,20 +178,16 @@ function requireRoles(...roles) {
   };
 }
 
-// ==========================================================
-// MIDDLEWARE: SOLO ADMIN
-// ==========================================================
+// ======================================================
+// MIDDLEWARE: SOLO ADMIN / SOLO VENDEDOR
+// ======================================================
 const soloAdmin = requireRoles("admin");
-
-// ==========================================================
-// MIDDLEWARE: SOLO VENDEDOR
-// ==========================================================
 const soloVendedor = requireRoles("vendedor");
 
-// ==========================================================
+// ======================================================
 // MIDDLEWARE: DUEÑO O ADMIN
 // getOwnerIdFn puede ser sync o async
-// ==========================================================
+// ======================================================
 function duenoOAdmin(getOwnerIdFn) {
   return async function ownerOrAdminMiddleware(req, res, next) {
     const reqId = req.reqId || null;
@@ -236,9 +223,9 @@ function duenoOAdmin(getOwnerIdFn) {
   };
 }
 
-// ==========================================================
+// ======================================================
 // EXPORTS
-// ==========================================================
+// ======================================================
 module.exports = {
   proteger,
   soloAdmin,

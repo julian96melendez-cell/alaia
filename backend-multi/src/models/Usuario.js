@@ -1,16 +1,10 @@
-// ==========================================================
-// Usuario.js — Modelo Usuario Enterprise ULTRA (Marketplace Ready)
-// ==========================================================
-
 "use strict";
 
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
-// ==========================================================
-// Constantes
-// ==========================================================
 const ROLES = ["usuario", "admin", "vendedor"];
+const SELLER_STATUSES = ["pending", "approved", "suspended"];
 const PUSH_PLATFORMS = ["ios", "android", "web"];
 
 function safeStr(v, fallback = "") {
@@ -45,9 +39,6 @@ function uniqPushTokens(tokens = []) {
   return out;
 }
 
-// ==========================================================
-// Subschema Push Tokens
-// ==========================================================
 const PushTokenSchema = new mongoose.Schema(
   {
     token: {
@@ -68,9 +59,6 @@ const PushTokenSchema = new mongoose.Schema(
   { _id: false }
 );
 
-// ==========================================================
-// Usuario Schema
-// ==========================================================
 const UsuarioSchema = new mongoose.Schema(
   {
     nombre: {
@@ -97,9 +85,6 @@ const UsuarioSchema = new mongoose.Schema(
       select: false,
     },
 
-    // ======================================================
-    // ROLES
-    // ======================================================
     rol: {
       type: String,
       enum: ROLES,
@@ -128,11 +113,9 @@ const UsuarioSchema = new mongoose.Schema(
     tokenVersion: {
       type: Number,
       default: 0,
+      select: false,
     },
 
-    // ======================================================
-    // SEGURIDAD / AUDITORÍA
-    // ======================================================
     ultimoLoginAt: {
       type: Date,
       default: null,
@@ -149,12 +132,14 @@ const UsuarioSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+      select: false,
     },
 
     lockedUntil: {
       type: Date,
       default: null,
       index: true,
+      select: false,
     },
 
     passwordChangedAt: {
@@ -163,9 +148,14 @@ const UsuarioSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ======================================================
-    // STRIPE CONNECT (Marketplace)
-    // ======================================================
+    // Marketplace / Seller
+    sellerStatus: {
+      type: String,
+      enum: SELLER_STATUSES,
+      default: null,
+      index: true,
+    },
+
     stripeAccountId: {
       type: String,
       trim: true,
@@ -192,9 +182,6 @@ const UsuarioSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ======================================================
-    // PUSH NOTIFICATIONS
-    // ======================================================
     pushTokens: {
       type: [PushTokenSchema],
       default: [],
@@ -207,9 +194,6 @@ const UsuarioSchema = new mongoose.Schema(
   }
 );
 
-// ==========================================================
-// Pre-validate: normalización
-// ==========================================================
 UsuarioSchema.pre("validate", function () {
   this.nombre = safeStr(this.nombre);
   this.email = normalizeEmail(this.email);
@@ -218,13 +202,19 @@ UsuarioSchema.pre("validate", function () {
     this.rol = "usuario";
   }
 
+  if (this.rol !== "vendedor") {
+    this.sellerStatus = null;
+  } else if (
+    this.sellerStatus !== null &&
+    !SELLER_STATUSES.includes(this.sellerStatus)
+  ) {
+    this.sellerStatus = "pending";
+  }
+
   this.ultimoLoginIp = safeStr(this.ultimoLoginIp);
   this.pushTokens = uniqPushTokens(this.pushTokens);
 });
 
-// ==========================================================
-// Pre-save: hash password
-// ==========================================================
 UsuarioSchema.pre("save", async function () {
   if (!this.isModified("password")) return;
 
@@ -233,25 +223,16 @@ UsuarioSchema.pre("save", async function () {
   this.passwordChangedAt = new Date();
 });
 
-// ==========================================================
-// Comparar password
-// ==========================================================
 UsuarioSchema.methods.compararPassword = async function (passwordPlano) {
   if (!this.password) return false;
   return bcrypt.compare(passwordPlano, this.password);
 };
 
-// ==========================================================
-// Estado de bloqueo
-// ==========================================================
 UsuarioSchema.methods.estaBloqueadoTemporalmente = function () {
   if (!this.lockedUntil) return false;
   return new Date(this.lockedUntil).getTime() > Date.now();
 };
 
-// ==========================================================
-// Registrar login exitoso
-// ==========================================================
 UsuarioSchema.methods.registrarLoginExitoso = function (ip = "") {
   this.ultimoLoginAt = new Date();
   this.ultimoLoginIp = safeStr(ip);
@@ -259,9 +240,6 @@ UsuarioSchema.methods.registrarLoginExitoso = function (ip = "") {
   this.lockedUntil = null;
 };
 
-// ==========================================================
-// Registrar login fallido
-// ==========================================================
 UsuarioSchema.methods.registrarLoginFallido = function ({
   maxIntentos = 5,
   bloqueoMinutos = 15,
@@ -275,9 +253,6 @@ UsuarioSchema.methods.registrarLoginFallido = function ({
   }
 };
 
-// ==========================================================
-// Ocultar campos sensibles
-// ==========================================================
 UsuarioSchema.methods.toJSON = function () {
   const obj = this.toObject();
 
@@ -289,9 +264,6 @@ UsuarioSchema.methods.toJSON = function () {
   return obj;
 };
 
-// ==========================================================
-// Helpers de roles
-// ==========================================================
 UsuarioSchema.methods.esAdmin = function () {
   return this.rol === "admin";
 };
@@ -304,9 +276,6 @@ UsuarioSchema.methods.esUsuario = function () {
   return this.rol === "usuario";
 };
 
-// ==========================================================
-// Push tokens
-// ==========================================================
 UsuarioSchema.methods.addPushToken = function ({ token, platform }) {
   const cleanToken = safeStr(token);
   const cleanPlatform = safeStr(platform);
@@ -333,11 +302,9 @@ UsuarioSchema.methods.removePushToken = function (token) {
   return this.pushTokens.length !== before;
 };
 
-// ==========================================================
-// Índices
-// ==========================================================
 UsuarioSchema.index({ email: 1 }, { unique: true });
 UsuarioSchema.index({ rol: 1, activo: 1 });
+UsuarioSchema.index({ sellerStatus: 1, rol: 1 });
 UsuarioSchema.index({ stripeAccountId: 1 }, { sparse: true });
 UsuarioSchema.index({ createdAt: -1 });
 UsuarioSchema.index({ ultimoLoginAt: -1 });

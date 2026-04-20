@@ -1,20 +1,3 @@
-// ==========================================================
-// adminPayoutController.js — Admin Payouts (ENTERPRISE ULTRA)
-// ==========================================================
-//
-// Incluye:
-// ✅ Listado de payouts con filtros, búsqueda y paginación
-// ✅ Métricas de payouts
-// ✅ Detalle de payouts por orden
-// ✅ Reintento manual de payouts fallidos/pendientes
-// ✅ Compatible con Orden.js (vendedorPayouts)
-// ✅ Compatible con payoutService.js
-// ✅ Respuestas consistentes
-// ✅ Logs estructurados
-//
-// Requiere middleware: proteger + soloAdmin
-// ==========================================================
-
 "use strict";
 
 const mongoose = require("mongoose");
@@ -48,6 +31,11 @@ const serverError = (res, message = "Error interno", extra = {}) =>
 // ==========================================================
 const safeInt = (v, def = 0) => {
   const n = parseInt(String(v), 10);
+  return Number.isFinite(n) ? n : def;
+};
+
+const safeNumber = (v, def = 0) => {
+  const n = Number(v);
   return Number.isFinite(n) ? n : def;
 };
 
@@ -92,6 +80,7 @@ const PAYOUT_STATUS = new Set([
 
 function validatePayoutStatusOrAll(value) {
   if (!value || value === "all") return { ok: true };
+
   if (!PAYOUT_STATUS.has(value)) {
     return {
       ok: false,
@@ -99,6 +88,7 @@ function validatePayoutStatusOrAll(value) {
       allowed: Array.from(PAYOUT_STATUS),
     };
   }
+
   return { ok: true };
 }
 
@@ -127,7 +117,24 @@ function getUserCollectionName() {
   ) {
     return String(process.env.USER_COLLECTION).trim();
   }
+
   return "usuarios";
+}
+
+function isAdmin(req) {
+  return req?.usuario?.rol === "admin";
+}
+
+function buildRetryRunId(vendedorId = null) {
+  return vendedorId
+    ? `admin_retry_${String(vendedorId)}_${Date.now()}`
+    : `admin_retry_all_${Date.now()}`;
+}
+
+function buildRetryReason(vendedorId = null) {
+  return vendedorId
+    ? `admin_manual_retry_vendedor_${String(vendedorId)}`
+    : "admin_manual_retry_all";
 }
 
 // ==========================================================
@@ -138,7 +145,7 @@ exports.adminListarPayouts = async (req, res) => {
   const reqId = getRequestId(req);
 
   try {
-    if (req.usuario?.rol !== "admin") return forbidden(res);
+    if (!isAdmin(req)) return forbidden(res);
 
     const page = clamp(safeInt(req.query.page, 1), 1, 100000);
     const limit = clamp(safeInt(req.query.limit, 20), 1, 100);
@@ -160,6 +167,7 @@ exports.adminListarPayouts = async (req, res) => {
     const userCollection = getUserCollectionName();
 
     const matchOrden = {};
+
     if (onlyEligible) {
       matchOrden.payoutEligibleAt = { $ne: null, $lte: new Date() };
       matchOrden.payoutBlocked = false;
@@ -210,6 +218,7 @@ exports.adminListarPayouts = async (req, res) => {
           vendedorEmail: { $ifNull: ["$usuarioVendedor.email", ""] },
           ordenIdStr: { $toString: "$_id" },
           vendedorIdStr: { $toString: "$vendedorPayouts.vendedor" },
+          orderNumberStr: { $toString: "$orderNumber" },
         },
       }
     );
@@ -222,6 +231,7 @@ exports.adminListarPayouts = async (req, res) => {
             { vendedorEmail: { $regex: escapeRegex(q), $options: "i" } },
             { ordenIdStr: { $regex: escapeRegex(q), $options: "i" } },
             { vendedorIdStr: { $regex: escapeRegex(q), $options: "i" } },
+            { orderNumberStr: { $regex: escapeRegex(q), $options: "i" } },
             {
               "vendedorPayouts.stripeTransferId": {
                 $regex: escapeRegex(q),
@@ -308,6 +318,7 @@ exports.adminListarPayouts = async (req, res) => {
       reqId,
       err: err?.message || String(err),
     });
+
     return serverError(res, "Error interno listando payouts", { reqId });
   }
 };
@@ -320,7 +331,7 @@ exports.adminPayoutMetrics = async (req, res) => {
   const reqId = getRequestId(req);
 
   try {
-    if (req.usuario?.rol !== "admin") return forbidden(res);
+    if (!isAdmin(req)) return forbidden(res);
 
     const pipeline = [
       {
@@ -388,6 +399,15 @@ exports.adminPayoutMetrics = async (req, res) => {
               ],
             },
           },
+          totalBloqueadoMonto: {
+            $sum: {
+              $cond: [
+                { $eq: ["$vendedorPayouts.status", "bloqueado"] },
+                "$vendedorPayouts.monto",
+                0,
+              ],
+            },
+          },
         },
       },
       {
@@ -403,6 +423,7 @@ exports.adminPayoutMetrics = async (req, res) => {
           totalPendienteMonto: 1,
           totalPagadoMonto: 1,
           totalFallidoMonto: 1,
+          totalBloqueadoMonto: 1,
         },
       },
     ];
@@ -423,6 +444,7 @@ exports.adminPayoutMetrics = async (req, res) => {
           totalPendienteMonto: 0,
           totalPagadoMonto: 0,
           totalFallidoMonto: 0,
+          totalBloqueadoMonto: 0,
         },
       meta: { reqId },
     });
@@ -431,6 +453,7 @@ exports.adminPayoutMetrics = async (req, res) => {
       reqId,
       err: err?.message || String(err),
     });
+
     return serverError(res, "Error interno en métricas de payouts", { reqId });
   }
 };
@@ -443,7 +466,7 @@ exports.adminObtenerPayoutsDeOrden = async (req, res) => {
   const reqId = getRequestId(req);
 
   try {
-    if (req.usuario?.rol !== "admin") return forbidden(res);
+    if (!isAdmin(req)) return forbidden(res);
 
     const { ordenId } = req.params;
     if (!isObjectId(ordenId)) return bad(res, "ordenId inválido");
@@ -469,8 +492,8 @@ exports.adminObtenerPayoutsDeOrden = async (req, res) => {
         payoutBlockedReason: orden.payoutBlockedReason,
         moneda: orden.moneda,
         total: orden.total,
-        comisionTotal: orden.comisionTotal,
-        ingresoVendedorTotal: orden.ingresoVendedorTotal,
+        comisionTotal: safeNumber(orden.comisionTotal, 0),
+        ingresoVendedorTotal: safeNumber(orden.ingresoVendedorTotal, 0),
         usuario: orden.usuario || null,
         vendedorPayouts: Array.isArray(orden.vendedorPayouts)
           ? orden.vendedorPayouts
@@ -486,6 +509,7 @@ exports.adminObtenerPayoutsDeOrden = async (req, res) => {
       reqId,
       err: err?.message || String(err),
     });
+
     return serverError(res, "Error interno consultando payouts de la orden", {
       reqId,
     });
@@ -501,7 +525,7 @@ exports.adminReintentarPayout = async (req, res) => {
   const reqId = getRequestId(req);
 
   try {
-    if (req.usuario?.rol !== "admin") return forbidden(res);
+    if (!isAdmin(req)) return forbidden(res);
 
     const { ordenId } = req.params;
     const vendedorId = safeString(req.body?.vendedorId);
@@ -512,6 +536,7 @@ exports.adminReintentarPayout = async (req, res) => {
     }
 
     const orden = await Orden.findById(ordenId);
+
     if (!orden) return notFound(res, "Orden no encontrada");
 
     if (!Array.isArray(orden.vendedorPayouts) || !orden.vendedorPayouts.length) {
@@ -544,36 +569,31 @@ exports.adminReintentarPayout = async (req, res) => {
       });
     }
 
-    // Si especificaron vendedor, forzamos ese row a fallido para asegurar reintento por service
-    // pero sin romper si ya estaba pendiente.
-    if (vendedorId) {
-      const row = orden.vendedorPayouts.find(
-        (x) => String(x?.vendedor) === String(vendedorId)
-      );
-      if (row && safeString(row.status) === "bloqueado") {
-        return bad(res, "El payout está bloqueado y no puede reintentarse");
-      }
+    const hasBlockedSelected = rows.some(
+      (x) => safeString(x?.status) === "bloqueado"
+    );
+
+    if (hasBlockedSelected) {
+      return bad(res, "El payout está bloqueado y no puede reintentarse");
     }
 
-    orden.pushHistorial("admin_payout_retry", {
-      ordenId: String(orden._id),
-      vendedorId: vendedorId || null,
-      adminId: req.usuario?._id?.toString?.() || req.usuario?.id || null,
-      reqId,
-      at: new Date().toISOString(),
-    });
+    if (typeof orden.pushHistorial === "function") {
+      orden.pushHistorial("admin_payout_retry", {
+        ordenId: String(orden._id),
+        vendedorId: vendedorId || null,
+        adminId: req.usuario?._id?.toString?.() || req.usuario?.id || null,
+        reqId,
+        at: new Date().toISOString(),
+      });
+    }
 
     await orden.save();
 
     await pagarVendedoresDeOrden({
       ordenId: String(orden._id),
       mode: "scheduler",
-      runId: vendedorId
-        ? `admin_retry_${String(vendedorId)}_${Date.now()}`
-        : `admin_retry_all_${Date.now()}`,
-      reason: vendedorId
-        ? `admin_manual_retry_vendedor_${String(vendedorId)}`
-        : "admin_manual_retry_all",
+      runId: buildRetryRunId(vendedorId || null),
+      reason: buildRetryReason(vendedorId || null),
     });
 
     const refreshed = await Orden.findById(ordenId)
@@ -593,6 +613,7 @@ exports.adminReintentarPayout = async (req, res) => {
       reqId,
       err: err?.message || String(err),
     });
+
     return serverError(res, "Error interno reintentando payout", { reqId });
   }
 };

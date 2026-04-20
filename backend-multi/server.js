@@ -17,6 +17,7 @@ const { startWorkers, stopWorkers } = require("./src/workers");
 
 const authRoutes = require("./src/routes/authRoutes");
 const stripeRoutes = require("./src/routes/stripeRoutes");
+const sellerRoutes = require("./src/routes/sellerRoutes");
 const adminOrdenRoutes = require("./src/routes/adminOrdenRoutes");
 const adminPayoutRoutes = require("./src/routes/adminPayoutRoutes");
 const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
@@ -24,13 +25,26 @@ const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
 const app = express();
 
 // ======================================================
-// ENV / CONSTANTS
+// ENV / CONFIG
 // ======================================================
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3001;
 const BODY_LIMIT = isProd ? "1mb" : "5mb";
 
-const CLIENT_URLS = (process.env.CLIENT_URL || "")
+const TRUST_PROXY = (() => {
+  const raw = String(process.env.TRUST_PROXY || "").trim().toLowerCase();
+
+  if (!raw) return isProd ? 1 : false;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+
+  const asNumber = Number(raw);
+  if (Number.isInteger(asNumber)) return asNumber;
+
+  return raw;
+})();
+
+const CLIENT_URLS = String(process.env.CLIENT_URL || "")
   .split(",")
   .map((v) => v.trim())
   .filter(Boolean);
@@ -57,8 +71,8 @@ if (isProd && CLIENT_URLS.length === 0) {
 app.disable("x-powered-by");
 app.disable("etag");
 
-if (isProd) {
-  app.set("trust proxy", 1);
+if (TRUST_PROXY !== false) {
+  app.set("trust proxy", TRUST_PROXY);
 }
 
 // ======================================================
@@ -116,11 +130,23 @@ app.use(
 
 // ======================================================
 // CORS
-// TEMPORALMENTE ABIERTO PARA DESBLOQUEAR PRODUCCIÓN
 // ======================================================
 app.use(
   cors({
-    origin: true,
+    origin(origin, callback) {
+      // Permitir requests server-to-server / health checks / curl sin Origin
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (ALLOWED_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
+
+      const err = new Error(`Origin no permitido por CORS: ${origin}`);
+      err.statusCode = 403;
+      return callback(err);
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
@@ -131,6 +157,7 @@ app.use(
       "x-correlation-id",
       "idempotency-key",
     ],
+    exposedHeaders: ["x-request-id"],
     optionsSuccessStatus: 204,
   })
 );
@@ -177,7 +204,7 @@ const globalLimiter = rateLimit({
 const authLimiter = rateLimit({
   ...limiterBaseConfig,
   windowMs: 15 * 60 * 1000,
-  max: isProd ? 60 : 500,
+  max: isProd ? 20 : 300,
 });
 
 app.use(globalLimiter);
@@ -208,7 +235,9 @@ const urlencodedParser = express.urlencoded({
 });
 
 app.use((req, res, next) => {
-  if (req.originalUrl === "/api/stripe/webhook") return next();
+  if (req.originalUrl.startsWith("/api/stripe/webhook")) {
+    return next();
+  }
 
   jsonParser(req, res, (jsonErr) => {
     if (jsonErr) return next(jsonErr);
@@ -227,7 +256,22 @@ app.use(
 
 app.use(
   hpp({
-    whitelist: ["estadoPago", "estadoFulfillment", "sort", "page", "limit", "q"],
+    whitelist: [
+      "estadoPago",
+      "estadoFulfillment",
+      "sort",
+      "page",
+      "limit",
+      "q",
+      "minTotal",
+      "maxTotal",
+      "from",
+      "to",
+      "status",
+      "onlyEligible",
+      "onlyReleased",
+      "days",
+    ],
   })
 );
 
@@ -260,6 +304,7 @@ app.get("/readyz", (_req, res) => {
 // ======================================================
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/stripe", stripeRoutes);
+app.use("/api/seller", sellerRoutes);
 app.use("/api/ordenes/admin", adminOrdenRoutes);
 app.use("/api/admin/payouts", adminPayoutRoutes);
 app.use("/api/admin/analytics", adminAnalyticsRoutes);
@@ -284,6 +329,8 @@ app.use((err, req, res, next) => {
       ? err.statusCode
       : Number.isInteger(err?.status) && err.status >= 400 && err.status < 600
       ? err.status
+      : err?.message?.includes?.("Origin no permitido por CORS")
+      ? 403
       : 500;
 
   console.error("GLOBAL ERROR:", {
@@ -300,14 +347,18 @@ app.use((err, req, res, next) => {
     return next(err);
   }
 
+  const message =
+    status === 429
+      ? "Too many requests"
+      : status === 403 && err?.message?.includes?.("Origin no permitido por CORS")
+      ? "Origen no permitido por CORS"
+      : isProd
+      ? "Error interno del servidor"
+      : err?.message || "Error interno";
+
   res.status(status).json({
     ok: false,
-    message:
-      status === 429
-        ? "Too many requests"
-        : isProd
-        ? "Error interno del servidor"
-        : err?.message || "Error interno",
+    message,
     reqId: req.reqId,
   });
 });
@@ -358,8 +409,8 @@ function gracefulShutdown(signal, exitCode = 0) {
 
     server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 BACKEND RUNNING ON ${PORT}`);
-      console.log("🌐 Allowed origins from env:", ALLOWED_ORIGINS);
-      console.log("🌐 CORS mode: TEMP OPEN (origin: true)");
+      console.log("🌐 Allowed origins:", ALLOWED_ORIGINS);
+      console.log("🛡️ Trust proxy:", TRUST_PROXY);
     });
 
     server.requestTimeout = 15000;

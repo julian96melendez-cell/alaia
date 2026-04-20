@@ -1,50 +1,10 @@
-// ==========================================================
-// adminOrdenController.js — Admin Órdenes (ENTERPRISE ULTRA)
-// ==========================================================
-//
-// Incluye:
-// ✅ Listado paginado + filtros + búsqueda (lookup PRO)
-// ✅ Métricas pro (totales, pagadas, pendientes, fallidas)
-// ✅ Detalle de orden
-// ✅ Actualizar estado pago/fulfillment (admin) + AUDIT + LEDGER
-// ✅ Validación estricta de enums (incluye filtros del listado)
-// ✅ Colección Usuario dinámica (sin suposiciones)
-// ✅ Respuesta consistente y segura
-// ✅ EMAIL: notifica al cliente cuando cambia fulfillment (idempotente)
-// ✅ EMAIL: (opcional) notifica cambios de pago (idempotente)
-// ✅ Fail-safe: email NO rompe endpoint
-// ✅ Feature flags por ENV para producción
-// ✅ Logger estructurado (sin dependencias extra)
-//
-// ✅ TIMELINE AMAZON-LIKE:
-//    - Registra eventos de cambios (fulfillment/pago) en historial
-//    - Idempotente (no duplica el mismo evento consecutivo)
-//    - Fuente para /public/:id/timeline
-//
-// ✅ (AÑADIDO SIN ROMPER NADA):
-//    - Payouts automáticos Stripe Connect al marcar "entregado"
-//    - Idempotencia por proveedor (ledger en historial)
-//    - Usa Orden.items.ingresoVendedor (si existe) como fuente de verdad
-//    - Resuelve Stripe Account por ENV (STRIPE_VENDOR_ACCOUNTS_JSON)
-//    - Si no hay mapping, NO rompe: registra historial y continúa
-//
-// Requiere middleware: proteger + soloAdmin
-// ==========================================================
-
 "use strict";
 
 const mongoose = require("mongoose");
 const Orden = require("../models/Orden");
+const { pagarVendedoresDeOrden } = require("../services/payoutService");
 
-// ✅ Stripe (opcional) para payouts automáticos
-let stripe = null;
-try {
-  ({ stripe } = require("./stripeService"));
-} catch (_) {
-  stripe = null;
-}
-
-// ✅ Realtime SSE emitter
+// ✅ Realtime SSE emitter (opcional)
 let emitOrdenUpdate = null;
 try {
   ({ emitOrdenUpdate } = require("./ordenRealtimeController"));
@@ -52,7 +12,7 @@ try {
   emitOrdenUpdate = null;
 }
 
-// ✅ Email service (ya lo tienes)
+// ✅ Email service (opcional)
 let EmailService = null;
 try {
   EmailService = require("../services/emailService");
@@ -91,7 +51,7 @@ const serverError = (res, message = "Error interno", extra = {}) =>
   send(res, 500, { ok: false, message, ...extra });
 
 // ==========================================================
-// Helpers utilitarios (safe)
+// Helpers utilitarios
 // ==========================================================
 const safeInt = (v, def = 0) => {
   const n = parseInt(String(v), 10);
@@ -124,7 +84,7 @@ function safeDateFromQuery(v) {
 }
 
 // ==========================================================
-// Feature flags por ENV (prod-ready)
+// Feature flags por ENV
 // ==========================================================
 function envBool(key, def = false) {
   const v = process.env[key];
@@ -156,21 +116,14 @@ const FLAGS = {
   REALTIME_ON_EMAIL_LEDGER: envBool("REALTIME_ON_EMAIL_LEDGER", false),
 
   AUTO_PAYOUT_ON_DELIVERED: envBool("AUTO_PAYOUT_ON_DELIVERED", true),
-  AUTO_PAYOUT_REQUIRE_PAID: envBool("AUTO_PAYOUT_REQUIRE_PAID", true),
-  AUTO_PAYOUT_REQUIRE_STRIPE: envBool("AUTO_PAYOUT_REQUIRE_STRIPE", true),
-
-  STRIPE_VENDOR_ACCOUNTS_JSON: safeString(
-    process.env.STRIPE_VENDOR_ACCOUNTS_JSON ||
-      process.env.STRIPE_VENDOR_ACCOUNTS ||
-      ""
-  ),
 };
 
 // ==========================================================
-// Logger estructurado (sin libs)
+// Logger estructurado
 // ==========================================================
 function getRequestId(req) {
   return (
+    req.reqId ||
     req.headers["x-request-id"] ||
     req.headers["x-correlation-id"] ||
     `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -188,7 +141,7 @@ function log(level, msg, ctx = {}) {
 }
 
 // ==========================================================
-// REALTIME EMIT (safe)
+// Realtime emit
 // ==========================================================
 function emitRealtimeSafe(ordenDocOrLean, ctx = {}) {
   try {
@@ -214,8 +167,7 @@ function emitRealtimeSafe(ordenDocOrLean, ctx = {}) {
 }
 
 // ==========================================================
-// Enums (alineados con tu schema Orden)
-// ✅ AÑADIDO: reembolsado_parcial
+// Enums
 // ==========================================================
 const ESTADOS_PAGO = new Set([
   "pendiente",
@@ -258,7 +210,7 @@ function validateEstadoFulfillmentOrAll(value) {
 }
 
 // ==========================================================
-// Colección Usuario para $lookup (robusta)
+// Colección Usuario para $lookup
 // ==========================================================
 function getUserCollectionName() {
   if (
@@ -267,6 +219,7 @@ function getUserCollectionName() {
   ) {
     return String(process.env.USER_COLLECTION).trim();
   }
+
   if (UsuarioModel?.collection?.name) return UsuarioModel.collection.name;
   return "usuarios";
 }
@@ -293,7 +246,7 @@ function parseSort(sort) {
 }
 
 // ==========================================================
-// Historial: compatibilidad con docs viejos
+// Historial / timeline
 // ==========================================================
 function ensureHistorialArray(orden) {
   if (!orden) return;
@@ -302,12 +255,14 @@ function ensureHistorialArray(orden) {
 
 function pushHistorial(orden, estado, meta = null) {
   ensureHistorialArray(orden);
-  orden.historial.push({ estado, fecha: now(), meta: meta || null });
+  orden.historial.push({
+    estado,
+    fecha: now(),
+    source: "admin_controller",
+    meta: meta || null,
+  });
 }
 
-// ==========================================================
-// TIMELINE AMAZON-LIKE
-// ==========================================================
 function timelineKey(kind) {
   return `timeline_${String(kind || "").toLowerCase()}`.slice(0, 60);
 }
@@ -316,6 +271,7 @@ function buildTimelineEvent(kind, from, to, meta = {}) {
   return {
     estado: timelineKey(kind),
     fecha: now(),
+    source: "admin_controller",
     meta: {
       kind,
       from: from ?? null,
@@ -350,7 +306,7 @@ function pushTimelineEventIdempotent(orden, kind, from, to, meta = {}) {
 }
 
 // ==========================================================
-// EMAIL ENGINE (ENTERPRISE)
+// Email
 // ==========================================================
 function buildEmailLedgerKey(kind, value) {
   return `email_${kind}_${String(value || "").toLowerCase()}`.slice(0, 120);
@@ -403,6 +359,7 @@ async function safeSendEmail({
           reason: "MISSING_FN_enviarCorreoCambioEstado",
         };
       }
+
       await EmailService.enviarCorreoCambioEstado({
         to,
         orden: orden.toObject ? orden.toObject() : orden,
@@ -412,6 +369,7 @@ async function safeSendEmail({
       if (typeof EmailService.enviarCorreoOrdenPagada !== "function") {
         return { sent: false, reason: "MISSING_FN_enviarCorreoOrdenPagada" };
       }
+
       await EmailService.enviarCorreoOrdenPagada({
         to,
         orden: orden.toObject ? orden.toObject() : orden,
@@ -455,243 +413,38 @@ async function safeSendEmail({
 }
 
 // ==========================================================
-// PAYOUTS AUTOMÁTICOS (Stripe Connect)
+// Payout automático
 // ==========================================================
-function toCents(amount) {
-  const n = Number(amount);
-  if (!Number.isFinite(n)) return 0;
-  return Math.round(n * 100);
-}
-
-function normalizeCurrency(v) {
-  return String(v || "usd").trim().toLowerCase() || "usd";
-}
-
-function buildPayoutLedgerKey(proveedor) {
-  return `payout_${String(proveedor || "unknown").toLowerCase()}`.slice(
-    0,
-    120
-  );
-}
-
-function hasPayoutLedger(orden, proveedor) {
-  const key = buildPayoutLedgerKey(proveedor);
-  const h = Array.isArray(orden?.historial) ? orden.historial : [];
-  return h.some((x) => x?.estado === key);
-}
-
-function parseVendorAccountsMap() {
-  const raw = FLAGS.STRIPE_VENDOR_ACCOUNTS_JSON;
-  if (!raw) return {};
-
-  try {
-    const obj = JSON.parse(raw);
-    if (!obj || typeof obj !== "object") return {};
-    return obj;
-  } catch {
-    try {
-      const out = {};
-      String(raw)
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean)
-        .forEach((pair) => {
-          const [k, v] = pair.split("=").map((x) => (x || "").trim());
-          if (k && v) out[k] = v;
-        });
-      return out;
-    } catch {
-      return {};
-    }
-  }
-}
-
-async function procesarPayoutsMarketplace({ orden, reqId, adminId }) {
+async function procesarPayoutsAlEntregar({ orden, reqId, adminId }) {
   const result = {
     attempted: false,
-    processed: [],
-    skipped: [],
-    errors: [],
+    success: false,
+    error: null,
   };
 
   try {
     if (!FLAGS.AUTO_PAYOUT_ON_DELIVERED) return result;
 
-    if (FLAGS.AUTO_PAYOUT_REQUIRE_STRIPE && !stripe) {
-      result.skipped.push({ reason: "STRIPE_NOT_AVAILABLE" });
-      return result;
-    }
-
-    if (FLAGS.AUTO_PAYOUT_REQUIRE_PAID && orden?.estadoPago !== "pagado") {
-      result.skipped.push({ reason: "ORDER_NOT_PAID" });
-      return result;
-    }
-
-    const items = Array.isArray(orden?.items) ? orden.items : [];
-    if (!items.length) {
-      result.skipped.push({ reason: "NO_ITEMS" });
-      return result;
-    }
-
-    const vendorMap = parseVendorAccountsMap();
-
-    const byProveedor = new Map();
-    for (const it of items) {
-      const proveedor = safeString(it?.proveedor, "local") || "local";
-
-      const ingresoVendedor = Number(it?.ingresoVendedor);
-      const subtotal = Number(it?.subtotal);
-      const comisionMonto = Number(it?.comisionMonto);
-
-      let amount = 0;
-      if (Number.isFinite(ingresoVendedor)) {
-        amount = ingresoVendedor;
-      } else if (Number.isFinite(subtotal) && Number.isFinite(comisionMonto)) {
-        amount = subtotal - comisionMonto;
-      } else if (Number.isFinite(subtotal)) {
-        amount = subtotal;
-      }
-
-      amount = Math.max(0, amount);
-
-      const prev = byProveedor.get(proveedor) || { amount: 0 };
-      byProveedor.set(proveedor, { amount: prev.amount + amount });
-    }
-
-    const currency = normalizeCurrency(orden?.moneda || "usd");
-    const ordenId = String(orden?._id || "");
-    if (!ordenId) {
-      result.skipped.push({ reason: "MISSING_ORDEN_ID" });
-      return result;
-    }
-
     result.attempted = true;
 
-    for (const [proveedor, data] of byProveedor.entries()) {
-      const amount = Math.round((Number(data.amount) || 0) * 100) / 100;
-      const ledgerKey = buildPayoutLedgerKey(proveedor);
+    await pagarVendedoresDeOrden({
+      ordenId: String(orden._id),
+      mode: "scheduler",
+      runId: `admin_delivered_${Date.now()}`,
+      reason: `admin_fulfillment_entregado_${adminId || "unknown"}`,
+    });
 
-      if (hasPayoutLedger(orden, proveedor)) {
-        result.skipped.push({ proveedor, reason: "ALREADY_PAID_OUT" });
-        continue;
-      }
-
-      const destAccount =
-        vendorMap?.[proveedor] ||
-        vendorMap?.[String(proveedor).toLowerCase()] ||
-        null;
-
-      if (!destAccount) {
-        pushHistorial(orden, ledgerKey, {
-          status: "skipped",
-          reason: "MISSING_VENDOR_ACCOUNT_MAPPING",
-          proveedor,
-          at: new Date().toISOString(),
-          reqId,
-          adminId,
-        });
-
-        result.skipped.push({
-          proveedor,
-          reason: "MISSING_VENDOR_ACCOUNT_MAPPING",
-        });
-        continue;
-      }
-
-      const cents = toCents(amount);
-      if (!cents || cents <= 0) {
-        pushHistorial(orden, ledgerKey, {
-          status: "skipped",
-          reason: "ZERO_AMOUNT",
-          proveedor,
-          amount,
-          at: new Date().toISOString(),
-          reqId,
-          adminId,
-        });
-        result.skipped.push({ proveedor, reason: "ZERO_AMOUNT" });
-        continue;
-      }
-
-      try {
-        const transfer = await stripe.transfers.create(
-          {
-            amount: cents,
-            currency,
-            destination: String(destAccount),
-            metadata: {
-              ordenId,
-              proveedor: String(proveedor),
-              adminId: adminId ? String(adminId) : "",
-            },
-          },
-          {
-            idempotencyKey: `payout_${ordenId}_${String(proveedor).toLowerCase()}`.slice(
-              0,
-              255
-            ),
-          }
-        );
-
-        pushHistorial(orden, ledgerKey, {
-          status: "paid",
-          proveedor,
-          amount,
-          cents,
-          currency,
-          destination: String(destAccount),
-          transferId: transfer?.id || null,
-          at: new Date().toISOString(),
-          reqId,
-          adminId,
-        });
-
-        if (Array.isArray(orden.proveedores)) {
-          const row = orden.proveedores.find(
-            (x) =>
-              safeString(x?.proveedor, "").trim() === String(proveedor).trim()
-          );
-          if (row) {
-            row.estadoPagoProveedor = "pagado";
-            row.referenciaProveedor = transfer?.id
-              ? String(transfer.id)
-              : row.referenciaProveedor;
-          }
-        }
-
-        result.processed.push({
-          proveedor,
-          amount,
-          cents,
-          currency,
-          destination: String(destAccount),
-          transferId: transfer?.id || null,
-        });
-      } catch (e) {
-        pushHistorial(orden, ledgerKey, {
-          status: "failed",
-          proveedor,
-          amount,
-          cents,
-          currency,
-          destination: String(destAccount),
-          err: e?.message || String(e),
-          at: new Date().toISOString(),
-          reqId,
-          adminId,
-        });
-
-        result.errors.push({
-          proveedor,
-          err: e?.message || String(e),
-        });
-      }
-    }
-
-    await orden.save().catch(() => {});
+    result.success = true;
     return result;
-  } catch (e) {
-    result.errors.push({ err: e?.message || String(e) });
+  } catch (err) {
+    result.error = err?.message || String(err);
+
+    log("error", "procesarPayoutsAlEntregar error", {
+      reqId,
+      ordenId: String(orden?._id || ""),
+      err: result.error,
+    });
+
     return result;
   }
 }
@@ -738,6 +491,7 @@ exports.adminListarOrdenes = async (req, res) => {
 
     const from = safeDateFromQuery(req.query.from);
     const to = safeDateFromQuery(req.query.to);
+
     if (from || to) {
       filter.createdAt = {};
       if (from) filter.createdAt.$gte = from;
@@ -806,7 +560,12 @@ exports.adminListarOrdenes = async (req, res) => {
           as: "usuarioDoc",
         },
       },
-      { $unwind: { path: "$usuarioDoc", preserveNullAndEmptyArrays: true } },
+      {
+        $unwind: {
+          path: "$usuarioDoc",
+          preserveNullAndEmptyArrays: true,
+        },
+      },
       {
         $addFields: {
           usuarioNombre: { $ifNull: ["$usuarioDoc.nombre", ""] },
@@ -913,8 +672,8 @@ exports.adminObtenerOrden = async (req, res) => {
 };
 
 // ==========================================================
-// PUT /api/ordenes/admin/ordenes/:id/estado
-// Body: { estadoPago?, estadoFulfillment? }
+// PUT /api/ordenes/admin/ordenes/:id/fulfillment
+// PUT /api/ordenes/admin/ordenes/:id/pago
 // ==========================================================
 exports.adminActualizarEstado = async (req, res) => {
   const reqId = getRequestId(req);
@@ -977,10 +736,18 @@ exports.adminActualizarEstado = async (req, res) => {
       );
     }
 
+    // ======================================================
+    // Cambios usando métodos del modelo si existen
+    // ======================================================
     if (estadoPago && orden.estadoPago !== estadoPago) {
       paymentCambioReal = true;
       cambios.estadoPago = { from: orden.estadoPago, to: estadoPago };
-      orden.estadoPago = estadoPago;
+
+      if (typeof orden.setEstadoPago === "function") {
+        orden.setEstadoPago(estadoPago, { adminId, reqId }, "admin_controller");
+      } else {
+        orden.estadoPago = estadoPago;
+      }
     }
 
     if (estadoFulfillment && orden.estadoFulfillment !== estadoFulfillment) {
@@ -989,11 +756,24 @@ exports.adminActualizarEstado = async (req, res) => {
         from: orden.estadoFulfillment,
         to: estadoFulfillment,
       };
-      orden.estadoFulfillment = estadoFulfillment;
+
+      if (typeof orden.setEstadoFulfillment === "function") {
+        orden.setEstadoFulfillment(
+          estadoFulfillment,
+          { adminId, reqId },
+          "admin_controller"
+        );
+      } else {
+        orden.estadoFulfillment = estadoFulfillment;
+      }
     }
 
     if (!Object.keys(cambios).length) {
-      return ok(res, { message: "Sin cambios", data: orden, meta: { reqId } });
+      return ok(res, {
+        message: "Sin cambios",
+        data: orden,
+        meta: { reqId },
+      });
     }
 
     pushHistorial(orden, "admin_update", { adminId, cambios, reqId });
@@ -1058,8 +838,11 @@ exports.adminActualizarEstado = async (req, res) => {
 
     emitRealtimeSafe(orden, { reqId, source: "adminActualizarEstado" });
 
+    // ======================================================
+    // Payout automático al marcar entregado
+    // ======================================================
     if (fulfillmentCambioReal && orden.estadoFulfillment === "entregado") {
-      const payoutRes = await procesarPayoutsMarketplace({
+      const payoutRes = await procesarPayoutsAlEntregar({
         orden,
         reqId,
         adminId,
@@ -1069,22 +852,29 @@ exports.adminActualizarEstado = async (req, res) => {
         reqId,
         ordenId: String(orden._id),
         attempted: payoutRes.attempted,
-        processed: payoutRes.processed?.length || 0,
-        skipped: payoutRes.skipped?.length || 0,
-        errors: payoutRes.errors?.length || 0,
+        success: payoutRes.success,
+        error: payoutRes.error || null,
       });
 
-      if (
-        (payoutRes.processed && payoutRes.processed.length) ||
-        (payoutRes.errors && payoutRes.errors.length)
-      ) {
-        emitRealtimeSafe(orden, { reqId, source: "payouts_on_delivered" });
+      if (payoutRes.attempted) {
+        const refreshed = await Orden.findById(orden._id).populate(
+          "usuario",
+          "email nombre"
+        );
+        if (refreshed) {
+          emitRealtimeSafe(refreshed, {
+            reqId,
+            source: "payouts_on_delivered",
+          });
+        }
       }
     }
 
+    // ======================================================
+    // Emails
+    // ======================================================
     if (fulfillmentCambioReal && FLAGS.EMAIL_ON_FULFILLMENT) {
       const to = extractCustomerEmail(orden);
-
       const ledgerKey = buildEmailLedgerKey(
         "fulfillment",
         orden.estadoFulfillment
@@ -1107,7 +897,6 @@ exports.adminActualizarEstado = async (req, res) => {
 
     if (paymentCambioReal && FLAGS.EMAIL_ON_PAYMENT_STATUS) {
       const to = extractCustomerEmail(orden);
-
       const ledgerKey = buildEmailLedgerKey("payment", orden.estadoPago);
 
       if (orden.estadoPago === "pagado") {
@@ -1119,14 +908,12 @@ exports.adminActualizarEstado = async (req, res) => {
           ledgerKey,
           reqId,
         });
-      } else {
-        if (FLAGS.EMAIL_VERBOSE_LOGS) {
-          log(
-            "info",
-            "EMAIL_ON_PAYMENT_STATUS activo, pero no hay plantilla para este estadoPago",
-            { reqId, estadoPago: orden.estadoPago }
-          );
-        }
+      } else if (FLAGS.EMAIL_VERBOSE_LOGS) {
+        log(
+          "info",
+          "EMAIL_ON_PAYMENT_STATUS activo, pero no hay plantilla para este estadoPago",
+          { reqId, estadoPago: orden.estadoPago }
+        );
       }
     }
 
@@ -1229,7 +1016,7 @@ exports.adminMetrics = async (req, res) => {
 };
 
 // ==========================================================
-// WRAPPERS PARA ROUTER (compatibilidad)
+// Wrappers para router
 // ==========================================================
 exports.adminActualizarFulfillment = async (req, res) => {
   return exports.adminActualizarEstado(req, res);

@@ -2,16 +2,21 @@
 
 const Orden = require("../models/Orden");
 const WebhookEvent = require("../models/WebhookEvent");
-const { construirEventoDesdeWebhook, resumirEventoStripe } = require("./stripeService");
+const {
+  construirEventoDesdeWebhook,
+  resumirEventoStripe,
+} = require("./stripeService");
 const { enviarCorreoOrdenPagada } = require("../services/emailService");
 
-// -----------------------------
+// ======================================================
 // Config / Feature flags
-// -----------------------------
+// ======================================================
 const envBool = (k, def = false) => {
   const v = process.env[k];
   if (v === undefined || v === null || String(v).trim() === "") return def;
-  return ["1", "true", "yes", "y", "on"].includes(String(v).trim().toLowerCase());
+  return ["1", "true", "yes", "y", "on"].includes(
+    String(v).trim().toLowerCase()
+  );
 };
 
 const FLAGS = {
@@ -24,7 +29,10 @@ const FLAGS = {
 };
 
 const ok = (res) => res.status(200).json({ received: true });
-const safeStr = (v, fallback = "") => (v === null || v === undefined ? fallback : String(v));
+
+const safeStr = (v, fallback = "") =>
+  v === null || v === undefined ? fallback : String(v);
+
 const now = () => new Date();
 
 function getReqId(req) {
@@ -37,7 +45,14 @@ function getReqId(req) {
 }
 
 function log(level, msg, ctx = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...ctx }));
+  console.log(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level,
+      msg,
+      ...ctx,
+    })
+  );
 }
 
 function getStripeSignature(req) {
@@ -63,14 +78,12 @@ const toCents = (amount) => {
 
 const normalizeCurrency = (v) => safeStr(v, "").trim().toLowerCase();
 
-// OJO: en tu schema actual NO existe "procesando" en estadoPago.
-// Solo dejamos estados realmente permitidos por Orden.js
 const PAYMENT_OPEN_STATES = ["pendiente"];
 const PAYMENT_FINAL_STATES = ["pagado", "reembolsado", "reembolsado_parcial"];
 
-// -----------------------------
+// ======================================================
 // EMAIL Ledger
-// -----------------------------
+// ======================================================
 const buildEmailLedgerKey = (type, value) =>
   `email_${type}_${String(value || "").toLowerCase()}`.slice(0, 120);
 
@@ -82,15 +95,22 @@ async function reserveEmailLedgerAtomic({ ordenId, ledgerKey, meta }) {
         historial: {
           estado: ledgerKey,
           fecha: new Date(),
+          source: "stripe_webhook",
           meta: meta || null,
         },
       },
     }
   );
+
   return { reserved: !!res?.modifiedCount };
 }
 
-async function enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason, eventId }) {
+async function enviarEmailPagoConfirmadoSafe({
+  reqId,
+  ordenId,
+  reason,
+  eventId,
+}) {
   try {
     if (!FLAGS.EMAIL_ON_PAYMENT) return;
 
@@ -103,14 +123,23 @@ async function enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason, eventId }
     });
 
     if (!reserved.reserved) {
-      log("info", "Email pago ya reservado/enviado (ledger)", { reqId, ordenId, eventId });
+      log("info", "Email pago ya reservado/enviado (ledger)", {
+        reqId,
+        ordenId,
+        eventId,
+      });
       return;
     }
 
-    const orden = await Orden.findById(ordenId).populate("usuario", "email nombre").lean();
+    const orden = await Orden.findById(ordenId)
+      .populate("usuario", "email nombre")
+      .lean();
+
     if (!orden) return;
 
-    const usuarioObj = orden?.usuario && typeof orden.usuario === "object" ? orden.usuario : null;
+    const usuarioObj =
+      orden?.usuario && typeof orden.usuario === "object" ? orden.usuario : null;
+
     const email =
       usuarioObj?.email ||
       orden?.email ||
@@ -119,7 +148,11 @@ async function enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason, eventId }
       null;
 
     if (!email) {
-      log("warn", "No hay email para orden pagada", { reqId, ordenId, eventId });
+      log("warn", "No hay email para orden pagada", {
+        reqId,
+        ordenId,
+        eventId,
+      });
       return;
     }
 
@@ -145,10 +178,17 @@ async function enviarEmailPagoConfirmadoSafe({ reqId, ordenId, reason, eventId }
   }
 }
 
-// -----------------------------
+// ======================================================
 // WebhookEvent persistence
-// -----------------------------
-async function markEvent({ event, status, ordenId = null, errorMessage = "", summary = {}, reqId }) {
+// ======================================================
+async function markEvent({
+  event,
+  status,
+  ordenId = null,
+  errorMessage = "",
+  summary = {},
+  reqId,
+}) {
   try {
     const doc = await WebhookEvent.create({
       provider: "stripe",
@@ -161,14 +201,19 @@ async function markEvent({ event, status, ordenId = null, errorMessage = "", sum
       reqId,
       processedAt: new Date(),
     });
+
     return { created: true, doc };
   } catch (err) {
     if (err?.code === 11000) {
       return {
         created: false,
-        doc: await WebhookEvent.findOne({ provider: "stripe", eventId: event.id }),
+        doc: await WebhookEvent.findOne({
+          provider: "stripe",
+          eventId: event.id,
+        }),
       };
     }
+
     throw err;
   }
 }
@@ -178,17 +223,9 @@ async function addStripeEventIdToOrden({ ordenId, eventId }) {
 
   await Orden.updateOne(
     { _id: ordenId },
-    { $addToSet: { stripeEventIds: String(eventId) } }
-  ).catch(() => {});
-
-  await Orden.updateOne(
-    { _id: ordenId },
     {
-      $push: {
-        stripeEventIds: {
-          $each: [],
-          $slice: -50,
-        },
+      $addToSet: {
+        stripeEventIds: String(eventId),
       },
     }
   ).catch(() => {});
@@ -197,12 +234,15 @@ async function addStripeEventIdToOrden({ ordenId, eventId }) {
 function setOrdenAuditFields({ update, eventId, detail }) {
   if (!update.$set) update.$set = {};
   update.$set.stripeLatestEventId = safeStr(eventId, "");
-  if (detail) update.$set.paymentStatusDetail = safeStr(detail, "").slice(0, 500);
+
+  if (detail) {
+    update.$set.paymentStatusDetail = safeStr(detail, "").slice(0, 500);
+  }
 }
 
-// -----------------------------
+// ======================================================
 // Anti-fraude
-// -----------------------------
+// ======================================================
 async function validarMontoYMonedaSiAplica({
   ordenId,
   stripeAmountTotal,
@@ -219,7 +259,9 @@ async function validarMontoYMonedaSiAplica({
 
   if (FLAGS.ENFORCE_AMOUNT_MATCH && stripeAmountTotal != null) {
     const totalCents = toCents(orden.total);
-    if (totalCents == null) return { ok: false, reason: "ORDER_TOTAL_INVALID" };
+    if (totalCents == null) {
+      return { ok: false, reason: "ORDER_TOTAL_INVALID" };
+    }
 
     const stripeCents = Number(stripeAmountTotal) || 0;
     const diff = Math.abs(totalCents - stripeCents);
@@ -280,7 +322,15 @@ async function validarMontoYMonedaSiAplica({
   return { ok: true };
 }
 
-async function marcarOrdenPagadaAtomico({ ordenId, sessionLike, eventId, detail = "" }) {
+// ======================================================
+// Helpers estado orden
+// ======================================================
+async function marcarOrdenPagadaAtomico({
+  ordenId,
+  sessionLike,
+  eventId,
+  detail = "",
+}) {
   const update = {
     $set: {
       estadoPago: "pagado",
@@ -295,10 +345,16 @@ async function marcarOrdenPagadaAtomico({ ordenId, sessionLike, eventId, detail 
   const obj = sessionLike || {};
 
   if (obj?.id) update.$set.stripeSessionId = safeStr(obj.id);
-  if (obj?.payment_intent) update.$set.stripePaymentIntentId = safeStr(obj.payment_intent);
+  if (obj?.payment_intent) {
+    update.$set.stripePaymentIntentId = safeStr(obj.payment_intent);
+  }
   if (obj?.currency) update.$set.moneda = safeStr(obj.currency, "usd").toLowerCase();
-  if (obj?.amount_total != null) update.$set.stripeAmountTotal = Number(obj.amount_total) || 0;
-  if (obj?.amount_received != null) update.$set.stripeAmountReceived = Number(obj.amount_received) || 0;
+  if (obj?.amount_total != null) {
+    update.$set.stripeAmountTotal = Number(obj.amount_total) || 0;
+  }
+  if (obj?.amount_received != null) {
+    update.$set.stripeAmountReceived = Number(obj.amount_received) || 0;
+  }
   if (obj?.customer) update.$set.stripeCustomerId = safeStr(obj.customer);
 
   setOrdenAuditFields({ update, eventId, detail });
@@ -313,7 +369,12 @@ async function marcarOrdenPagadaAtomico({ ordenId, sessionLike, eventId, detail 
   );
 }
 
-async function marcarOrdenFallidaAtomico({ ordenId, eventId, detail = "", clearSession = false }) {
+async function marcarOrdenFallidaAtomico({
+  ordenId,
+  eventId,
+  detail = "",
+  clearSession = false,
+}) {
   const update = {
     $set: {
       estadoPago: "fallido",
@@ -323,7 +384,9 @@ async function marcarOrdenFallidaAtomico({ ordenId, eventId, detail = "", clearS
     },
   };
 
-  if (clearSession) update.$set.stripeSessionId = "";
+  if (clearSession) {
+    update.$set.stripeSessionId = "";
+  }
 
   setOrdenAuditFields({ update, eventId, detail });
 
@@ -392,7 +455,10 @@ async function obtenerMontoReferenciaOrden(ordenId) {
 function enforceLivemodeOrSkip({ event, reqId }) {
   if (!FLAGS.ENFORCE_LIVEMODE) return { ok: true };
 
-  const desired = String(process.env.STRIPE_LIVEMODE || "").trim().toLowerCase();
+  const desired = String(process.env.STRIPE_LIVEMODE || "")
+    .trim()
+    .toLowerCase();
+
   if (desired !== "true" && desired !== "false") return { ok: true };
 
   const want = desired === "true";
@@ -432,17 +498,23 @@ function enforceAccountOrSkip({ req, event, reqId }) {
   return { ok: true };
 }
 
+// ======================================================
+// Procesador principal
+// ======================================================
 exports.procesarWebhookStripe = async (req, res) => {
   const reqId = getReqId(req);
 
   const signature = getStripeSignature(req);
-  if (!signature) return res.status(400).send("Missing stripe-signature header");
+  if (!signature) {
+    return res.status(400).send("Missing stripe-signature header");
+  }
 
   const rawBody = getRawBody(req);
   if (!rawBody) {
     return res.status(400).json({
       ok: false,
-      message: 'Missing raw body. Usa express.raw({ type: "application/json" }) en la ruta del webhook.',
+      message:
+        'Missing raw body. Usa express.raw({ type: "application/json" }) en la ruta del webhook.',
     });
   }
 
@@ -450,7 +522,10 @@ exports.procesarWebhookStripe = async (req, res) => {
   try {
     event = construirEventoDesdeWebhook(signature, rawBody);
   } catch (err) {
-    log("warn", "Stripe signature invalid", { reqId, err: err?.message || String(err) });
+    log("warn", "Stripe signature invalid", {
+      reqId,
+      err: err?.message || String(err),
+    });
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -475,6 +550,7 @@ exports.procesarWebhookStripe = async (req, res) => {
   });
 
   let eventRow;
+
   try {
     const result = await markEvent({
       event,
@@ -507,39 +583,63 @@ exports.procesarWebhookStripe = async (req, res) => {
     if (!ordenId) {
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "skipped", errorMessage: "Missing ordenId" } }
+        {
+          $set: {
+            status: "skipped",
+            errorMessage: "Missing ordenId",
+          },
+        }
       );
       return ok(res);
     }
 
     await addStripeEventIdToOrden({ ordenId, eventId });
 
+    // ====================================================
+    // checkout.session.completed
+    // ====================================================
     if (eventType === "checkout.session.completed") {
       const session = obj;
 
       if (session?.mode && session.mode !== "payment") {
         const msg = "Session mode != payment";
+
         await WebhookEvent.updateOne(
           { _id: eventRow._id },
           { $set: { status: "skipped", errorMessage: msg } }
         );
+
         await Orden.updateOne(
           { _id: ordenId },
-          { $set: { stripeLatestEventId: eventId, paymentStatusDetail: msg } }
+          {
+            $set: {
+              stripeLatestEventId: eventId,
+              paymentStatusDetail: msg,
+            },
+          }
         ).catch(() => {});
+
         return ok(res);
       }
 
       if (session?.payment_status && session.payment_status !== "paid") {
         const msg = `payment_status != paid (${session.payment_status})`;
+
         await WebhookEvent.updateOne(
           { _id: eventRow._id },
           { $set: { status: "skipped", errorMessage: msg } }
         );
+
         await Orden.updateOne(
           { _id: ordenId },
-          { $set: { stripeLatestEventId: eventId, paymentStatusDetail: msg } }
+          {
+            $set: {
+              stripeLatestEventId: eventId,
+              paymentStatusDetail: msg,
+            },
+          }
         ).catch(() => {});
+
         return ok(res);
       }
 
@@ -555,7 +655,12 @@ exports.procesarWebhookStripe = async (req, res) => {
       if (!amountCheck.ok) {
         await WebhookEvent.updateOne(
           { _id: eventRow._id },
-          { $set: { status: "skipped", errorMessage: amountCheck.reason } }
+          {
+            $set: {
+              status: "skipped",
+              errorMessage: amountCheck.reason,
+            },
+          }
         );
         return ok(res);
       }
@@ -578,11 +683,21 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // checkout.session.async_payment_succeeded
+    // ====================================================
     if (eventType === "checkout.session.async_payment_succeeded") {
       const session = obj;
 
@@ -598,7 +713,12 @@ exports.procesarWebhookStripe = async (req, res) => {
       if (!amountCheck.ok) {
         await WebhookEvent.updateOne(
           { _id: eventRow._id },
-          { $set: { status: "skipped", errorMessage: amountCheck.reason } }
+          {
+            $set: {
+              status: "skipped",
+              errorMessage: amountCheck.reason,
+            },
+          }
         );
         return ok(res);
       }
@@ -621,11 +741,21 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // checkout.session.async_payment_failed
+    // ====================================================
     if (eventType === "checkout.session.async_payment_failed") {
       await marcarOrdenFallidaAtomico({
         ordenId,
@@ -635,11 +765,21 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // checkout.session.expired
+    // ====================================================
     if (eventType === "checkout.session.expired") {
       await marcarOrdenFallidaAtomico({
         ordenId,
@@ -650,11 +790,21 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // payment_intent.payment_failed
+    // ====================================================
     if (eventType === "payment_intent.payment_failed") {
       await marcarOrdenFallidaAtomico({
         ordenId,
@@ -664,11 +814,21 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // payment_intent.succeeded
+    // ====================================================
     if (eventType === "payment_intent.succeeded") {
       const intent = obj;
 
@@ -684,7 +844,12 @@ exports.procesarWebhookStripe = async (req, res) => {
       if (!amountCheck.ok) {
         await WebhookEvent.updateOne(
           { _id: eventRow._id },
-          { $set: { status: "skipped", errorMessage: amountCheck.reason } }
+          {
+            $set: {
+              status: "skipped",
+              errorMessage: amountCheck.reason,
+            },
+          }
         );
         return ok(res);
       }
@@ -713,11 +878,21 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // charge.succeeded
+    // ====================================================
     if (eventType === "charge.succeeded") {
       const charge = obj;
 
@@ -733,7 +908,12 @@ exports.procesarWebhookStripe = async (req, res) => {
       if (!amountCheck.ok) {
         await WebhookEvent.updateOne(
           { _id: eventRow._id },
-          { $set: { status: "skipped", errorMessage: amountCheck.reason } }
+          {
+            $set: {
+              status: "skipped",
+              errorMessage: amountCheck.reason,
+            },
+          }
         );
         return ok(res);
       }
@@ -762,11 +942,21 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // charge.refunded
+    // ====================================================
     if (eventType === "charge.refunded") {
       const charge = obj;
       const refundAmount = Number(charge?.amount_refunded) || 0;
@@ -782,11 +972,21 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // refund.updated
+    // ====================================================
     if (eventType === "refund.updated") {
       const refund = obj;
 
@@ -815,24 +1015,47 @@ exports.procesarWebhookStripe = async (req, res) => {
         eventId,
         detail: "refund.updated",
         refundAmountCents: Number(refund?.amount) || 0,
-        chargeAmountCents: Number.isFinite(referenceAmount) ? referenceAmount : null,
+        chargeAmountCents: Number.isFinite(referenceAmount)
+          ? referenceAmount
+          : null,
       });
 
       await WebhookEvent.updateOne(
         { _id: eventRow._id },
-        { $set: { status: "processed", ordenId, summary } }
+        {
+          $set: {
+            status: "processed",
+            ordenId,
+            summary,
+          },
+        }
       );
+
       return ok(res);
     }
 
+    // ====================================================
+    // unhandled event
+    // ====================================================
     await WebhookEvent.updateOne(
       { _id: eventRow._id },
-      { $set: { status: "skipped", ordenId, summary } }
+      {
+        $set: {
+          status: "skipped",
+          ordenId,
+          summary,
+        },
+      }
     );
 
     await Orden.updateOne(
       { _id: ordenId },
-      { $set: { stripeLatestEventId: eventId, paymentStatusDetail: `unhandled_event:${eventType}` } }
+      {
+        $set: {
+          stripeLatestEventId: eventId,
+          paymentStatusDetail: `unhandled_event:${eventType}`,
+        },
+      }
     ).catch(() => {});
 
     return ok(res);
@@ -862,12 +1085,18 @@ exports.procesarWebhookStripe = async (req, res) => {
       {
         $set: {
           stripeLatestEventId: eventId,
-          paymentStatusDetail: `webhook_failed:${safeStr(err?.message || err).slice(0, 250)}`,
+          paymentStatusDetail: `webhook_failed:${safeStr(
+            err?.message || err
+          ).slice(0, 250)}`,
         },
       }
     ).catch(() => {});
 
     if (FLAGS.ALWAYS_200) return ok(res);
-    return res.status(500).json({ ok: false, message: "Webhook processing failed" });
+
+    return res.status(500).json({
+      ok: false,
+      message: "Webhook processing failed",
+    });
   }
 };

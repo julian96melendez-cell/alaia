@@ -1,17 +1,18 @@
-const mongoose = require('mongoose');
+"use strict";
+
+const mongoose = require("mongoose");
 
 /**
  * ============================================================
- * Producto.js — ENTERPRISE (Marketplace / Dropshipping / Afiliado)
+ * Producto.js — Enterprise Final (Marketplace / Dropshipping / Afiliado)
  * ============================================================
- * - Anti-NaN (normaliza numbers)
- * - Precios: costoProveedor + margen -> precioFinal
- * - Afiliado: no pasa por Stripe, requiere affiliateUrl
- * - Índices útiles para catálogo grande
- *
- * ✅ Marketplace Multi-Vendor READY:
- * - vendedor (Usuario) + sellerType (platform/seller)
- * - comisión opcional por producto (rate/flat) para calcular en Orden.js
+ * - Anti-NaN
+ * - Cálculo consistente de precios
+ * - Marketplace multi-vendor
+ * - Compatibilidad con seller dashboard / órdenes / payouts
+ * - Compatibilidad de nombres:
+ *   - vendedor / vendedorId / sellerId
+ *   - comisionPct / commissionRatePct
  * ============================================================
  */
 
@@ -24,104 +25,204 @@ const toNumber = (v, fallback = 0) => {
 
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 
+const safeStr = (v, fallback = "") => {
+  if (v === null || v === undefined) return fallback;
+  return String(v).trim();
+};
+
 const ProductoSchema = new mongoose.Schema(
   {
-    // ============================
+    // ======================================================
     // Identidad y contenido
-    // ============================
-    nombre: { type: String, required: true, trim: true, index: true },
-    descripcion: { type: String, default: '', trim: true },
-
-    imagenes: [{ type: String, trim: true }],
-    imagenPrincipal: { type: String, default: '', trim: true },
-
-    categoria: { type: String, default: '', trim: true, index: true },
-    tags: [{ type: String, trim: true, index: true }],
-
-    // ============================
-    // Tipo de producto
-    // ============================
-    tipo: {
+    // ======================================================
+    nombre: {
       type: String,
-      enum: ['marketplace', 'dropshipping', 'afiliado'],
-      default: 'marketplace',
+      required: true,
+      trim: true,
+      index: true,
+      maxlength: 300,
+    },
+
+    descripcion: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 5000,
+    },
+
+    imagenes: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+
+    imagenPrincipal: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    categoria: {
+      type: String,
+      default: "",
+      trim: true,
       index: true,
     },
 
-    // ============================
-    // 🔥 Marketplace: dueño/vendedor del producto
-    // - platform: producto tuyo (vendedor null)
-    // - seller: producto de vendedor externo (vendedor apunta a Usuario)
-    // ============================
+    tags: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+
+    // ======================================================
+    // Tipo de producto
+    // ======================================================
+    tipo: {
+      type: String,
+      enum: ["marketplace", "dropshipping", "afiliado"],
+      default: "marketplace",
+      index: true,
+    },
+
+    // ======================================================
+    // Dueño / vendedor del producto
+    // - platform: producto propio de la plataforma
+    // - seller: producto de vendedor externo
+    // ======================================================
     sellerType: {
       type: String,
-      enum: ['platform', 'seller'],
-      default: 'platform',
+      enum: ["platform", "seller"],
+      default: "platform",
       index: true,
     },
 
     vendedor: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Usuario',
+      ref: "Usuario",
       default: null,
       index: true,
     },
 
-    // ============================
-    // Proveedor (marketplace/dropshipping)
-    // ============================
-    proveedor: { type: String, default: 'local', trim: true, index: true },
-    proveedorProductoId: { type: String, default: '', trim: true, index: true },
+    // ======================================================
+    // Proveedor
+    // ======================================================
+    proveedor: {
+      type: String,
+      default: "local",
+      trim: true,
+      index: true,
+    },
 
-    // ============================
+    proveedorProductoId: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
+    // ======================================================
     // Moneda / precios
-    // ============================
-    moneda: { type: String, default: 'USD', trim: true },
+    // ======================================================
+    moneda: {
+      type: String,
+      default: "USD",
+      trim: true,
+      uppercase: true,
+    },
 
-    costoProveedor: { type: Number, default: 0, min: 0 },
-    margenPorcentaje: { type: Number, default: 20, min: 0, max: 1000 },
-    precioFinal: { type: Number, default: 0, min: 0, index: true },
-
-    // ============================
-    // ✅ Comisión (opcional por producto)
-    // - Se usa cuando sellerType === 'seller' (vendedor externo)
-    // - Si se deja en null/0, Orden.js podrá usar defaults globales por ENV
-    // ============================
-    commissionRatePct: {
+    costoProveedor: {
       type: Number,
-      default: null, // null => usa default global (ENV) en Orden.js
+      default: 0,
+      min: 0,
+    },
+
+    margenPorcentaje: {
+      type: Number,
+      default: 20,
+      min: 0,
+      max: 1000,
+    },
+
+    precioFinal: {
+      type: Number,
+      default: 0,
+      min: 0,
+      index: true,
+    },
+
+    // ======================================================
+    // Comisión marketplace
+    // Campo canon: comisionPct
+    // Compatibilidad: virtual commissionRatePct
+    // ======================================================
+    comisionPct: {
+      type: Number,
+      default: null,
       min: 0,
       max: 100,
     },
 
     commissionFlat: {
       type: Number,
-      default: 0, // monto fijo por item o por orden (lo decides en Orden.js)
+      default: 0,
       min: 0,
     },
 
-    // ============================
+    // ======================================================
     // Inventario
-    // ============================
-    gestionStock: { type: Boolean, default: false },
-    stock: { type: Number, default: 0, min: 0 },
+    // ======================================================
+    gestionStock: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
 
-    // ============================
+    stock: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    // ======================================================
     // Afiliados
-    // ============================
-    affiliateUrl: { type: String, default: '', trim: true },
-    plataformaAfiliado: { type: String, default: '', trim: true },
+    // ======================================================
+    affiliateUrl: {
+      type: String,
+      default: "",
+      trim: true,
+    },
 
-    // ============================
+    plataformaAfiliado: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    // ======================================================
     // Control / visibilidad
-    // ============================
-    activo: { type: Boolean, default: true, index: true },
-    visible: { type: Boolean, default: true, index: true },
+    // ======================================================
+    activo: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
 
-    // ============================
+    visible: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+
+    // ======================================================
     // Metadata flexible
-    // ============================
-    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    // ======================================================
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
   },
   {
     timestamps: true,
@@ -131,9 +232,11 @@ const ProductoSchema = new mongoose.Schema(
   }
 );
 
-// Índices “de verdad” para catálogo
+// ======================================================
+// Índices útiles
+// ======================================================
 ProductoSchema.index({
-  nombre: 'text',
+  nombre: "text",
   categoria: 1,
   proveedor: 1,
   tipo: 1,
@@ -143,86 +246,159 @@ ProductoSchema.index({
   vendedor: 1,
 });
 
-ProductoSchema.virtual('gananciaUnitaria').get(function () {
+ProductoSchema.index({ precioFinal: 1, activo: 1, visible: 1 });
+ProductoSchema.index({ createdAt: -1 });
+ProductoSchema.index({ vendedor: 1, activo: 1, visible: 1 });
+
+// ======================================================
+// Virtuals de compatibilidad
+// ======================================================
+ProductoSchema.virtual("gananciaUnitaria").get(function () {
   return round2((this.precioFinal || 0) - (this.costoProveedor || 0));
 });
 
-// Anti-NaN + cálculo consistente
-ProductoSchema.pre('validate', function (next) {
-  this.costoProveedor = toNumber(this.costoProveedor, 0);
-  this.margenPorcentaje = toNumber(this.margenPorcentaje, 0);
-  this.precioFinal = toNumber(this.precioFinal, 0);
-  this.stock = toNumber(this.stock, 0);
+// Compatibilidad con código que usa vendedorId
+ProductoSchema.virtual("vendedorId")
+  .get(function () {
+    return this.vendedor || null;
+  })
+  .set(function (value) {
+    this.vendedor = value || null;
+  });
 
-  // Comisiones
-  if (this.commissionRatePct === undefined) this.commissionRatePct = null;
-  if (this.commissionRatePct !== null) {
-    this.commissionRatePct = toNumber(this.commissionRatePct, 0);
-    this.commissionRatePct = clamp(this.commissionRatePct, 0, 100);
+// Compatibilidad con código que usa sellerId
+ProductoSchema.virtual("sellerId")
+  .get(function () {
+    return this.vendedor || null;
+  })
+  .set(function (value) {
+    this.vendedor = value || null;
+  });
+
+// Compatibilidad con código que usa commissionRatePct
+ProductoSchema.virtual("commissionRatePct")
+  .get(function () {
+    return this.comisionPct;
+  })
+  .set(function (value) {
+    this.comisionPct = value;
+  });
+
+// ======================================================
+// Normalización y reglas
+// ======================================================
+ProductoSchema.pre("validate", function (next) {
+  // Strings
+  this.nombre = safeStr(this.nombre);
+  this.descripcion = safeStr(this.descripcion);
+  this.imagenPrincipal = safeStr(this.imagenPrincipal);
+  this.categoria = safeStr(this.categoria);
+  this.proveedor = safeStr(this.proveedor, "local");
+  this.proveedorProductoId = safeStr(this.proveedorProductoId);
+  this.moneda = safeStr(this.moneda, "USD").toUpperCase();
+  this.affiliateUrl = safeStr(this.affiliateUrl);
+  this.plataformaAfiliado = safeStr(this.plataformaAfiliado);
+
+  // Arrays
+  if (!Array.isArray(this.imagenes)) this.imagenes = [];
+  this.imagenes = this.imagenes
+    .map((img) => safeStr(img))
+    .filter(Boolean);
+
+  if (!Array.isArray(this.tags)) this.tags = [];
+  this.tags = Array.from(
+    new Set(
+      this.tags
+        .map((tag) => safeStr(tag).toLowerCase())
+        .filter(Boolean)
+    )
+  );
+
+  // Numbers
+  this.costoProveedor = round2(Math.max(0, toNumber(this.costoProveedor, 0)));
+  this.margenPorcentaje = clamp(toNumber(this.margenPorcentaje, 0), 0, 1000);
+  this.precioFinal = round2(Math.max(0, toNumber(this.precioFinal, 0)));
+  this.stock = Math.max(0, Math.floor(toNumber(this.stock, 0)));
+
+  if (this.comisionPct === undefined) {
+    this.comisionPct = null;
   }
-  this.commissionFlat = toNumber(this.commissionFlat, 0);
-  this.commissionFlat = round2(Math.max(0, this.commissionFlat));
 
-  // Normaliza strings
-  if (typeof this.proveedor !== 'string' || !this.proveedor.trim()) this.proveedor = 'local';
-  if (typeof this.moneda !== 'string' || !this.moneda.trim()) this.moneda = 'USD';
+  if (this.comisionPct !== null) {
+    this.comisionPct = clamp(toNumber(this.comisionPct, 0), 0, 100);
+  }
 
-  // Normaliza sellerType con reglas seguras
-  if (this.tipo === 'afiliado') {
-    // Afiliado no se cobra por Stripe y no es “vendible” dentro de tu marketplace
-    this.sellerType = 'platform';
+  this.commissionFlat = round2(Math.max(0, toNumber(this.commissionFlat, 0)));
+
+  // SellerType seguro
+  if (this.sellerType !== "platform" && this.sellerType !== "seller") {
+    this.sellerType = "platform";
+  }
+
+  // Regla: si es seller pero no hay vendedor => cae a platform
+  if (this.sellerType === "seller" && !this.vendedor) {
+    this.sellerType = "platform";
+  }
+
+  // Regla: si hay vendedor, normalmente debe ser seller
+  if (this.vendedor && this.sellerType !== "seller" && this.tipo !== "afiliado") {
+    this.sellerType = "seller";
+  }
+
+  // Reglas por tipo
+  if (this.tipo === "afiliado") {
+    this.sellerType = "platform";
     this.vendedor = null;
-    this.commissionRatePct = null;
+    this.comisionPct = null;
     this.commissionFlat = 0;
 
-    // Afiliado no se cobra por Stripe
     this.costoProveedor = 0;
     this.margenPorcentaje = 0;
-    // precioFinal puede quedar 0
+    // precioFinal puede ser 0 o lo que quieras mostrar visualmente
   } else {
-    // marketplace/dropshipping: recalcular si hace falta
     const shouldRecalc =
       !this.precioFinal ||
-      this.isModified('costoProveedor') ||
-      this.isModified('margenPorcentaje');
+      this.isModified("costoProveedor") ||
+      this.isModified("margenPorcentaje");
 
     if (shouldRecalc) {
       const base = Math.max(0, this.costoProveedor);
       const margen = Math.max(0, this.margenPorcentaje);
-      this.precioFinal = base === 0 ? this.precioFinal : round2(base * (1 + margen / 100));
-    }
 
-    // Regla simple: si sellerType es seller pero no hay vendedor, cae a platform
-    if (this.sellerType === 'seller' && !this.vendedor) {
-      this.sellerType = 'platform';
+      if (base > 0) {
+        this.precioFinal = round2(base * (1 + margen / 100));
+      }
     }
   }
-
-  // Redondeo final consistente
-  this.costoProveedor = round2(this.costoProveedor);
-  this.precioFinal = round2(this.precioFinal);
-  this.stock = Math.max(0, Math.floor(this.stock));
 
   next();
 });
 
-// Reglas por tipo
-ProductoSchema.pre('save', function (next) {
-  if (this.tipo === 'afiliado') {
-    if (!this.affiliateUrl) return next(new Error('Los productos afiliados requieren affiliateUrl'));
+// ======================================================
+// Reglas antes de guardar
+// ======================================================
+ProductoSchema.pre("save", function (next) {
+  if (this.tipo === "afiliado") {
+    if (!this.affiliateUrl) {
+      return next(new Error("Los productos afiliados requieren affiliateUrl"));
+    }
   } else {
-    if (this.affiliateUrl) this.affiliateUrl = '';
-    if (this.plataformaAfiliado) this.plataformaAfiliado = '';
+    if (this.affiliateUrl) this.affiliateUrl = "";
+    if (this.plataformaAfiliado) this.plataformaAfiliado = "";
   }
 
-  // Stock safe
-  if (this.gestionStock && this.stock < 0) this.stock = 0;
+  if (this.gestionStock && this.stock < 0) {
+    this.stock = 0;
+  }
 
   next();
 });
 
+// ======================================================
+// Métodos
+// ======================================================
 ProductoSchema.methods.calcularGanancia = function () {
   return round2((this.precioFinal || 0) - (this.costoProveedor || 0));
 };
 
-module.exports = mongoose.model('Producto', ProductoSchema);
+module.exports = mongoose.model("Producto", ProductoSchema);

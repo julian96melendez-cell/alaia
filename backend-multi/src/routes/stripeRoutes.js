@@ -7,9 +7,6 @@ const {
   procesarWebhookStripe,
 } = require("../payments/stripeWebhookController");
 
-// ======================================================
-// VALIDACIÓN REQUEST WEBHOOK
-// ======================================================
 function validarStripeWebhookRequest(req, res, next) {
   const signature = req.headers["stripe-signature"];
   const contentType = (req.headers["content-type"] || "").toLowerCase();
@@ -69,13 +66,6 @@ function validarStripeWebhookRequest(req, res, next) {
   next();
 }
 
-// ======================================================
-// WEBHOOK ROUTE
-// ======================================================
-// IMPORTANTE:
-// - server.js ya usa express.raw()
-// - NO usar express.json aquí
-// ======================================================
 router.post("/webhook", validarStripeWebhookRequest, async (req, res) => {
   const start = Date.now();
 

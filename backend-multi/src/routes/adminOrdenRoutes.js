@@ -1,7 +1,3 @@
-// ===========================================================
-// adminOrdenRoutes.js — Admin Ordenes (ENTERPRISE HARDENED)
-// ===========================================================
-
 "use strict";
 
 const express = require("express");
@@ -19,9 +15,6 @@ const {
   adminMetrics,
 } = require("../controllers/adminOrdenController");
 
-// ===========================================================
-// Helpers
-// ===========================================================
 function validateRequest(req, res, next) {
   const errors = validationResult(req);
 
@@ -40,9 +33,6 @@ function validateRequest(req, res, next) {
   });
 }
 
-// ===========================================================
-// VALIDACIONES
-// ===========================================================
 const validarId = [
   param("id").isMongoId().withMessage("ID inválido"),
 ];
@@ -87,19 +77,8 @@ const validarPago = [
     .withMessage("estadoPago inválido"),
 ];
 
-// ===========================================================
-// ROUTES
-// ===========================================================
+router.get("/metrics", proteger, soloAdmin, adminMetrics);
 
-// GET /api/ordenes/admin/metrics
-router.get(
-  "/metrics",
-  proteger,
-  soloAdmin,
-  adminMetrics
-);
-
-// GET /api/ordenes/admin/ordenes
 router.get(
   "/ordenes",
   proteger,
@@ -109,7 +88,6 @@ router.get(
   adminListarOrdenes
 );
 
-// GET /api/ordenes/admin/ordenes/:id
 router.get(
   "/ordenes/:id",
   proteger,
@@ -119,7 +97,6 @@ router.get(
   adminObtenerOrden
 );
 
-// PUT /api/ordenes/admin/ordenes/:id/fulfillment
 router.put(
   "/ordenes/:id/fulfillment",
   proteger,
@@ -129,7 +106,6 @@ router.put(
   adminActualizarFulfillment
 );
 
-// PUT /api/ordenes/admin/ordenes/:id/pago
 router.put(
   "/ordenes/:id/pago",
   proteger,
@@ -139,5 +115,4 @@ router.put(
   adminActualizarPago
 );
 
-// ===========================================================
 module.exports = router;

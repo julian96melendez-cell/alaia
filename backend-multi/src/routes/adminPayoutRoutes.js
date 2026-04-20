@@ -1,14 +1,3 @@
-// ==========================================================
-// adminPayoutRoutes.js — Admin Payouts Routes (ENTERPRISE)
-// ==========================================================
-//
-// Incluye:
-// ✅ Validaciones robustas
-// ✅ Middleware admin
-// ✅ Manejo consistente de errores
-// ✅ Seguridad y estructura profesional
-// ==========================================================
-
 "use strict";
 
 const express = require("express");
@@ -25,9 +14,6 @@ const {
   adminReintentarPayout,
 } = require("../controllers/adminPayoutController");
 
-// ==========================================================
-// Helper validación
-// ==========================================================
 function validateRequest(req, res, next) {
   const errors = validationResult(req);
 
@@ -44,11 +30,6 @@ function validateRequest(req, res, next) {
   });
 }
 
-// ==========================================================
-// VALIDACIONES
-// ==========================================================
-
-// Query listado
 const validarListado = [
   query("page")
     .optional()
@@ -93,30 +74,20 @@ const validarListado = [
     .withMessage("onlyReleased inválido"),
 ];
 
-// Param ordenId
 const validarOrdenId = [
   param("ordenId")
     .isMongoId()
     .withMessage("ordenId inválido"),
 ];
 
-// Retry payout
 const validarRetry = [
   ...validarOrdenId,
-
   body("vendedorId")
     .optional()
     .isMongoId()
     .withMessage("vendedorId inválido"),
 ];
 
-// ==========================================================
-// ROUTES
-// ==========================================================
-
-// =======================================
-// GET /api/admin/payouts
-// =======================================
 router.get(
   "/",
   proteger,
@@ -126,9 +97,6 @@ router.get(
   adminListarPayouts
 );
 
-// =======================================
-// GET /api/admin/payouts/metrics
-// =======================================
 router.get(
   "/metrics",
   proteger,
@@ -136,9 +104,6 @@ router.get(
   adminPayoutMetrics
 );
 
-// =======================================
-// GET /api/admin/payouts/:ordenId
-// =======================================
 router.get(
   "/:ordenId",
   proteger,
@@ -148,9 +113,6 @@ router.get(
   adminObtenerPayoutsDeOrden
 );
 
-// =======================================
-// POST /api/admin/payouts/:ordenId/retry
-// =======================================
 router.post(
   "/:ordenId/retry",
   proteger,
@@ -160,5 +122,4 @@ router.post(
   adminReintentarPayout
 );
 
-// ==========================================================
 module.exports = router;

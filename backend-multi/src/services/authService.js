@@ -1,22 +1,12 @@
-// =============================================
-// authService.js — ENTERPRISE FINAL (PRODUCCIÓN)
-// =============================================
-
 "use strict";
 
 const jwt = require("jsonwebtoken");
 const Usuario = require("../models/Usuario");
 
-// ==============================
-// Configuración
-// ==============================
-const ACCESS_TOKEN_EXPIRE = "15m";
-const REFRESH_TOKEN_EXPIRE = "7d";
+const ACCESS_TOKEN_EXPIRE = process.env.ACCESS_TOKEN_EXPIRE || "15m";
+const REFRESH_TOKEN_EXPIRE = process.env.REFRESH_TOKEN_EXPIRE || "7d";
 const JWT_ALGORITHM = "HS256";
 
-// ==============================
-// Helpers
-// ==============================
 function requireEnv(name) {
   const value = process.env[name];
   if (!value || !String(value).trim()) {
@@ -30,43 +20,54 @@ function normalizeEmail(email) {
   return String(email).trim().toLowerCase();
 }
 
-// ==============================
-// GENERAR ACCESS + REFRESH TOKENS
-// ==============================
-exports.generarTokens = (usuario) => {
+function buildBasePayload(usuario) {
   if (!usuario?._id) {
     throw new Error("Usuario inválido al generar tokens");
   }
 
-  const jwtSecret = requireEnv("JWT_SECRET");
-  const jwtRefreshSecret = requireEnv("JWT_REFRESH_SECRET");
-
   const tokenVersion =
     typeof usuario.tokenVersion === "number" ? usuario.tokenVersion : 0;
 
-  const payload = {
+  return {
     id: usuario._id.toString(),
     rol: usuario.rol,
     tokenVersion,
   };
+}
 
-  const accessToken = jwt.sign(payload, jwtSecret, {
-    expiresIn: ACCESS_TOKEN_EXPIRE,
-    algorithm: JWT_ALGORITHM,
-  });
+exports.generarTokens = (usuario) => {
+  const jwtSecret = requireEnv("JWT_SECRET");
+  const jwtRefreshSecret = requireEnv("JWT_REFRESH_SECRET");
 
-  const refreshToken = jwt.sign(payload, jwtRefreshSecret, {
-    expiresIn: REFRESH_TOKEN_EXPIRE,
-    algorithm: JWT_ALGORITHM,
-  });
+  const basePayload = buildBasePayload(usuario);
+
+  const accessToken = jwt.sign(
+    {
+      ...basePayload,
+      type: "access",
+    },
+    jwtSecret,
+    {
+      expiresIn: ACCESS_TOKEN_EXPIRE,
+      algorithm: JWT_ALGORITHM,
+    }
+  );
+
+  const refreshToken = jwt.sign(
+    {
+      ...basePayload,
+      type: "refresh",
+    },
+    jwtRefreshSecret,
+    {
+      expiresIn: REFRESH_TOKEN_EXPIRE,
+      algorithm: JWT_ALGORITHM,
+    }
+  );
 
   return { accessToken, refreshToken };
 };
 
-// ==============================
-// BUSCAR USUARIO POR EMAIL
-// Incluye password para login
-// ==============================
 exports.buscarUsuarioPorEmail = async (email) => {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail) return null;
@@ -75,18 +76,30 @@ exports.buscarUsuarioPorEmail = async (email) => {
     .select("+password +tokenVersion");
 };
 
-// ==============================
-// BUSCAR USUARIO POR ID
-// ==============================
 exports.buscarUsuarioPorId = async (id) => {
   if (!id) return null;
 
   return Usuario.findById(id).select("+tokenVersion");
 };
 
-// ==============================
-// VERIFICAR REFRESH TOKEN
-// ==============================
+exports.verificarAccessToken = (token) => {
+  if (!token) {
+    throw new Error("Access token requerido");
+  }
+
+  const jwtSecret = requireEnv("JWT_SECRET");
+
+  const payload = jwt.verify(token, jwtSecret, {
+    algorithms: [JWT_ALGORITHM],
+  });
+
+  if (payload?.type !== "access") {
+    throw new Error("Tipo de token inválido");
+  }
+
+  return payload;
+};
+
 exports.verificarRefreshToken = (token) => {
   if (!token) {
     throw new Error("Refresh token requerido");
@@ -94,14 +107,17 @@ exports.verificarRefreshToken = (token) => {
 
   const jwtRefreshSecret = requireEnv("JWT_REFRESH_SECRET");
 
-  return jwt.verify(token, jwtRefreshSecret, {
+  const payload = jwt.verify(token, jwtRefreshSecret, {
     algorithms: [JWT_ALGORITHM],
   });
+
+  if (payload?.type !== "refresh") {
+    throw new Error("Tipo de token inválido");
+  }
+
+  return payload;
 };
 
-// ==============================
-// INVALIDAR REFRESH TOKENS (LOGOUT)
-// ==============================
 exports.incrementarTokenVersion = async (usuarioId) => {
   if (!usuarioId) return null;
 

@@ -1,10 +1,5 @@
-// =============================================
-// controllers/authController.js — ENTERPRISE ULTRA
-// =============================================
-
 "use strict";
 
-const jwt = require("jsonwebtoken");
 const Usuario = require("../models/Usuario");
 const catchAsync = require("../utils/catchAsync");
 const { success, error } = require("../utils/apiResponse");
@@ -13,14 +8,27 @@ const { validationResult } = require("express-validator");
 const {
   generarTokens,
   verificarRefreshToken,
+  verificarAccessToken,
   buscarUsuarioPorEmail,
   buscarUsuarioPorId,
   incrementarTokenVersion,
 } = require("../services/authService");
 
-// =============================================
+// ======================================================
+// Constantes auth / cookies
+// ======================================================
+const ACCESS_COOKIE_NAME =
+  process.env.ACCESS_COOKIE_NAME || "alaia_access_token";
+
+const REFRESH_COOKIE_NAME =
+  process.env.REFRESH_COOKIE_NAME || "alaia_refresh_token";
+
+const ACCESS_TOKEN_MAX_AGE_MS = 15 * 60 * 1000; // 15 min
+const REFRESH_TOKEN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 días
+
+// ======================================================
 // Helpers
-// =============================================
+// ======================================================
 function safeString(v) {
   if (v === null || v === undefined) return "";
   return String(v).trim();
@@ -32,6 +40,7 @@ function normalizarEmail(email) {
 
 function getClientIp(req) {
   const forwarded = req.headers["x-forwarded-for"];
+
   if (typeof forwarded === "string" && forwarded.trim()) {
     return forwarded.split(",")[0].trim();
   }
@@ -73,6 +82,7 @@ function pickUsuarioPublico(usuario) {
     activo: usuario.activo,
     bloqueado: usuario.bloqueado,
     emailVerificado: usuario.emailVerificado,
+    sellerStatus: usuario.sellerStatus || null,
     stripeAccountId: usuario.stripeAccountId || null,
     stripeOnboardingComplete: !!usuario.stripeOnboardingComplete,
     stripeChargesEnabled: !!usuario.stripeChargesEnabled,
@@ -98,76 +108,119 @@ function cuentaNoDisponible(res) {
 
 function getRefreshTokenFromRequest(req) {
   return (
+    safeString(req.cookies?.[REFRESH_COOKIE_NAME]) ||
     safeString(req.body?.refreshToken) ||
-    safeString(req.cookies?.alaia_refresh_token) ||
     ""
   );
 }
 
 function getAccessTokenFromRequest(req) {
-  const authHeader = safeString(req.headers?.authorization);
+  const authHeader = safeString(
+    req.headers?.authorization || req.headers?.Authorization
+  );
 
   if (authHeader.startsWith("Bearer ")) {
-    return authHeader.slice(7).trim();
+    return safeString(authHeader.slice(7));
   }
 
-  return safeString(req.cookies?.alaia_access_token);
+  return (
+    safeString(req.cookies?.[ACCESS_COOKIE_NAME]) ||
+    safeString(req.cookies?.accessToken) ||
+    safeString(req.cookies?.token) ||
+    ""
+  );
 }
 
-function verificarAccessToken(token) {
-  return jwt.verify(token, process.env.JWT_SECRET);
+function getCookieSameSite() {
+  const raw = safeString(process.env.COOKIE_SAME_SITE).toLowerCase();
+
+  if (raw === "strict") return "strict";
+  if (raw === "none") return "none";
+  return "lax";
+}
+
+function getCookieSecure() {
+  const sameSite = getCookieSameSite();
+
+  if (sameSite === "none") return true;
+  return process.env.NODE_ENV === "production";
+}
+
+function getCookieDomain() {
+  const domain = safeString(process.env.COOKIE_DOMAIN);
+  return domain || undefined;
 }
 
 function getCookieOptions(maxAgeMs) {
-  const isProd = process.env.NODE_ENV === "production";
-
   return {
     httpOnly: true,
-    secure: isProd,
-    sameSite: "lax",
+    secure: getCookieSecure(),
+    sameSite: getCookieSameSite(),
     path: "/",
-    maxAge: Math.floor(maxAgeMs / 1000),
+    domain: getCookieDomain(),
+    maxAge: maxAgeMs,
   };
 }
 
 function setAuthCookies(res, tokens) {
-  const accessMaxAgeMs = 15 * 60 * 1000; // 15 min
-  const refreshMaxAgeMs = 7 * 24 * 60 * 60 * 1000; // 7 días
-
   res.cookie(
-    "alaia_access_token",
+    ACCESS_COOKIE_NAME,
     tokens.accessToken,
-    getCookieOptions(accessMaxAgeMs)
+    getCookieOptions(ACCESS_TOKEN_MAX_AGE_MS)
   );
 
   res.cookie(
-    "alaia_refresh_token",
+    REFRESH_COOKIE_NAME,
     tokens.refreshToken,
-    getCookieOptions(refreshMaxAgeMs)
+    getCookieOptions(REFRESH_TOKEN_MAX_AGE_MS)
   );
 }
 
 function clearAuthCookies(res) {
-  const isProd = process.env.NODE_ENV === "production";
-
-  res.clearCookie("alaia_access_token", {
+  const baseOptions = {
     httpOnly: true,
-    secure: isProd,
-    sameSite: "lax",
+    secure: getCookieSecure(),
+    sameSite: getCookieSameSite(),
     path: "/",
-  });
+    domain: getCookieDomain(),
+  };
 
-  res.clearCookie("alaia_refresh_token", {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: "lax",
-    path: "/",
-  });
+  res.clearCookie(ACCESS_COOKIE_NAME, baseOptions);
+  res.clearCookie(REFRESH_COOKIE_NAME, baseOptions);
 }
 
-// =============================================
+function getUserIdFromPayload(payload) {
+  return safeString(payload?.id || payload?._id || payload?.userId);
+}
+
+async function resolveUsuarioFromRequest(req) {
+  // 1) Si ya viene del middleware proteger
+  const reqUsuarioId = safeString(req.usuario?._id || req.usuario?.id);
+  if (reqUsuarioId) {
+    return buscarUsuarioPorId(reqUsuarioId);
+  }
+
+  // 2) Si no, intentar por access token
+  const accessToken = getAccessTokenFromRequest(req);
+  if (accessToken) {
+    try {
+      const payload = verificarAccessToken(accessToken);
+      const userId = getUserIdFromPayload(payload);
+
+      if (userId) {
+        return buscarUsuarioPorId(userId);
+      }
+    } catch (_) {
+      // noop
+    }
+  }
+
+  return null;
+}
+
+// ======================================================
 // POST /api/auth/registrar
-// =============================================
+// ======================================================
 exports.registrar = catchAsync(async (req, res) => {
   if (!validar(req, res)) return;
 
@@ -197,6 +250,7 @@ exports.registrar = catchAsync(async (req, res) => {
   }
 
   const existe = await buscarUsuarioPorEmail(email);
+
   if (existe) {
     return error(res, {
       statusCode: 400,
@@ -212,6 +266,7 @@ exports.registrar = catchAsync(async (req, res) => {
     activo: true,
     bloqueado: false,
     emailVerificado: false,
+    sellerStatus: null,
   });
 
   const tokens = generarTokens(usuario);
@@ -222,16 +277,15 @@ exports.registrar = catchAsync(async (req, res) => {
     message: "Usuario registrado correctamente",
     data: {
       usuario: pickUsuarioPublico(usuario),
-      tokens,
     },
   });
 });
 
-// =============================================
+// ======================================================
 // POST /api/auth/login
-// =============================================
+// ======================================================
 exports.login = catchAsync(async (req, res) => {
-  if (!validar(req, res)) return;
+  console.log("🔥 LOGIN NUEVO VERSION FINAL");
 
   const email = normalizarEmail(req.body?.email);
   const password = String(req.body?.password || "");
@@ -241,7 +295,7 @@ exports.login = catchAsync(async (req, res) => {
     return credencialesInvalidas(res);
   }
 
-  const usuario = await buscarUsuarioPorEmail(email).select("+password");
+  const usuario = await buscarUsuarioPorEmail(email);
 
   if (!usuario) {
     return credencialesInvalidas(res);
@@ -251,13 +305,14 @@ exports.login = catchAsync(async (req, res) => {
     return cuentaNoDisponible(res);
   }
 
-  if (typeof usuario.estaBloqueadoTemporalmente === "function") {
-    if (usuario.estaBloqueadoTemporalmente()) {
-      return error(res, {
-        statusCode: 403,
-        message: "Cuenta bloqueada temporalmente",
-      });
-    }
+  if (
+    typeof usuario.estaBloqueadoTemporalmente === "function" &&
+    usuario.estaBloqueadoTemporalmente()
+  ) {
+    return error(res, {
+      statusCode: 403,
+      message: "Cuenta bloqueada temporalmente",
+    });
   }
 
   const esValida = await usuario.compararPassword(password);
@@ -286,46 +341,19 @@ exports.login = catchAsync(async (req, res) => {
     message: "Inicio de sesión exitoso",
     data: {
       usuario: pickUsuarioPublico(usuario),
-      tokens,
     },
   });
 });
 
-// =============================================
+// ======================================================
 // GET /api/auth/me
-// =============================================
+// Funciona con middleware proteger o directamente por cookie
+// ======================================================
 exports.me = catchAsync(async (req, res) => {
-  const accessToken = getAccessTokenFromRequest(req);
-
-  if (!accessToken) {
-    return error(res, {
-      statusCode: 401,
-      message: "No autenticado",
-    });
-  }
-
-  let payload;
-  try {
-    payload = verificarAccessToken(accessToken);
-  } catch (_) {
-    return error(res, {
-      statusCode: 401,
-      message: "Token inválido o expirado",
-    });
-  }
-
-  const userId = safeString(payload?.id || payload?._id || payload?.userId);
-
-  if (!userId) {
-    return error(res, {
-      statusCode: 401,
-      message: "Token inválido",
-    });
-  }
-
-  const usuario = await buscarUsuarioPorId(userId);
+  const usuario = await resolveUsuarioFromRequest(req);
 
   if (!usuario) {
+    clearAuthCookies(res);
     return error(res, {
       statusCode: 401,
       message: "No autenticado",
@@ -333,18 +361,8 @@ exports.me = catchAsync(async (req, res) => {
   }
 
   if (usuario.activo === false || usuario.bloqueado === true) {
+    clearAuthCookies(res);
     return cuentaNoDisponible(res);
-  }
-
-  if (
-    typeof payload.tokenVersion === "number" &&
-    typeof usuario.tokenVersion === "number" &&
-    usuario.tokenVersion !== payload.tokenVersion
-  ) {
-    return error(res, {
-      statusCode: 401,
-      message: "Token revocado",
-    });
   }
 
   return success(res, {
@@ -355,18 +373,19 @@ exports.me = catchAsync(async (req, res) => {
   });
 });
 
-// =============================================
+// ======================================================
 // POST /api/auth/refresh
-// =============================================
+// ======================================================
 exports.refreshToken = catchAsync(async (req, res) => {
   if (!validar(req, res)) return;
 
   const refreshToken = getRefreshTokenFromRequest(req);
 
   if (!refreshToken) {
+    clearAuthCookies(res);
     return error(res, {
-      statusCode: 400,
-      message: "refreshToken es obligatorio",
+      statusCode: 401,
+      message: "No autenticado",
     });
   }
 
@@ -381,7 +400,7 @@ exports.refreshToken = catchAsync(async (req, res) => {
     });
   }
 
-  const userId = safeString(payload?.id || payload?._id || payload?.userId);
+  const userId = getUserIdFromPayload(payload);
 
   if (!userId) {
     clearAuthCookies(res);
@@ -406,14 +425,15 @@ exports.refreshToken = catchAsync(async (req, res) => {
     return cuentaNoDisponible(res);
   }
 
-  if (typeof usuario.estaBloqueadoTemporalmente === "function") {
-    if (usuario.estaBloqueadoTemporalmente()) {
-      clearAuthCookies(res);
-      return error(res, {
-        statusCode: 403,
-        message: "Cuenta bloqueada temporalmente",
-      });
-    }
+  if (
+    typeof usuario.estaBloqueadoTemporalmente === "function" &&
+    usuario.estaBloqueadoTemporalmente()
+  ) {
+    clearAuthCookies(res);
+    return error(res, {
+      statusCode: 403,
+      message: "Cuenta bloqueada temporalmente",
+    });
   }
 
   if (
@@ -432,18 +452,32 @@ exports.refreshToken = catchAsync(async (req, res) => {
   setAuthCookies(res, tokens);
 
   return success(res, {
-    message: "Tokens renovados correctamente",
+    message: "Sesión renovada correctamente",
     data: {
-      tokens,
+      usuario: pickUsuarioPublico(usuario),
     },
   });
 });
 
-// =============================================
+// ======================================================
 // POST /api/auth/logout
-// =============================================
+// Funciona con middleware proteger o por refresh cookie fallback
+// ======================================================
 exports.logout = catchAsync(async (req, res) => {
-  let usuarioId = req.usuario?._id?.toString?.() || req.usuario?.id;
+  let usuarioId = safeString(req.usuario?._id || req.usuario?.id);
+
+  if (!usuarioId) {
+    const accessToken = getAccessTokenFromRequest(req);
+
+    if (accessToken) {
+      try {
+        const payload = verificarAccessToken(accessToken);
+        usuarioId = getUserIdFromPayload(payload);
+      } catch (_) {
+        // noop
+      }
+    }
+  }
 
   if (!usuarioId) {
     const refreshToken = getRefreshTokenFromRequest(req);
@@ -451,7 +485,7 @@ exports.logout = catchAsync(async (req, res) => {
     if (refreshToken) {
       try {
         const payload = verificarRefreshToken(refreshToken);
-        usuarioId = safeString(payload?.id || payload?._id || payload?.userId);
+        usuarioId = getUserIdFromPayload(payload);
       } catch (_) {
         // noop
       }
