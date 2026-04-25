@@ -17,6 +17,7 @@ const { startWorkers, stopWorkers } = require("./src/workers");
 
 const authRoutes = require("./src/routes/authRoutes");
 const stripeRoutes = require("./src/routes/stripeRoutes");
+const productosRoutes = require("./src/routes/productosRoutes");
 const sellerRoutes = require("./src/routes/sellerRoutes");
 const sellerProductosRoutes = require("./src/routes/sellerProductosRoutes");
 const adminOrdenRoutes = require("./src/routes/adminOrdenRoutes");
@@ -31,6 +32,7 @@ const BODY_LIMIT = isProd ? "1mb" : "5mb";
 
 const TRUST_PROXY = (() => {
   const raw = String(process.env.TRUST_PROXY || "").trim().toLowerCase();
+
   if (!raw) return isProd ? 1 : false;
   if (raw === "true") return true;
   if (raw === "false") return false;
@@ -229,6 +231,12 @@ app.use(
       "visible",
       "categoria",
       "tipo",
+      "proveedor",
+      "precioMin",
+      "precioMax",
+      "sortBy",
+      "conStock",
+      "sellerType",
     ],
   })
 );
@@ -260,7 +268,10 @@ app.get("/readyz", (_req, res) => {
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/stripe", stripeRoutes);
 
-// IMPORTANTE: esta ruta va antes que /api/seller
+// Ruta pública para catálogo
+app.use("/api/productos", productosRoutes);
+
+// Rutas privadas seller/admin
 app.use("/api/seller/productos", sellerProductosRoutes);
 app.use("/api/seller", sellerRoutes);
 
@@ -368,6 +379,7 @@ function gracefulShutdown(signal, exitCode = 0) {
 
     server.on("clientError", (err, socket) => {
       console.error("CLIENT ERROR:", err?.message || err);
+
       if (socket.writable) {
         socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
       }
