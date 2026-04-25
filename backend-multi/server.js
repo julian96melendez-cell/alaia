@@ -18,6 +18,7 @@ const { startWorkers, stopWorkers } = require("./src/workers");
 const authRoutes = require("./src/routes/authRoutes");
 const stripeRoutes = require("./src/routes/stripeRoutes");
 const sellerRoutes = require("./src/routes/sellerRoutes");
+const sellerProductosRoutes = require("./src/routes/sellerProductosRoutes");
 const adminOrdenRoutes = require("./src/routes/adminOrdenRoutes");
 const adminPayoutRoutes = require("./src/routes/adminPayoutRoutes");
 const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
@@ -134,7 +135,6 @@ app.use(
 app.use(
   cors({
     origin(origin, callback) {
-      // Permitir requests server-to-server / health checks / curl sin Origin
       if (!origin) {
         return callback(null, true);
       }
@@ -271,6 +271,10 @@ app.use(
       "onlyEligible",
       "onlyReleased",
       "days",
+      "activo",
+      "visible",
+      "categoria",
+      "tipo",
     ],
   })
 );
@@ -305,6 +309,7 @@ app.get("/readyz", (_req, res) => {
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/stripe", stripeRoutes);
 app.use("/api/seller", sellerRoutes);
+app.use("/api/seller/productos", sellerProductosRoutes);
 app.use("/api/ordenes/admin", adminOrdenRoutes);
 app.use("/api/admin/payouts", adminPayoutRoutes);
 app.use("/api/admin/analytics", adminAnalyticsRoutes);
