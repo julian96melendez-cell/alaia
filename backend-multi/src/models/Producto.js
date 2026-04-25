@@ -12,7 +12,9 @@ const mongoose = require("mongoose");
  * - Compatibilidad con seller dashboard / órdenes / payouts
  * - Compatibilidad de nombres:
  *   - vendedor / vendedorId / sellerId
+ *   - precio / precioFinal
  *   - comisionPct / commissionRatePct
+ * - Soporte SKU
  * ============================================================
  */
 
@@ -41,6 +43,15 @@ const ProductoSchema = new mongoose.Schema(
       trim: true,
       index: true,
       maxlength: 300,
+    },
+
+    sku: {
+      type: String,
+      default: "",
+      trim: true,
+      uppercase: true,
+      index: true,
+      maxlength: 120,
     },
 
     descripcion: {
@@ -89,8 +100,6 @@ const ProductoSchema = new mongoose.Schema(
 
     // ======================================================
     // Dueño / vendedor del producto
-    // - platform: producto propio de la plataforma
-    // - seller: producto de vendedor externo
     // ======================================================
     sellerType: {
       type: String,
@@ -155,8 +164,6 @@ const ProductoSchema = new mongoose.Schema(
 
     // ======================================================
     // Comisión marketplace
-    // Campo canon: comisionPct
-    // Compatibilidad: virtual commissionRatePct
     // ======================================================
     comisionPct: {
       type: Number,
@@ -237,6 +244,7 @@ const ProductoSchema = new mongoose.Schema(
 // ======================================================
 ProductoSchema.index({
   nombre: "text",
+  sku: 1,
   categoria: 1,
   proveedor: 1,
   tipo: 1,
@@ -249,15 +257,23 @@ ProductoSchema.index({
 ProductoSchema.index({ precioFinal: 1, activo: 1, visible: 1 });
 ProductoSchema.index({ createdAt: -1 });
 ProductoSchema.index({ vendedor: 1, activo: 1, visible: 1 });
+ProductoSchema.index({ sku: 1, vendedor: 1 });
 
 // ======================================================
 // Virtuals de compatibilidad
 // ======================================================
+ProductoSchema.virtual("precio")
+  .get(function () {
+    return this.precioFinal;
+  })
+  .set(function (value) {
+    this.precioFinal = value;
+  });
+
 ProductoSchema.virtual("gananciaUnitaria").get(function () {
   return round2((this.precioFinal || 0) - (this.costoProveedor || 0));
 });
 
-// Compatibilidad con código que usa vendedorId
 ProductoSchema.virtual("vendedorId")
   .get(function () {
     return this.vendedor || null;
@@ -266,7 +282,6 @@ ProductoSchema.virtual("vendedorId")
     this.vendedor = value || null;
   });
 
-// Compatibilidad con código que usa sellerId
 ProductoSchema.virtual("sellerId")
   .get(function () {
     return this.vendedor || null;
@@ -275,7 +290,6 @@ ProductoSchema.virtual("sellerId")
     this.vendedor = value || null;
   });
 
-// Compatibilidad con código que usa commissionRatePct
 ProductoSchema.virtual("commissionRatePct")
   .get(function () {
     return this.comisionPct;
@@ -290,6 +304,7 @@ ProductoSchema.virtual("commissionRatePct")
 ProductoSchema.pre("validate", function (next) {
   // Strings
   this.nombre = safeStr(this.nombre);
+  this.sku = safeStr(this.sku).toUpperCase();
   this.descripcion = safeStr(this.descripcion);
   this.imagenPrincipal = safeStr(this.imagenPrincipal);
   this.categoria = safeStr(this.categoria);
@@ -301,9 +316,7 @@ ProductoSchema.pre("validate", function (next) {
 
   // Arrays
   if (!Array.isArray(this.imagenes)) this.imagenes = [];
-  this.imagenes = this.imagenes
-    .map((img) => safeStr(img))
-    .filter(Boolean);
+  this.imagenes = this.imagenes.map((img) => safeStr(img)).filter(Boolean);
 
   if (!Array.isArray(this.tags)) this.tags = [];
   this.tags = Array.from(
@@ -354,7 +367,6 @@ ProductoSchema.pre("validate", function (next) {
 
     this.costoProveedor = 0;
     this.margenPorcentaje = 0;
-    // precioFinal puede ser 0 o lo que quieras mostrar visualmente
   } else {
     const shouldRecalc =
       !this.precioFinal ||
