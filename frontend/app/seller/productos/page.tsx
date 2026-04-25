@@ -229,6 +229,44 @@ function EmptyState() {
   );
 }
 
+function InfoCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div
+      style={{
+        padding: 12,
+        borderRadius: 14,
+        background: "rgba(248,250,252,.95)",
+        border: "1px solid rgba(15,23,42,.06)",
+        display: "grid",
+        gap: 4,
+      }}
+    >
+      <span
+        style={{
+          fontSize: 12,
+          fontWeight: 800,
+          color: "rgba(15,23,42,.55)",
+          textTransform: "uppercase",
+          letterSpacing: ".02em",
+        }}
+      >
+        {label}
+      </span>
+
+      <strong
+        style={{
+          fontSize: 15,
+          color: "#0f172a",
+          fontWeight: 800,
+          lineHeight: 1.3,
+        }}
+      >
+        {value}
+      </strong>
+    </div>
+  );
+}
+
 function ProductCard({ item }: { item: SellerProduct }) {
   const id = getId(item);
   const moneda = item.moneda || "USD";
@@ -240,8 +278,11 @@ function ProductCard({ item }: { item: SellerProduct }) {
       ? String(item.stock)
       : "—";
 
-  const activeTone = item.activo === false ? "danger" : "success";
-  const visibleTone = item.visible === false ? "warning" : "info";
+  const activeTone: "success" | "danger" =
+    item.activo === false ? "danger" : "success";
+
+  const visibleTone: "warning" | "info" =
+    item.visible === false ? "warning" : "info";
 
   return (
     <div
@@ -296,9 +337,7 @@ function ProductCard({ item }: { item: SellerProduct }) {
               {item.visible === false ? "Oculto" : "Visible"}
             </Badge>
 
-            <Badge>
-              {item.tipo || "marketplace"}
-            </Badge>
+            <Badge>{item.tipo || "marketplace"}</Badge>
 
             {item.categoria ? <Badge>{item.categoria}</Badge> : null}
           </div>
@@ -354,38 +393,41 @@ function ProductCard({ item }: { item: SellerProduct }) {
       >
         <ModuleButton
           href={id ? `/seller/productos/${id}` : "/seller/productos"}
-          label="Ver detalle"
-          variant="secondary"
-        />
-
-        <ModuleButton
-          href={id ? `/seller/productos/${id}/editar` : "/seller/productos"}
-          label="Editar"
+          label="Editar producto"
         />
       </div>
     </div>
   );
 }
 
-function InfoCell({ label, value }: { label: string; value: string }) {
+function StatBlock({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+}) {
   return (
     <div
       style={{
-        padding: 12,
-        borderRadius: 14,
-        background: "rgba(248,250,252,.95)",
-        border: "1px solid rgba(15,23,42,.06)",
+        background: "#fff",
+        border: "1px solid rgba(15,23,42,.08)",
+        borderRadius: 18,
+        padding: 20,
+        boxShadow: "0 10px 24px rgba(15,23,42,.06)",
         display: "grid",
-        gap: 4,
+        gap: 8,
       }}
     >
       <span
         style={{
-          fontSize: 12,
-          fontWeight: 800,
+          fontSize: 13,
+          fontWeight: 700,
           color: "rgba(15,23,42,.55)",
-          textTransform: "uppercase",
           letterSpacing: ".02em",
+          textTransform: "uppercase",
         }}
       >
         {label}
@@ -393,14 +435,23 @@ function InfoCell({ label, value }: { label: string; value: string }) {
 
       <strong
         style={{
-          fontSize: 15,
+          fontSize: 30,
+          lineHeight: 1,
+          fontWeight: 900,
           color: "#0f172a",
-          fontWeight: 800,
-          lineHeight: 1.3,
         }}
       >
         {value}
       </strong>
+
+      <span
+        style={{
+          fontSize: 13,
+          color: "rgba(15,23,42,.6)",
+        }}
+      >
+        {hint}
+      </span>
     </div>
   );
 }
@@ -415,8 +466,6 @@ export default function SellerProductosPage() {
     setError(null);
 
     try {
-      // Endpoint objetivo futuro recomendado:
-      // GET /api/seller/productos
       const res = await api.get<SellerProduct[]>("/api/seller/productos", {
         autoLogoutOn401: true,
         friendlyErrorMessage:
@@ -424,13 +473,12 @@ export default function SellerProductosPage() {
       } as any);
 
       if (!res.ok) {
-        throw new Error(
-          res.message || "No se pudieron cargar los productos."
-        );
+        throw new Error(res.message || "No se pudieron cargar los productos.");
       }
 
       setItems(Array.isArray(res.data) ? res.data : []);
     } catch (err: any) {
+      console.error("SELLER PRODUCTOS ERROR:", err);
       setItems([]);
       setError(
         err?.message ||
@@ -643,61 +691,5 @@ export default function SellerProductosPage() {
         )}
       </div>
     </main>
-  );
-}
-
-function StatBlock({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-}) {
-  return (
-    <div
-      style={{
-        background: "#fff",
-        border: "1px solid rgba(15,23,42,.08)",
-        borderRadius: 18,
-        padding: 20,
-        boxShadow: "0 10px 24px rgba(15,23,42,.06)",
-        display: "grid",
-        gap: 8,
-      }}
-    >
-      <span
-        style={{
-          fontSize: 13,
-          fontWeight: 700,
-          color: "rgba(15,23,42,.55)",
-          letterSpacing: ".02em",
-          textTransform: "uppercase",
-        }}
-      >
-        {label}
-      </span>
-
-      <strong
-        style={{
-          fontSize: 30,
-          lineHeight: 1,
-          fontWeight: 900,
-          color: "#0f172a",
-        }}
-      >
-        {value}
-      </strong>
-
-      <span
-        style={{
-          fontSize: 13,
-          color: "rgba(15,23,42,.6)",
-        }}
-      >
-        {hint}
-      </span>
-    </div>
   );
 }

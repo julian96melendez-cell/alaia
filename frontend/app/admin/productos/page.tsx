@@ -3,6 +3,21 @@
 import { api } from "@/lib/api";
 import { useEffect, useMemo, useState } from "react";
 
+type ProductoApi = {
+  _id: string;
+  id?: string;
+  nombre: string;
+  precio?: number;
+  precioFinal?: number;
+  activo?: boolean;
+  stock?: number;
+  sku?: string;
+  categoria?: string;
+  proveedor?: string;
+  visible?: boolean;
+  tipo?: "marketplace" | "dropshipping" | "afiliado";
+};
+
 type Producto = {
   _id: string;
   nombre: string;
@@ -14,6 +29,17 @@ type Producto = {
 
 function money(n: number) {
   return `$${Number(n || 0).toFixed(2)}`;
+}
+
+function normalizeProducto(item: ProductoApi): Producto {
+  return {
+    _id: item._id || item.id || "",
+    nombre: item.nombre || "",
+    precio: Number(item.precioFinal ?? item.precio ?? 0),
+    activo: item.activo !== false,
+    stock: Number(item.stock ?? 0),
+    sku: item.sku || "",
+  };
 }
 
 export default function AdminProductosPage() {
@@ -37,18 +63,21 @@ export default function AdminProductosPage() {
     setError(null);
 
     try {
-      const res = await api.get<Producto[]>("/api/productos/admin", {
+      const res = await api.get<ProductoApi[]>("/api/seller/productos", {
         autoLogoutOn401: true,
       } as any);
 
       if (!res.ok) {
         setError(res.message || "Error cargando productos");
         setProductos([]);
-        setLoading(false);
         return;
       }
 
-      setProductos(Array.isArray(res.data) ? res.data : []);
+      const rows = Array.isArray(res.data)
+        ? res.data.map(normalizeProducto)
+        : [];
+
+      setProductos(rows);
     } catch (err: any) {
       console.error("ADMIN PRODUCTOS LOAD ERROR:", err);
       setError(err?.message || "Error cargando productos");
@@ -88,16 +117,19 @@ export default function AdminProductosPage() {
     setError(null);
 
     try {
-      const res = await api.post("/api/productos/admin", {
+      const res = await api.post("/api/seller/productos", {
         nombre: nombreClean,
         precio: precioNum,
         stock: stockNum,
         sku: sku.trim() || undefined,
+        activo: true,
+        visible: true,
+        gestionStock: true,
+        tipo: "marketplace",
       });
 
       if (!res.ok) {
         setError(res.message || "No se pudo crear el producto");
-        setSaving(false);
         return;
       }
 
@@ -119,8 +151,15 @@ export default function AdminProductosPage() {
     setError(null);
 
     try {
-      const res = await api.put(`/api/productos/admin/${producto._id}`, {
+      const res = await api.put(`/api/seller/productos/${producto._id}`, {
+        nombre: producto.nombre,
+        precio: producto.precio,
+        stock: producto.stock,
+        sku: producto.sku?.trim() || undefined,
         activo: !producto.activo,
+        visible: true,
+        gestionStock: true,
+        tipo: "marketplace",
       });
 
       if (!res.ok) {
@@ -144,8 +183,15 @@ export default function AdminProductosPage() {
     setError(null);
 
     try {
-      const res = await api.put(`/api/productos/admin/${producto._id}`, {
+      const res = await api.put(`/api/seller/productos/${producto._id}`, {
+        nombre: producto.nombre,
         precio: nuevoPrecio,
+        stock: producto.stock,
+        sku: producto.sku?.trim() || undefined,
+        activo: producto.activo,
+        visible: true,
+        gestionStock: true,
+        tipo: "marketplace",
       });
 
       if (!res.ok) {
@@ -170,8 +216,15 @@ export default function AdminProductosPage() {
     setError(null);
 
     try {
-      const res = await api.put(`/api/productos/admin/${producto._id}`, {
+      const res = await api.put(`/api/seller/productos/${producto._id}`, {
         nombre: nombreClean,
+        precio: producto.precio,
+        stock: producto.stock,
+        sku: producto.sku?.trim() || undefined,
+        activo: producto.activo,
+        visible: true,
+        gestionStock: true,
+        tipo: "marketplace",
       });
 
       if (!res.ok) {
@@ -195,8 +248,15 @@ export default function AdminProductosPage() {
     setError(null);
 
     try {
-      const res = await api.put(`/api/productos/admin/${producto._id}`, {
+      const res = await api.put(`/api/seller/productos/${producto._id}`, {
+        nombre: producto.nombre,
+        precio: producto.precio,
         stock: nuevoStock,
+        sku: producto.sku?.trim() || undefined,
+        activo: producto.activo,
+        visible: true,
+        gestionStock: true,
+        tipo: "marketplace",
       });
 
       if (!res.ok) {
@@ -215,8 +275,15 @@ export default function AdminProductosPage() {
     setError(null);
 
     try {
-      const res = await api.put(`/api/productos/admin/${producto._id}`, {
-        sku: nuevoSku.trim(),
+      const res = await api.put(`/api/seller/productos/${producto._id}`, {
+        nombre: producto.nombre,
+        precio: producto.precio,
+        stock: producto.stock,
+        sku: nuevoSku.trim() || undefined,
+        activo: producto.activo,
+        visible: true,
+        gestionStock: true,
+        tipo: "marketplace",
       });
 
       if (!res.ok) {
@@ -235,7 +302,7 @@ export default function AdminProductosPage() {
     <main style={layout}>
       <header style={header}>
         <div>
-          <h1 style={title}>Admin · Productos</h1>
+          <h1 style={title}>Admin · Productos VERSION NUEVA</h1>
           <p style={subtitleText}>
             Gestiona catálogo, precio, stock, SKU y visibilidad de productos.
           </p>
