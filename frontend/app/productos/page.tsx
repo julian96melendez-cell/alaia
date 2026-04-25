@@ -1,13 +1,32 @@
 "use client";
 
 import { api } from "@/lib/api";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+type ProductoApi = {
+  _id?: string;
+  id?: string;
+  nombre: string;
+  descripcion?: string;
+  precio?: number;
+  precioFinal?: number;
+  stock?: number;
+  gestionStock?: boolean;
+  activo?: boolean;
+  visible?: boolean;
+  categoria?: string;
+  tipo?: "marketplace" | "dropshipping" | "afiliado";
+  imagenPrincipal?: string;
+  imagen?: string;
+  moneda?: string;
+};
 
 type ProductoUI = {
   id: string;
   nombre: string;
   descripcion: string;
   precio: number;
+  moneda: string;
   productoIdBackend: string;
   disponible: boolean;
   categoria?: string;
@@ -15,26 +34,33 @@ type ProductoUI = {
   imagen?: string;
 };
 
-const PRODUCTOS: ProductoUI[] = [
-  {
-    id: "producto_1",
-    nombre: "Producto de Prueba",
-    descripcion:
-      "Producto demo conectado al flujo de compra con Stripe Checkout.",
-    precio: 19.99,
-    productoIdBackend: "693d970922c0539f26f9854e",
-    disponible: true,
-    categoria: "General",
-    tipo: "marketplace",
-    imagen: "",
-  },
-];
-
 type CheckoutResponse = {
   ordenId: string;
   sessionId: string;
   url: string;
 };
+
+function normalizeProducto(item: ProductoApi): ProductoUI {
+  const id = item._id || item.id || "";
+  const stock = Number(item.stock ?? 0);
+  const gestionStock = item.gestionStock !== false;
+
+  return {
+    id,
+    productoIdBackend: id,
+    nombre: item.nombre || "Producto",
+    descripcion: item.descripcion?.trim() || "Producto disponible en la tienda.",
+    precio: Number(item.precioFinal ?? item.precio ?? 0),
+    moneda: item.moneda || "USD",
+    disponible:
+      item.activo !== false &&
+      item.visible !== false &&
+      (!gestionStock || stock > 0),
+    categoria: item.categoria || "General",
+    tipo: item.tipo || "marketplace",
+    imagen: item.imagenPrincipal || item.imagen || "",
+  };
+}
 
 function money(n: number, currency = "USD") {
   try {
@@ -56,14 +82,6 @@ function badgeStyles(
       background: "rgba(0,140,60,.10)",
       color: "#047857",
       border: "1px solid rgba(0,140,60,.14)",
-    };
-  }
-
-  if (tone === "warning") {
-    return {
-      background: "rgba(245,158,11,.10)",
-      color: "#92400e",
-      border: "1px solid rgba(245,158,11,.18)",
     };
   }
 
@@ -125,8 +143,6 @@ function ProductCard({
   loading: boolean;
   onComprar: (productoIdBackend: string) => void;
 }) {
-  const tone = producto.disponible ? "success" : "danger";
-
   return (
     <article
       style={{
@@ -157,11 +173,7 @@ function ProductCard({
           <img
             src={producto.imagen}
             alt={producto.nombre}
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-            }}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
           />
         ) : (
           "🛍️"
@@ -171,21 +183,13 @@ function ProductCard({
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         {producto.categoria ? <Badge>{producto.categoria}</Badge> : null}
         {producto.tipo ? <Badge tone="info">{producto.tipo}</Badge> : null}
-        <Badge tone={tone}>
+        <Badge tone={producto.disponible ? "success" : "danger"}>
           {producto.disponible ? "Disponible" : "No disponible"}
         </Badge>
       </div>
 
       <div style={{ display: "grid", gap: 8 }}>
-        <h2
-          style={{
-            margin: 0,
-            fontSize: 20,
-            fontWeight: 900,
-            color: "#0f172a",
-            lineHeight: 1.2,
-          }}
-        >
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 900 }}>
           {producto.nombre}
         </h2>
 
@@ -211,31 +215,8 @@ function ProductCard({
         }}
       >
         <div>
-          <div
-            style={{
-              fontSize: 28,
-              fontWeight: 900,
-              color: "#0f172a",
-              lineHeight: 1,
-            }}
-          >
-            {money(producto.precio)}
-          </div>
-
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 12,
-              fontWeight: 800,
-              color:
-                producto.disponible
-                  ? "rgba(0,120,50,.95)"
-                  : "rgba(160,0,20,.95)",
-            }}
-          >
-            {producto.disponible
-              ? "Listo para compra inmediata"
-              : "Temporalmente no disponible"}
+          <div style={{ fontSize: 28, fontWeight: 900, color: "#0f172a" }}>
+            {money(producto.precio, producto.moneda)}
           </div>
         </div>
 
@@ -253,7 +234,6 @@ function ProductCard({
             fontSize: 14,
             cursor: loading || !producto.disponible ? "not-allowed" : "pointer",
             opacity: loading || !producto.disponible ? 0.65 : 1,
-            whiteSpace: "nowrap",
           }}
         >
           {loading ? "Redirigiendo…" : "Comprar ahora"}
@@ -263,94 +243,71 @@ function ProductCard({
   );
 }
 
-function EmptyState({
-  hasSearch,
-}: {
-  hasSearch: boolean;
-}) {
-  return (
-    <section
-      style={{
-        background: "#ffffff",
-        border: "1px solid rgba(15,23,42,.08)",
-        borderRadius: 18,
-        padding: 28,
-        boxShadow: "0 10px 24px rgba(15,23,42,.06)",
-        display: "grid",
-        gap: 10,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 32,
-        }}
-      >
-        {hasSearch ? "🔎" : "📦"}
-      </div>
-
-      <h2
-        style={{
-          margin: 0,
-          fontSize: 22,
-          fontWeight: 900,
-          color: "#0f172a",
-        }}
-      >
-        {hasSearch
-          ? "No encontramos productos con esos filtros"
-          : "No hay productos disponibles"}
-      </h2>
-
-      <p
-        style={{
-          margin: 0,
-          fontSize: 15,
-          lineHeight: 1.7,
-          color: "rgba(15,23,42,.68)",
-        }}
-      >
-        {hasSearch
-          ? "Prueba cambiando la búsqueda o seleccionando otra categoría."
-          : "Cuando conectes tu catálogo real, aquí aparecerán los productos públicos de tu tienda."}
-      </p>
-    </section>
-  );
-}
-
 export default function ProductosPage() {
+  const [productos, setProductos] = useState<ProductoUI[]>([]);
+  const [loadingProductos, setLoadingProductos] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [categoria, setCategoria] = useState("todas");
 
+  async function loadProductos() {
+    setLoadingProductos(true);
+    setError(null);
+
+    try {
+      const res = await api.get<ProductoApi[]>("/api/productos", {
+        autoLogoutOn401: false,
+      } as any);
+
+      if (!res.ok) {
+        setError(res.message || "No se pudieron cargar los productos.");
+        setProductos([]);
+        return;
+      }
+
+      const rows = Array.isArray(res.data)
+        ? res.data.map(normalizeProducto)
+        : [];
+
+      setProductos(rows.filter((p) => p.disponible));
+    } catch (err: any) {
+      setError(err?.message || "No se pudieron cargar los productos.");
+      setProductos([]);
+    } finally {
+      setLoadingProductos(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadProductos();
+  }, []);
+
   const categorias = useMemo(() => {
     const set = new Set<string>();
-
-    PRODUCTOS.forEach((p) => {
+    productos.forEach((p) => {
       if (p.categoria) set.add(p.categoria);
     });
-
     return ["todas", ...Array.from(set)];
-  }, []);
+  }, [productos]);
 
   const productosFiltrados = useMemo(() => {
     const q = search.trim().toLowerCase();
 
-    return PRODUCTOS.filter((p) => {
-      const matchDisponible = p.disponible;
+    return productos.filter((p) => {
       const matchCategoria =
         categoria === "todas" ? true : p.categoria === categoria;
 
-      const hayTexto =
+      const matchTexto =
         !q ||
         p.nombre.toLowerCase().includes(q) ||
         p.descripcion.toLowerCase().includes(q) ||
         (p.categoria || "").toLowerCase().includes(q) ||
         (p.tipo || "").toLowerCase().includes(q);
 
-      return matchDisponible && matchCategoria && hayTexto;
+      return matchCategoria && matchTexto;
     });
-  }, [search, categoria]);
+  }, [productos, search, categoria]);
 
   async function comprar(productoIdBackend: string) {
     if (loadingProductId) return;
@@ -360,12 +317,7 @@ export default function ProductosPage() {
 
     try {
       const res = await api.post<CheckoutResponse>("/api/pagos/stripe/checkout", {
-        items: [
-          {
-            producto: productoIdBackend,
-            cantidad: 1,
-          },
-        ],
+        items: [{ producto: productoIdBackend, cantidad: 1 }],
       });
 
       if (!res.ok || !res.data?.url) {
@@ -374,7 +326,6 @@ export default function ProductosPage() {
 
       window.location.href = res.data.url;
     } catch (err: any) {
-      console.error("CHECKOUT ERROR:", err);
       setError(err?.message || "Error iniciando el pago.");
       setLoadingProductId(null);
     }
@@ -407,48 +358,22 @@ export default function ProductosPage() {
             gap: 14,
           }}
         >
-          <div
+          <h1 style={{ margin: 0, fontSize: 34, fontWeight: 900 }}>
+            Productos
+          </h1>
+
+          <p
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              width: "fit-content",
-              padding: "6px 10px",
-              borderRadius: 999,
-              background: "rgba(79,70,229,.08)",
-              color: "#4338ca",
-              fontSize: 12,
-              fontWeight: 900,
+              margin: 0,
+              maxWidth: 760,
+              fontSize: 15,
+              lineHeight: 1.7,
+              color: "rgba(15,23,42,.68)",
             }}
           >
-            Catálogo · Checkout directo
-          </div>
-
-          <div style={{ display: "grid", gap: 10 }}>
-            <h1
-              style={{
-                margin: 0,
-                fontSize: 34,
-                lineHeight: 1.1,
-                fontWeight: 900,
-                color: "#0f172a",
-              }}
-            >
-              Productos
-            </h1>
-
-            <p
-              style={{
-                margin: 0,
-                maxWidth: 760,
-                fontSize: 15,
-                lineHeight: 1.7,
-                color: "rgba(15,23,42,.68)",
-              }}
-            >
-              Explora los productos disponibles y completa tu compra mediante
-              Stripe Checkout con un flujo rápido, seguro y listo para escalar.
-            </p>
-          </div>
+            Explora los productos disponibles y completa tu compra mediante
+            Stripe Checkout.
+          </p>
 
           <section
             style={{
@@ -458,18 +383,13 @@ export default function ProductosPage() {
             }}
           >
             <input
-              type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar productos..."
               style={{
-                width: "100%",
                 padding: "12px 14px",
                 borderRadius: 12,
                 border: "1px solid #d1d5db",
-                fontSize: 14,
-                outline: "none",
-                background: "#fff",
               }}
             />
 
@@ -477,13 +397,9 @@ export default function ProductosPage() {
               value={categoria}
               onChange={(e) => setCategoria(e.target.value)}
               style={{
-                width: "100%",
                 padding: "12px 14px",
                 borderRadius: 12,
                 border: "1px solid #d1d5db",
-                fontSize: 14,
-                outline: "none",
-                background: "#fff",
               }}
             >
               {categorias.map((item) => (
@@ -510,8 +426,14 @@ export default function ProductosPage() {
           </section>
         ) : null}
 
-        {productosFiltrados.length === 0 ? (
-          <EmptyState hasSearch={!!search || categoria !== "todas"} />
+        {loadingProductos ? (
+          <section style={{ background: "#fff", padding: 24, borderRadius: 18 }}>
+            Cargando productos…
+          </section>
+        ) : productosFiltrados.length === 0 ? (
+          <section style={{ background: "#fff", padding: 28, borderRadius: 18 }}>
+            No hay productos disponibles.
+          </section>
         ) : (
           <section
             style={{
