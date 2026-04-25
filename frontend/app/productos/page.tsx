@@ -320,11 +320,13 @@ export default function ProductosPage() {
         items: [{ producto: productoIdBackend, cantidad: 1 }],
       });
 
-      if (!res.ok || !res.data?.url) {
-        throw new Error(res.message || "No se pudo iniciar el pago.");
-      }
+      const checkoutUrl = (res.data as any)?.url || (res.data as any)?.checkoutUrl;
 
-      window.location.href = res.data.url;
+if (!res.ok || !checkoutUrl) {
+  throw new Error(res.message || "No se pudo iniciar el pago.");
+}
+
+window.location.href = checkoutUrl;
     } catch (err: any) {
       setError(err?.message || "Error iniciando el pago.");
       setLoadingProductId(null);
