@@ -35,11 +35,13 @@ const safeNumber = (v, fallback = 0) => {
 
 const safeBool = (v, fallback = false) => {
   if (typeof v === "boolean") return v;
+
   if (typeof v === "string") {
     const s = v.trim().toLowerCase();
     if (["true", "1", "yes", "y", "on"].includes(s)) return true;
     if (["false", "0", "no", "n", "off"].includes(s)) return false;
   }
+
   return fallback;
 };
 
@@ -62,8 +64,13 @@ function isSeller(req) {
   return req.usuario?.rol === "vendedor";
 }
 
+function canManageSellerProducts(req) {
+  return req.usuario?.rol === "admin" || req.usuario?.rol === "vendedor";
+}
+
 function normalizeImages(input) {
   if (!Array.isArray(input)) return [];
+
   return input
     .map((x) => safeString(x))
     .filter(Boolean)
@@ -72,6 +79,7 @@ function normalizeImages(input) {
 
 function normalizeTags(input) {
   if (!Array.isArray(input)) return [];
+
   return Array.from(
     new Set(
       input
@@ -84,6 +92,7 @@ function normalizeTags(input) {
 
 function sanitizeCreateOrUpdatePayload(body = {}) {
   const tipoRaw = safeString(body.tipo || "marketplace").toLowerCase();
+
   const tipo = ["marketplace", "dropshipping", "afiliado"].includes(tipoRaw)
     ? tipoRaw
     : "marketplace";
@@ -96,6 +105,7 @@ function sanitizeCreateOrUpdatePayload(body = {}) {
 
   const payload = {
     nombre: safeString(body.nombre),
+    sku: safeString(body.sku).toUpperCase(),
     descripcion: safeString(body.descripcion),
     categoria: safeString(body.categoria),
     proveedor: safeString(body.proveedor, "local") || "local",
@@ -115,14 +125,17 @@ function sanitizeCreateOrUpdatePayload(body = {}) {
 
     costoProveedor,
     margenPorcentaje,
+
     comisionPct:
-      body.comisionPct === null || body.comisionPct === undefined || body.comisionPct === ""
+      body.comisionPct === null ||
+      body.comisionPct === undefined ||
+      body.comisionPct === ""
         ? null
         : Math.max(0, Math.min(100, safeNumber(body.comisionPct, 0))),
+
     commissionFlat: Math.max(0, round2(safeNumber(body.commissionFlat, 0))),
   };
 
-  // Compatibilidad: si frontend manda "precio"
   const precioCompat = safeNumber(body.precio, NaN);
 
   if (Number.isFinite(precioCompat) && precioCompat > 0) {
@@ -150,7 +163,8 @@ exports.listarProductos = async (req, res) => {
 
   try {
     if (!req.usuario) return forbidden(res, "No autenticado");
-    if (!isSeller(req) && req.usuario?.rol !== "admin") {
+
+    if (!canManageSellerProducts(req)) {
       return forbidden(res, "Acceso exclusivo para vendedores");
     }
 
@@ -158,10 +172,13 @@ exports.listarProductos = async (req, res) => {
     if (!vendedorId) return forbidden(res, "No autenticado");
 
     const q = safeString(req.query.q).toLowerCase();
+
     const activo =
       req.query.activo === undefined ? null : safeBool(req.query.activo, true);
+
     const visible =
       req.query.visible === undefined ? null : safeBool(req.query.visible, true);
+
     const categoria = safeString(req.query.categoria);
     const tipo = safeString(req.query.tipo).toLowerCase();
 
@@ -177,6 +194,7 @@ exports.listarProductos = async (req, res) => {
     if (q) {
       filter.$or = [
         { nombre: { $regex: q, $options: "i" } },
+        { sku: { $regex: q, $options: "i" } },
         { descripcion: { $regex: q, $options: "i" } },
         { categoria: { $regex: q, $options: "i" } },
         { proveedor: { $regex: q, $options: "i" } },
@@ -186,6 +204,7 @@ exports.listarProductos = async (req, res) => {
     if (activo !== null) filter.activo = activo;
     if (visible !== null) filter.visible = visible;
     if (categoria) filter.categoria = categoria;
+
     if (["marketplace", "dropshipping", "afiliado"].includes(tipo)) {
       filter.tipo = tipo;
     }
@@ -211,8 +230,21 @@ exports.listarProductos = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("SELLER PRODUCTOS LIST ERROR:", err);
-    return serverError(res, "Error obteniendo productos del vendedor", { reqId });
+    console.error("SELLER PRODUCTOS LIST ERROR:", {
+      reqId,
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return serverError(res, "Error obteniendo productos del vendedor", {
+      reqId,
+      error: err?.message,
+      name: err?.name,
+      code: err?.code,
+    });
   }
 };
 
@@ -224,7 +256,8 @@ exports.crearProducto = async (req, res) => {
 
   try {
     if (!req.usuario) return forbidden(res, "No autenticado");
-    if (!isSeller(req) && req.usuario?.rol !== "admin") {
+
+    if (!canManageSellerProducts(req)) {
       return forbidden(res, "Acceso exclusivo para vendedores");
     }
 
@@ -260,8 +293,22 @@ exports.crearProducto = async (req, res) => {
       meta: { reqId },
     });
   } catch (err) {
-    console.error("SELLER PRODUCTOS CREATE ERROR:", err);
-    return serverError(res, "Error creando producto", { reqId });
+    console.error("SELLER PRODUCTOS CREATE ERROR:", {
+      reqId,
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return serverError(res, "Error creando producto", {
+      reqId,
+      error: err?.message,
+      name: err?.name,
+      code: err?.code,
+      errors: err?.errors,
+    });
   }
 };
 
@@ -273,7 +320,8 @@ exports.obtenerProducto = async (req, res) => {
 
   try {
     if (!req.usuario) return forbidden(res, "No autenticado");
-    if (!isSeller(req) && req.usuario?.rol !== "admin") {
+
+    if (!canManageSellerProducts(req)) {
       return forbidden(res, "Acceso exclusivo para vendedores");
     }
 
@@ -300,8 +348,21 @@ exports.obtenerProducto = async (req, res) => {
       meta: { reqId },
     });
   } catch (err) {
-    console.error("SELLER PRODUCTOS GET ERROR:", err);
-    return serverError(res, "Error obteniendo producto", { reqId });
+    console.error("SELLER PRODUCTOS GET ERROR:", {
+      reqId,
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return serverError(res, "Error obteniendo producto", {
+      reqId,
+      error: err?.message,
+      name: err?.name,
+      code: err?.code,
+    });
   }
 };
 
@@ -313,7 +374,8 @@ exports.actualizarProducto = async (req, res) => {
 
   try {
     if (!req.usuario) return forbidden(res, "No autenticado");
-    if (!isSeller(req) && req.usuario?.rol !== "admin") {
+
+    if (!canManageSellerProducts(req)) {
       return forbidden(res, "Acceso exclusivo para vendedores");
     }
 
@@ -368,8 +430,22 @@ exports.actualizarProducto = async (req, res) => {
       meta: { reqId },
     });
   } catch (err) {
-    console.error("SELLER PRODUCTOS UPDATE ERROR:", err);
-    return serverError(res, "Error actualizando producto", { reqId });
+    console.error("SELLER PRODUCTOS UPDATE ERROR:", {
+      reqId,
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return serverError(res, "Error actualizando producto", {
+      reqId,
+      error: err?.message,
+      name: err?.name,
+      code: err?.code,
+      errors: err?.errors,
+    });
   }
 };
 
@@ -381,7 +457,8 @@ exports.eliminarProducto = async (req, res) => {
 
   try {
     if (!req.usuario) return forbidden(res, "No autenticado");
-    if (!isSeller(req) && req.usuario?.rol !== "admin") {
+
+    if (!canManageSellerProducts(req)) {
       return forbidden(res, "Acceso exclusivo para vendedores");
     }
 
@@ -410,7 +487,20 @@ exports.eliminarProducto = async (req, res) => {
       meta: { reqId },
     });
   } catch (err) {
-    console.error("SELLER PRODUCTOS DELETE ERROR:", err);
-    return serverError(res, "Error eliminando producto", { reqId });
+    console.error("SELLER PRODUCTOS DELETE ERROR:", {
+      reqId,
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return serverError(res, "Error eliminando producto", {
+      reqId,
+      error: err?.message,
+      name: err?.name,
+      code: err?.code,
+    });
   }
 };
