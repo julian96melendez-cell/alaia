@@ -3,6 +3,8 @@
 const express = require("express");
 const router = express.Router();
 
+const { proteger, requireRoles } = require("../middleware/auth");
+
 const {
   listarProductos,
   crearProducto,
@@ -11,18 +13,32 @@ const {
   eliminarProducto,
 } = require("../controllers/sellerProductosController");
 
-// 👇 SI TIENES MIDDLEWARE DE AUTH
-const { proteger } = require("../middlewares/authMiddleware");
-
 // ======================================================
-// RUTAS
+// sellerProductosRoutes.js
+// Rutas protegidas para gestión de productos de vendedor/admin
+// Base URL en server.js:
+// app.use("/api/seller/productos", sellerProductosRoutes);
 // ======================================================
 
-router.get("/", proteger, listarProductos);
-router.post("/", proteger, crearProducto);
+// Todas las rutas requieren usuario autenticado
+router.use(proteger);
 
-router.get("/:id", proteger, obtenerProducto);
-router.put("/:id", proteger, actualizarProducto);
-router.delete("/:id", proteger, eliminarProducto);
+// Permitir gestión a admin y vendedor
+router.use(requireRoles("admin", "vendedor"));
+
+// GET /api/seller/productos
+router.get("/", listarProductos);
+
+// POST /api/seller/productos
+router.post("/", crearProducto);
+
+// GET /api/seller/productos/:id
+router.get("/:id", obtenerProducto);
+
+// PUT /api/seller/productos/:id
+router.put("/:id", actualizarProducto);
+
+// DELETE /api/seller/productos/:id
+router.delete("/:id", eliminarProducto);
 
 module.exports = router;
