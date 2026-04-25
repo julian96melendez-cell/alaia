@@ -1,5 +1,5 @@
 "use strict";
-
+console.log("✅ stripeRoutes cargado con /checkout");
 const express = require("express");
 const router = express.Router();
 
@@ -46,7 +46,7 @@ function validarStripeWebhookRequest(req, res, next) {
 
 // Checkout desde frontend:
 // POST /api/stripe/checkout
-router.post("/checkout", proteger, crearOrdenYCheckoutStripe);
+router.post("/checkout", crearOrdenYCheckoutStripe);
 
 // Webhook Stripe:
 // POST /api/stripe/webhook
