@@ -2,22 +2,6 @@
 
 const mongoose = require("mongoose");
 
-/**
- * ============================================================
- * Producto.js — Enterprise Final (Marketplace / Dropshipping / Afiliado)
- * ============================================================
- * - Anti-NaN
- * - Cálculo consistente de precios
- * - Marketplace multi-vendor
- * - Compatibilidad con seller dashboard / órdenes / payouts
- * - Compatibilidad de nombres:
- *   - vendedor / vendedorId / sellerId
- *   - precio / precioFinal
- *   - comisionPct / commissionRatePct
- * - Soporte SKU
- * ============================================================
- */
-
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 const toNumber = (v, fallback = 0) => {
@@ -34,9 +18,6 @@ const safeStr = (v, fallback = "") => {
 
 const ProductoSchema = new mongoose.Schema(
   {
-    // ======================================================
-    // Identidad y contenido
-    // ======================================================
     nombre: {
       type: String,
       required: true,
@@ -61,12 +42,7 @@ const ProductoSchema = new mongoose.Schema(
       maxlength: 5000,
     },
 
-    imagenes: [
-      {
-        type: String,
-        trim: true,
-      },
-    ],
+    imagenes: [{ type: String, trim: true }],
 
     imagenPrincipal: {
       type: String,
@@ -81,16 +57,8 @@ const ProductoSchema = new mongoose.Schema(
       index: true,
     },
 
-    tags: [
-      {
-        type: String,
-        trim: true,
-      },
-    ],
+    tags: [{ type: String, trim: true }],
 
-    // ======================================================
-    // Tipo de producto
-    // ======================================================
     tipo: {
       type: String,
       enum: ["marketplace", "dropshipping", "afiliado"],
@@ -98,9 +66,6 @@ const ProductoSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ======================================================
-    // Dueño / vendedor del producto
-    // ======================================================
     sellerType: {
       type: String,
       enum: ["platform", "seller"],
@@ -115,9 +80,6 @@ const ProductoSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ======================================================
-    // Proveedor
-    // ======================================================
     proveedor: {
       type: String,
       default: "local",
@@ -132,9 +94,6 @@ const ProductoSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ======================================================
-    // Moneda / precios
-    // ======================================================
     moneda: {
       type: String,
       default: "USD",
@@ -162,9 +121,6 @@ const ProductoSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ======================================================
-    // Comisión marketplace
-    // ======================================================
     comisionPct: {
       type: Number,
       default: null,
@@ -178,9 +134,6 @@ const ProductoSchema = new mongoose.Schema(
       min: 0,
     },
 
-    // ======================================================
-    // Inventario
-    // ======================================================
     gestionStock: {
       type: Boolean,
       default: false,
@@ -193,9 +146,6 @@ const ProductoSchema = new mongoose.Schema(
       min: 0,
     },
 
-    // ======================================================
-    // Afiliados
-    // ======================================================
     affiliateUrl: {
       type: String,
       default: "",
@@ -208,9 +158,6 @@ const ProductoSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // ======================================================
-    // Control / visibilidad
-    // ======================================================
     activo: {
       type: Boolean,
       default: true,
@@ -223,9 +170,6 @@ const ProductoSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ======================================================
-    // Metadata flexible
-    // ======================================================
     metadata: {
       type: mongoose.Schema.Types.Mixed,
       default: {},
@@ -239,9 +183,6 @@ const ProductoSchema = new mongoose.Schema(
   }
 );
 
-// ======================================================
-// Índices útiles
-// ======================================================
 ProductoSchema.index({
   nombre: "text",
   sku: 1,
@@ -259,9 +200,6 @@ ProductoSchema.index({ createdAt: -1 });
 ProductoSchema.index({ vendedor: 1, activo: 1, visible: 1 });
 ProductoSchema.index({ sku: 1, vendedor: 1 });
 
-// ======================================================
-// Virtuals de compatibilidad
-// ======================================================
 ProductoSchema.virtual("precio")
   .get(function () {
     return this.precioFinal;
@@ -298,11 +236,8 @@ ProductoSchema.virtual("commissionRatePct")
     this.comisionPct = value;
   });
 
-// ======================================================
-// Normalización y reglas
-// ======================================================
-ProductoSchema.pre("validate", function (next) {
-  // Strings
+// ✅ CORREGIDO: sin next()
+ProductoSchema.pre("validate", function () {
   this.nombre = safeStr(this.nombre);
   this.sku = safeStr(this.sku).toUpperCase();
   this.descripcion = safeStr(this.descripcion);
@@ -314,7 +249,6 @@ ProductoSchema.pre("validate", function (next) {
   this.affiliateUrl = safeStr(this.affiliateUrl);
   this.plataformaAfiliado = safeStr(this.plataformaAfiliado);
 
-  // Arrays
   if (!Array.isArray(this.imagenes)) this.imagenes = [];
   this.imagenes = this.imagenes.map((img) => safeStr(img)).filter(Boolean);
 
@@ -327,7 +261,6 @@ ProductoSchema.pre("validate", function (next) {
     )
   );
 
-  // Numbers
   this.costoProveedor = round2(Math.max(0, toNumber(this.costoProveedor, 0)));
   this.margenPorcentaje = clamp(toNumber(this.margenPorcentaje, 0), 0, 1000);
   this.precioFinal = round2(Math.max(0, toNumber(this.precioFinal, 0)));
@@ -343,28 +276,23 @@ ProductoSchema.pre("validate", function (next) {
 
   this.commissionFlat = round2(Math.max(0, toNumber(this.commissionFlat, 0)));
 
-  // SellerType seguro
   if (this.sellerType !== "platform" && this.sellerType !== "seller") {
     this.sellerType = "platform";
   }
 
-  // Regla: si es seller pero no hay vendedor => cae a platform
   if (this.sellerType === "seller" && !this.vendedor) {
     this.sellerType = "platform";
   }
 
-  // Regla: si hay vendedor, normalmente debe ser seller
   if (this.vendedor && this.sellerType !== "seller" && this.tipo !== "afiliado") {
     this.sellerType = "seller";
   }
 
-  // Reglas por tipo
   if (this.tipo === "afiliado") {
     this.sellerType = "platform";
     this.vendedor = null;
     this.comisionPct = null;
     this.commissionFlat = 0;
-
     this.costoProveedor = 0;
     this.margenPorcentaje = 0;
   } else {
@@ -382,17 +310,13 @@ ProductoSchema.pre("validate", function (next) {
       }
     }
   }
-
-  next();
 });
 
-// ======================================================
-// Reglas antes de guardar
-// ======================================================
-ProductoSchema.pre("save", function (next) {
+// ✅ CORREGIDO: sin next()
+ProductoSchema.pre("save", function () {
   if (this.tipo === "afiliado") {
     if (!this.affiliateUrl) {
-      return next(new Error("Los productos afiliados requieren affiliateUrl"));
+      throw new Error("Los productos afiliados requieren affiliateUrl");
     }
   } else {
     if (this.affiliateUrl) this.affiliateUrl = "";
@@ -402,13 +326,8 @@ ProductoSchema.pre("save", function (next) {
   if (this.gestionStock && this.stock < 0) {
     this.stock = 0;
   }
-
-  next();
 });
 
-// ======================================================
-// Métodos
-// ======================================================
 ProductoSchema.methods.calcularGanancia = function () {
   return round2((this.precioFinal || 0) - (this.costoProveedor || 0));
 };

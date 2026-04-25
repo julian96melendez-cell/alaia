@@ -3,9 +3,6 @@
 const express = require("express");
 const router = express.Router();
 
-// ✅ IMPORTS CORRECTOS (rutas relativas bien hechas)
-const { proteger, requireRoles } = require("../middleware/auth");
-
 const {
   listarProductos,
   crearProducto,
@@ -14,19 +11,18 @@ const {
   eliminarProducto,
 } = require("../controllers/sellerProductosController");
 
-// ======================================================
-// 🔐 PROTECCIÓN (ADMIN + VENDEDOR)
-// ======================================================
-router.use(proteger);
-router.use(requireRoles("admin", "vendedor"));
+// 👇 SI TIENES MIDDLEWARE DE AUTH
+const { proteger } = require("../middlewares/authMiddleware");
 
 // ======================================================
-// 📦 RUTAS
+// RUTAS
 // ======================================================
-router.get("/", listarProductos);
-router.post("/", crearProducto);
-router.get("/:id", obtenerProducto);
-router.put("/:id", actualizarProducto);
-router.delete("/:id", eliminarProducto);
+
+router.get("/", proteger, listarProductos);
+router.post("/", proteger, crearProducto);
+
+router.get("/:id", proteger, obtenerProducto);
+router.put("/:id", proteger, actualizarProducto);
+router.delete("/:id", proteger, eliminarProducto);
 
 module.exports = router;
