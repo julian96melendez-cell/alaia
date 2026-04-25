@@ -2,27 +2,6 @@
 // ordenController.js — Controlador de Órdenes (ENTERPRISE ULTRA FINAL)
 // COMPLETO / ROBUSTO / PRODUCCIÓN REAL / FUTURE-READY
 // ==========================================================
-//
-// Incluye:
-// ✅ Crear orden manual (validación + cálculo seguro)
-// ✅ Crear orden + Stripe Checkout Session (PRO) (idempotente)
-// ✅ Obtener mis órdenes
-// ✅ Obtener orden por ID (dueño o admin) con populate
-// ✅ Obtener orden pública (Stripe redirect safe)
-// ✅ Listado admin (filtros + paginación) (legacy compatible)
-// ✅ Actualizar estados (admin) con validación + auditoría
-// ✅ Cancelar orden (dueño o admin) con reglas pro
-//
-// ADD-ON ENTERPRISE:
-// ✅ Emails automáticos (pago y fulfillment) con idempotencia (no duplica)
-// ✅ Feature flags por ENV (activar/desactivar sin deploy)
-// ✅ Fail-safe: email no rompe API
-// ✅ Ledger de emails en historial (audit)
-// ✅ Helpers consistentes de respuesta (ok/message/data/meta)
-// ✅ Logs limpios (opcionales)
-// ✅ Idempotencia para creación (evita doble orden)
-//
-// ==========================================================
 
 const mongoose = require("mongoose");
 const crypto = require("crypto");
@@ -34,13 +13,13 @@ const Producto = require("../models/Producto");
 // ==========================================================
 let StripeService = null;
 try {
-  StripeService = require("../payments/stripeService"); // ruta típica
+  StripeService = require("../payments/stripeService");
 } catch (_) {
   try {
-    StripeService = require("../controllers/stripeService"); // por si lo tenías ahí
+    StripeService = require("../controllers/stripeService");
   } catch (_) {
     try {
-      StripeService = require("./stripeService"); // fallback local
+      StripeService = require("./stripeService");
     } catch (_) {
       StripeService = null;
     }
@@ -50,7 +29,7 @@ try {
 const { crearSesionPago } = StripeService || {};
 
 // ==========================================================
-// Email service (opcional) — intentamos rutas comunes
+// Email service (opcional)
 // ==========================================================
 let EmailService = null;
 try {
@@ -68,7 +47,7 @@ try {
 }
 
 // ==========================================================
-// Helpers de respuesta (consistentes con tu backend)
+// Helpers de respuesta
 // ==========================================================
 const sendSuccess = (
   res,
@@ -109,7 +88,6 @@ const now = () => new Date();
 const lower = (v) => safeString(v, "").trim().toLowerCase();
 
 function stableJson(obj) {
-  // stringify estable para hash (ordena keys)
   const seen = new WeakSet();
   const sorter = (x) => {
     if (!x || typeof x !== "object") return x;
@@ -143,14 +121,13 @@ const FLAGS = {
   EMAIL_ON_PAYMENT_STATUS: envBool("EMAIL_ON_PAYMENT_STATUS", true),
   EMAIL_VERBOSE_LOGS: envBool("EMAIL_VERBOSE_LOGS", true),
 
-  // Stripe
   STRIPE_ENABLED: envBool("STRIPE_ENABLED", true),
-  STRIPE_REQUIRE: envBool("STRIPE_REQUIRE", false), // si true y stripe no está -> error
+  STRIPE_REQUIRE: envBool("STRIPE_REQUIRE", false),
   STRIPE_IDEMPOTENCY: envBool("STRIPE_IDEMPOTENCY", true),
 };
 
 // ==========================================================
-// Estados permitidos (FUENTE ÚNICA)
+// Estados permitidos
 // ==========================================================
 const ALLOWED_ESTADO_PAGO = new Set([
   "pendiente",
@@ -168,7 +145,7 @@ const ALLOWED_ESTADO_FULFILLMENT = new Set([
 ]);
 
 // ==========================================================
-// EMAIL ENGINE — ENTERPRISE (idempotente + audit)
+// EMAIL ENGINE
 // ==========================================================
 const emailLedgerKey = (tipo, estado) =>
   `email_${String(tipo).toLowerCase()}_${String(estado).toLowerCase()}`.slice(
@@ -250,12 +227,14 @@ async function safeSendEmail({ tipo, orden, nuevoEstado, meta = {} }) {
 }
 
 // ==========================================================
-// 🔐 Idempotencia para creación de Orden (DB-level)
-// - Evita crear 2 órdenes si el cliente reintenta/reload.
-// - Usa una huella (fingerprint) guardada en historial.
+// Idempotencia
 // ==========================================================
-function buildCreateFingerprint({ usuarioId, items, direccionEntrega, metodoPago }) {
-  // Normaliza payload para que sea estable
+function buildCreateFingerprint({
+  usuarioId,
+  items,
+  direccionEntrega,
+  metodoPago,
+}) {
   const safeItems = (Array.isArray(items) ? items : []).map((it) => ({
     producto: String(it?.producto || ""),
     cantidad: Math.max(1, parseInt(it?.cantidad, 10) || 1),
@@ -274,7 +253,7 @@ function buildCreateFingerprint({ usuarioId, items, direccionEntrega, metodoPago
 
 async function findOrdenByCreateFingerprint(usuarioId, fp) {
   if (!usuarioId || !fp) return null;
-  // buscamos en historial.estado (sin índice, pero se usa solo en creación)
+
   return Orden.findOne({
     usuario: usuarioId,
     "historial.estado": fp,
@@ -285,7 +264,6 @@ async function findOrdenByCreateFingerprint(usuarioId, fp) {
 
 // ==========================================================
 // POST /api/ordenes/crear
-// Crear orden MANUAL (NO Stripe)  ✅ (se mantiene)
 // ==========================================================
 exports.crearOrden = async (req, res, next) => {
   try {
@@ -312,8 +290,13 @@ exports.crearOrden = async (req, res, next) => {
       }
     }
 
-    // Idempotencia (manual también, útil)
-    const fp = buildCreateFingerprint({ usuarioId, items, direccionEntrega, metodoPago });
+    const fp = buildCreateFingerprint({
+      usuarioId,
+      items,
+      direccionEntrega,
+      metodoPago,
+    });
+
     const existing = await findOrdenByCreateFingerprint(usuarioId, fp);
     if (existing) {
       return sendSuccess(res, {
@@ -337,6 +320,7 @@ exports.crearOrden = async (req, res, next) => {
 
     for (const it of items) {
       const producto = productosMap.get(it.producto.toString());
+
       if (!producto) {
         return sendError(res, {
           statusCode: 404,
@@ -365,11 +349,9 @@ exports.crearOrden = async (req, res, next) => {
       const subtotal = round2(precioUnitario * cantidad);
       const costoTotalProveedor = round2(costoProveedorUnitario * cantidad);
 
-      // ✅ Comisiones por item: si el producto trae commissionRatePct lo pasamos
-      // (tu Orden.js lo normaliza y calcula comisionMonto/ingresoVendedor)
       const comisionPorcentaje =
         producto?.sellerType === "seller"
-          ? (producto?.commissionRatePct ?? null)
+          ? producto?.commissionRatePct ?? null
           : null;
 
       itemsOrden.push({
@@ -417,54 +399,73 @@ exports.crearOrden = async (req, res, next) => {
 
 // ==========================================================
 // POST /api/ordenes/checkout/stripe
-// Crea orden + crea Stripe Checkout Session ✅ ENTERPRISE
-//
-// Body:
-//  { items: [{ producto, cantidad }], direccionEntrega, clienteEmail? }
-// Headers (opcional):
-//  - Idempotency-Key: <string>
+// Checkout Stripe con usuario logueado o invitado
 // ==========================================================
 exports.crearOrdenYCheckoutStripe = async (req, res, next) => {
   try {
-    const usuarioId = getUserId(req);
-    const { items = [], direccionEntrega = {}, clienteEmail = null } = req.body || {};
-
-    if (!usuarioId) {
-      return sendError(res, { statusCode: 401, message: "No autenticado" });
-    }
+    const usuarioId = getUserId(req) || null;
+    const { items = [], direccionEntrega = {}, clienteEmail = null } =
+      req.body || {};
 
     if (!FLAGS.STRIPE_ENABLED) {
-      return sendError(res, { statusCode: 400, message: "Stripe deshabilitado (STRIPE_ENABLED=false)" });
+      return sendError(res, {
+        statusCode: 400,
+        message: "Stripe deshabilitado (STRIPE_ENABLED=false)",
+      });
     }
 
     if (typeof crearSesionPago !== "function") {
       if (FLAGS.STRIPE_REQUIRE) {
-        return sendError(res, { statusCode: 500, message: "Stripe no configurado (crearSesionPago no disponible)" });
+        return sendError(res, {
+          statusCode: 500,
+          message: "Stripe no configurado (crearSesionPago no disponible)",
+        });
       }
-      return sendError(res, { statusCode: 400, message: "Stripe no disponible en este entorno" });
+
+      return sendError(res, {
+        statusCode: 400,
+        message: "Stripe no disponible en este entorno",
+      });
     }
 
     if (!Array.isArray(items) || items.length === 0) {
-      return sendError(res, { statusCode: 400, message: "Debes enviar items" });
+      return sendError(res, {
+        statusCode: 400,
+        message: "Debes enviar items",
+      });
     }
 
     for (const it of items) {
       if (!it?.producto || !isObjectId(it.producto)) {
-        return sendError(res, { statusCode: 400, message: "Cada item debe incluir producto (ObjectId válido)" });
+        return sendError(res, {
+          statusCode: 400,
+          message: "Cada item debe incluir producto (ObjectId válido)",
+        });
       }
     }
 
-    // Idempotencia:
-    // 1) si viene Idempotency-Key, lo usamos como parte del fingerprint
-    // 2) si no, hacemos fingerprint por payload
-    const headerKey = safeString(req.headers["idempotency-key"] || req.headers["Idempotency-Key"] || "");
-    const metodoPago = "stripe";
-    const fpBase = buildCreateFingerprint({ usuarioId, items, direccionEntrega, metodoPago });
-    const fp = headerKey ? `create_${sha256(fpBase + "::" + headerKey)}`.slice(0, 120) : fpBase;
+    const headerKey = safeString(
+      req.headers["idempotency-key"] || req.headers["Idempotency-Key"] || ""
+    );
 
-    const existing = await findOrdenByCreateFingerprint(usuarioId, fp);
+    const metodoPago = "stripe";
+
+    const fpBase = buildCreateFingerprint({
+      usuarioId: usuarioId || "guest",
+      items,
+      direccionEntrega,
+      metodoPago,
+    });
+
+    const fp = headerKey
+      ? `create_${sha256(fpBase + "::" + headerKey)}`.slice(0, 120)
+      : fpBase;
+
+    const existing = usuarioId
+      ? await findOrdenByCreateFingerprint(usuarioId, fp)
+      : null;
+
     if (existing) {
-      // si ya existe orden, intentamos devolver checkoutUrl si está en historial/meta (best effort)
       return sendSuccess(res, {
         statusCode: 200,
         message: "Orden ya existía (idempotencia)",
@@ -473,15 +474,14 @@ exports.crearOrdenYCheckoutStripe = async (req, res, next) => {
       });
     }
 
-    // Cargar productos
     const productos = await Producto.find({
       _id: { $in: items.map((i) => i.producto) },
       activo: true,
+      visible: true,
     }).lean();
 
     const productosMap = new Map(productos.map((p) => [String(p._id), p]));
 
-    // Construir items para Orden + lineItems Stripe
     const itemsOrden = [];
     const lineItems = [];
 
@@ -490,30 +490,48 @@ exports.crearOrdenYCheckoutStripe = async (req, res, next) => {
 
     for (const it of items) {
       const producto = productosMap.get(String(it.producto));
+
       if (!producto) {
-        return sendError(res, { statusCode: 404, message: `Producto no disponible: ${it.producto}` });
+        return sendError(res, {
+          statusCode: 404,
+          message: `Producto no disponible: ${it.producto}`,
+        });
       }
 
       if (producto.tipo === "afiliado") {
-        return sendError(res, { statusCode: 400, message: `El producto "${producto.nombre}" es afiliado` });
+        return sendError(res, {
+          statusCode: 400,
+          message: `El producto "${producto.nombre}" es afiliado`,
+        });
+      }
+
+      if (
+        producto.gestionStock === true &&
+        safeNumber(producto.stock, 0) <= 0
+      ) {
+        return sendError(res, {
+          statusCode: 400,
+          message: `El producto "${producto.nombre}" no tiene stock disponible`,
+        });
       }
 
       const cantidad = Math.max(1, parseInt(it.cantidad, 10) || 1);
-
       const precioUnitario = safeNumber(producto.precioFinal);
       const costoProveedorUnitario = safeNumber(producto.costoProveedor);
 
       if (precioUnitario <= 0) {
-        return sendError(res, { statusCode: 400, message: `Producto "${producto.nombre}" sin precio válido` });
+        return sendError(res, {
+          statusCode: 400,
+          message: `Producto "${producto.nombre}" sin precio válido`,
+        });
       }
 
       const subtotal = round2(precioUnitario * cantidad);
       const costoTotalProveedor = round2(costoProveedorUnitario * cantidad);
 
-      // ✅ Comisiones por item: si es seller, pasa commissionRatePct
       const comisionPorcentaje =
         producto?.sellerType === "seller"
-          ? (producto?.commissionRatePct ?? null)
+          ? producto?.commissionRatePct ?? null
           : null;
 
       itemsOrden.push({
@@ -532,20 +550,25 @@ exports.crearOrdenYCheckoutStripe = async (req, res, next) => {
       total += subtotal;
       totalCostoProveedor += costoTotalProveedor;
 
-      // Stripe line item (unit_amount en centavos)
       lineItems.push({
         price_data: {
           currency: lower(producto.moneda || "usd"),
-          product_data: { name: producto.nombre || "Producto" },
+          product_data: {
+            name: producto.nombre || "Producto",
+          },
           unit_amount: Math.round(precioUnitario * 100),
         },
         quantity: cantidad,
       });
     }
 
-    // Crear orden primero (fuente de verdad para webhook)
-    const orden = await Orden.create({
-      usuario: usuarioId,
+    const emailDestino =
+      clienteEmail ||
+      req.usuario?.email ||
+      direccionEntrega?.email ||
+      null;
+
+    const ordenPayload = {
       items: itemsOrden,
       total: round2(total),
       totalCostoProveedor: round2(totalCostoProveedor),
@@ -554,37 +577,51 @@ exports.crearOrdenYCheckoutStripe = async (req, res, next) => {
       estadoPago: "pendiente",
       estadoFulfillment: "pendiente",
       direccionEntrega,
+      clienteEmail: emailDestino,
       historial: [
-        { estado: "creada", fecha: now(), meta: { source: "stripe_checkout" } },
-        { estado: fp, fecha: now(), meta: { kind: "create_fingerprint" } },
+        {
+          estado: "creada",
+          fecha: now(),
+          meta: {
+            source: "stripe_checkout",
+            checkoutType: usuarioId ? "authenticated" : "guest",
+          },
+        },
+        {
+          estado: fp,
+          fecha: now(),
+          meta: { kind: "create_fingerprint" },
+        },
       ],
-    });
-
-    // Stripe metadata (crítico para tu webhook)
-    const metadata = {
-      ordenId: String(orden._id),
-      usuarioId: String(usuarioId),
     };
 
-    // Idempotency Stripe (para reintentos)
-    const stripeIdempotencyKey =
-      FLAGS.STRIPE_IDEMPOTENCY ? `checkout_${String(orden._id)}` : null;
+    if (usuarioId) {
+      ordenPayload.usuario = usuarioId;
+    }
 
-    // Crear sesión Stripe
+    const orden = await Orden.create(ordenPayload);
+
+    const metadata = {
+      ordenId: String(orden._id),
+      usuarioId: usuarioId ? String(usuarioId) : "guest",
+      checkoutType: usuarioId ? "authenticated" : "guest",
+    };
+
+    const stripeIdempotencyKey = FLAGS.STRIPE_IDEMPOTENCY
+      ? `checkout_${String(orden._id)}`
+      : null;
+
     const session = await crearSesionPago({
       lineItems,
       metadata,
-      clienteEmail: clienteEmail || req.usuario?.email || null,
+      clienteEmail: emailDestino,
       idempotencyKey: stripeIdempotencyKey,
     });
 
-    // Guardar stripeSessionId si existe en tu schema (si no, no rompe)
     try {
       orden.stripeSessionId = safeString(session?.id || "");
       await orden.save();
-    } catch (_) {
-      // no rompe si tu schema no tiene stripeSessionId
-    }
+    } catch (_) {}
 
     return sendSuccess(res, {
       statusCode: 201,
@@ -593,6 +630,7 @@ exports.crearOrdenYCheckoutStripe = async (req, res, next) => {
         ordenId: String(orden._id),
         stripeSessionId: session?.id || null,
         checkoutUrl: session?.url || null,
+        url: session?.url || null,
       },
     });
   } catch (err) {
@@ -606,6 +644,7 @@ exports.crearOrdenYCheckoutStripe = async (req, res, next) => {
 exports.obtenerMisOrdenes = async (req, res, next) => {
   try {
     const usuarioId = getUserId(req);
+
     if (!usuarioId) {
       return sendError(res, { statusCode: 401, message: "No autenticado" });
     }
@@ -624,7 +663,7 @@ exports.obtenerMisOrdenes = async (req, res, next) => {
 };
 
 // ==========================================================
-// GET /api/ordenes/:id (dueño o admin)
+// GET /api/ordenes/:id
 // ==========================================================
 exports.obtenerOrdenPorId = async (req, res, next) => {
   try {
@@ -661,7 +700,6 @@ exports.obtenerOrdenPorId = async (req, res, next) => {
 
 // ==========================================================
 // GET /api/ordenes/public/:id
-// SOLO información segura (Stripe redirect)
 // ==========================================================
 exports.obtenerOrdenPublica = async (req, res, next) => {
   try {
@@ -690,8 +728,6 @@ exports.obtenerOrdenPublica = async (req, res, next) => {
 
 // ==========================================================
 // GET /api/ordenes/admin
-// Listado completo admin (filtros + paginación)
-// (compatibilidad legacy, aunque ya tengas adminOrdenController)
 // ==========================================================
 exports.obtenerTodasOrdenes = async (req, res, next) => {
   try {
@@ -700,7 +736,10 @@ exports.obtenerTodasOrdenes = async (req, res, next) => {
     }
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const limit = Math.min(
+      100,
+      Math.max(1, parseInt(req.query.limit, 10) || 20)
+    );
     const skip = (page - 1) * limit;
 
     const filtro = {};
@@ -712,7 +751,10 @@ exports.obtenerTodasOrdenes = async (req, res, next) => {
       filtro.estadoPago = estadoPago;
     }
 
-    if (estadoFulfillment && ALLOWED_ESTADO_FULFILLMENT.has(estadoFulfillment)) {
+    if (
+      estadoFulfillment &&
+      ALLOWED_ESTADO_FULFILLMENT.has(estadoFulfillment)
+    ) {
       filtro.estadoFulfillment = estadoFulfillment;
     }
 
@@ -742,7 +784,6 @@ exports.obtenerTodasOrdenes = async (req, res, next) => {
 
 // ==========================================================
 // PUT /api/ordenes/estado/:id
-// ADMIN — actualizar estadoPago y/o estadoFulfillment + EMAILS
 // ==========================================================
 exports.actualizarEstado = async (req, res, next) => {
   try {
@@ -751,6 +792,7 @@ exports.actualizarEstado = async (req, res, next) => {
     }
 
     const { id } = req.params;
+
     if (!isObjectId(id)) {
       return sendError(res, { statusCode: 400, message: "ID inválido" });
     }
@@ -773,7 +815,10 @@ exports.actualizarEstado = async (req, res, next) => {
       });
     }
 
-    if (estadoFulfillment && !ALLOWED_ESTADO_FULFILLMENT.has(estadoFulfillment)) {
+    if (
+      estadoFulfillment &&
+      !ALLOWED_ESTADO_FULFILLMENT.has(estadoFulfillment)
+    ) {
       return sendError(res, {
         statusCode: 400,
         message: "estadoFulfillment inválido",
@@ -782,11 +827,11 @@ exports.actualizarEstado = async (req, res, next) => {
     }
 
     const orden = await Orden.findById(id).populate("usuario", "nombre email");
+
     if (!orden) {
       return sendError(res, { statusCode: 404, message: "Orden no encontrada" });
     }
 
-    // Reglas PRO: si avanzas fulfillment (!= cancelado) y no está pagada => bloquea
     if (
       estadoFulfillment &&
       estadoFulfillment !== "cancelado" &&
@@ -809,7 +854,10 @@ exports.actualizarEstado = async (req, res, next) => {
     }
 
     if (estadoFulfillment && orden.estadoFulfillment !== estadoFulfillment) {
-      cambios.estadoFulfillment = { from: orden.estadoFulfillment, to: estadoFulfillment };
+      cambios.estadoFulfillment = {
+        from: orden.estadoFulfillment,
+        to: estadoFulfillment,
+      };
       orden.estadoFulfillment = estadoFulfillment;
       fulfillmentChanged = true;
     }
@@ -855,7 +903,6 @@ exports.actualizarEstado = async (req, res, next) => {
 
 // ==========================================================
 // PUT /api/ordenes/cancelar/:id
-// Dueño o admin
 // ==========================================================
 exports.cancelarOrden = async (req, res, next) => {
   try {
@@ -867,6 +914,7 @@ exports.cancelarOrden = async (req, res, next) => {
     }
 
     const orden = await Orden.findById(id).populate("usuario", "nombre email rol");
+
     if (!orden) {
       return sendError(res, { statusCode: 404, message: "Orden no encontrada" });
     }
@@ -886,9 +934,10 @@ exports.cancelarOrden = async (req, res, next) => {
     }
 
     const beforeFul = orden.estadoFulfillment;
+    const beforePago = orden.estadoPago;
+
     orden.estadoFulfillment = "cancelado";
 
-    const beforePago = orden.estadoPago;
     if (orden.estadoPago !== "pagado") {
       orden.estadoPago = "fallido";
     }
@@ -899,8 +948,14 @@ exports.cancelarOrden = async (req, res, next) => {
       fecha: now(),
       meta: {
         by: esAdmin ? "admin" : "user",
-        before: { estadoFulfillment: beforeFul, estadoPago: beforePago },
-        after: { estadoFulfillment: orden.estadoFulfillment, estadoPago: orden.estadoPago },
+        before: {
+          estadoFulfillment: beforeFul,
+          estadoPago: beforePago,
+        },
+        after: {
+          estadoFulfillment: orden.estadoFulfillment,
+          estadoPago: orden.estadoPago,
+        },
       },
     });
 
