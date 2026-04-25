@@ -316,7 +316,7 @@ export default function ProductosPage() {
     setError(null);
 
     try {
-      const res = await api.post<CheckoutResponse>("/api/pagos/stripe/checkout", {
+      const res = await api.post<CheckoutResponse>("/api/stripe/checkout", {
         items: [{ producto: productoIdBackend, cantidad: 1 }],
       });
 
