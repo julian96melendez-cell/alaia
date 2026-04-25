@@ -493,12 +493,13 @@ const OrdenSchema = new mongoose.Schema(
       index: true,
     },
 
-    usuario: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Usuario",
-      required: true,
-      index: true,
-    },
+   usuario: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: "Usuario",
+  default: null,
+  required: false,
+  index: true,
+},
 
     items: {
       type: [ItemSchema],
