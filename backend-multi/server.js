@@ -25,16 +25,12 @@ const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
 
 const app = express();
 
-// ======================================================
-// ENV / CONFIG
-// ======================================================
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3001;
 const BODY_LIMIT = isProd ? "1mb" : "5mb";
 
 const TRUST_PROXY = (() => {
   const raw = String(process.env.TRUST_PROXY || "").trim().toLowerCase();
-
   if (!raw) return isProd ? 1 : false;
   if (raw === "true") return true;
   if (raw === "false") return false;
@@ -50,25 +46,16 @@ const CLIENT_URLS = String(process.env.CLIENT_URL || "")
   .map((v) => v.trim())
   .filter(Boolean);
 
-const LOCAL_DEV_ORIGINS = [
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-];
+const LOCAL_DEV_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
 const ALLOWED_ORIGINS = Array.from(
-  new Set([
-    ...CLIENT_URLS,
-    ...(!isProd ? LOCAL_DEV_ORIGINS : []),
-  ])
+  new Set([...CLIENT_URLS, ...(!isProd ? LOCAL_DEV_ORIGINS : [])])
 );
 
 if (isProd && CLIENT_URLS.length === 0) {
   console.warn("⚠️ CLIENT_URL not set in production");
 }
 
-// ======================================================
-// BASICS
-// ======================================================
 app.disable("x-powered-by");
 app.disable("etag");
 
@@ -76,9 +63,6 @@ if (TRUST_PROXY !== false) {
   app.set("trust proxy", TRUST_PROXY);
 }
 
-// ======================================================
-// REQUEST ID / TRACEABILITY
-// ======================================================
 app.use((req, res, next) => {
   const incomingReqId =
     req.headers["x-request-id"] || req.headers["x-correlation-id"];
@@ -92,9 +76,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ======================================================
-// SECURITY HEADERS
-// ======================================================
 app.use(
   helmet({
     contentSecurityPolicy: isProd
@@ -129,19 +110,15 @@ app.use(
   })
 );
 
-// ======================================================
-// CORS
-// ======================================================
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin) {
-        return callback(null, true);
-      }
+      if (!origin) return callback(null, true);
 
-      if (ALLOWED_ORIGINS.includes(origin)) {
-        return callback(null, true);
-      }
+      const allowed =
+        ALLOWED_ORIGINS.includes(origin) || origin.endsWith(".vercel.app");
+
+      if (allowed) return callback(null, true);
 
       const err = new Error(`Origin no permitido por CORS: ${origin}`);
       err.statusCode = 403;
@@ -162,9 +139,6 @@ app.use(
   })
 );
 
-// ======================================================
-// LOGGER
-// ======================================================
 morgan.token("reqId", (req) => req.reqId);
 
 app.use(
@@ -175,9 +149,6 @@ app.use(
   )
 );
 
-// ======================================================
-// RATE LIMIT
-// ======================================================
 const limiterBaseConfig = {
   standardHeaders: true,
   legacyHeaders: false,
@@ -196,9 +167,7 @@ const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: isProd ? 300 : 2000,
   skip: (req) =>
-    req.path === "/" ||
-    req.path === "/healthz" ||
-    req.path === "/readyz",
+    req.path === "/" || req.path === "/healthz" || req.path === "/readyz",
 });
 
 const authLimiter = rateLimit({
@@ -208,15 +177,8 @@ const authLimiter = rateLimit({
 });
 
 app.use(globalLimiter);
-
-// ======================================================
-// COOKIES
-// ======================================================
 app.use(cookieParser());
 
-// ======================================================
-// STRIPE WEBHOOK RAW BODY
-// ======================================================
 app.use(
   "/api/stripe/webhook",
   express.raw({
@@ -225,9 +187,6 @@ app.use(
   })
 );
 
-// ======================================================
-// BODY PARSERS
-// ======================================================
 const jsonParser = express.json({ limit: BODY_LIMIT });
 const urlencodedParser = express.urlencoded({
   extended: true,
@@ -235,9 +194,7 @@ const urlencodedParser = express.urlencoded({
 });
 
 app.use((req, res, next) => {
-  if (req.originalUrl.startsWith("/api/stripe/webhook")) {
-    return next();
-  }
+  if (req.originalUrl.startsWith("/api/stripe/webhook")) return next();
 
   jsonParser(req, res, (jsonErr) => {
     if (jsonErr) return next(jsonErr);
@@ -245,9 +202,6 @@ app.use((req, res, next) => {
   });
 });
 
-// ======================================================
-// SANITIZATION
-// ======================================================
 app.use(
   mongoSanitize({
     replaceWith: "_",
@@ -279,9 +233,6 @@ app.use(
   })
 );
 
-// ======================================================
-// HEALTH / READINESS
-// ======================================================
 app.get("/", (_req, res) => {
   res.status(200).send("Backend OK");
 });
@@ -308,15 +259,15 @@ app.get("/readyz", (_req, res) => {
 // ======================================================
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/stripe", stripeRoutes);
-app.use("/api/seller", sellerRoutes);
+
+// IMPORTANTE: esta ruta va antes que /api/seller
 app.use("/api/seller/productos", sellerProductosRoutes);
+app.use("/api/seller", sellerRoutes);
+
 app.use("/api/ordenes/admin", adminOrdenRoutes);
 app.use("/api/admin/payouts", adminPayoutRoutes);
 app.use("/api/admin/analytics", adminAnalyticsRoutes);
 
-// ======================================================
-// 404
-// ======================================================
 app.use((req, res) => {
   res.status(404).json({
     ok: false,
@@ -325,12 +276,11 @@ app.use((req, res) => {
   });
 });
 
-// ======================================================
-// ERROR HANDLER
-// ======================================================
 app.use((err, req, res, next) => {
   const status =
-    Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 600
+    Number.isInteger(err?.statusCode) &&
+    err.statusCode >= 400 &&
+    err.statusCode < 600
       ? err.statusCode
       : Number.isInteger(err?.status) && err.status >= 400 && err.status < 600
       ? err.status
@@ -348,9 +298,7 @@ app.use((err, req, res, next) => {
     stack: isProd ? undefined : err?.stack,
   });
 
-  if (res.headersSent) {
-    return next(err);
-  }
+  if (res.headersSent) return next(err);
 
   const message =
     status === 429
@@ -368,9 +316,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ======================================================
-// START / SHUTDOWN
-// ======================================================
 let server;
 let shuttingDown = false;
 
@@ -386,9 +331,7 @@ function gracefulShutdown(signal, exitCode = 0) {
     console.error("Error stopping workers:", err?.message || err);
   }
 
-  if (!server) {
-    process.exit(exitCode);
-  }
+  if (!server) process.exit(exitCode);
 
   server.close((err) => {
     if (err) {
