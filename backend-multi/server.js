@@ -1,7 +1,7 @@
 "use strict";
 
 require("dotenv").config();
-
+const ordenRoutes = require("./src/routes/ordenRoutes");
 const crypto = require("crypto");
 const express = require("express");
 const cors = require("cors");
@@ -265,6 +265,7 @@ app.get("/readyz", (_req, res) => {
 // ======================================================
 // ROUTES
 // ======================================================
+app.use("/api/ordenes", ordenRoutes);
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/stripe", stripeRoutes);
 
