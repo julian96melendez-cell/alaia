@@ -119,8 +119,10 @@ const WebhookEventSchema = new mongoose.Schema(
 
 // ======================================================
 // Normalización
+// IMPORTANTE:
+// En Mongoose 9 no usamos next aquí.
 // ======================================================
-WebhookEventSchema.pre("validate", function (next) {
+WebhookEventSchema.pre("validate", function () {
   this.provider = safeStr(this.provider, "stripe").toLowerCase() || "stripe";
   this.eventId = safeStr(this.eventId);
   this.eventType = safeStr(this.eventType);
@@ -143,15 +145,12 @@ WebhookEventSchema.pre("validate", function (next) {
   this.summary.currency = safeStr(this.summary.currency).toLowerCase();
   this.summary.ordenId = safeStr(this.summary.ordenId);
   this.summary.livemode = !!this.summary.livemode;
-
-  next();
 });
 
 // ======================================================
 // Índices
 // ======================================================
 WebhookEventSchema.index({ provider: 1, eventId: 1 }, { unique: true });
-
 WebhookEventSchema.index({ createdAt: -1 });
 WebhookEventSchema.index({ provider: 1, eventType: 1, createdAt: -1 });
 WebhookEventSchema.index({ ordenId: 1, createdAt: -1 });

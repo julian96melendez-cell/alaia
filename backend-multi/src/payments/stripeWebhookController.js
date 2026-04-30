@@ -2,10 +2,12 @@
 
 const Orden = require("../models/Orden");
 const WebhookEvent = require("../models/WebhookEvent");
+
 const {
   construirEventoDesdeWebhook,
   resumirEventoStripe,
 } = require("./stripeService");
+
 const { enviarCorreoOrdenPagada } = require("../services/emailService");
 
 // ======================================================
@@ -14,6 +16,7 @@ const { enviarCorreoOrdenPagada } = require("../services/emailService");
 const envBool = (k, def = false) => {
   const v = process.env[k];
   if (v === undefined || v === null || String(v).trim() === "") return def;
+
   return ["1", "true", "yes", "y", "on"].includes(
     String(v).trim().toLowerCase()
   );
@@ -82,6 +85,24 @@ const PAYMENT_OPEN_STATES = ["pendiente"];
 const PAYMENT_FINAL_STATES = ["pagado", "reembolsado", "reembolsado_parcial"];
 
 // ======================================================
+// WebhookEvent safe update
+// ======================================================
+async function updateWebhookEventSafe(eventRow, update) {
+  try {
+    if (!eventRow?._id) return;
+
+    await WebhookEvent.updateOne(
+      { _id: eventRow._id },
+      update
+    );
+  } catch (err) {
+    log("warn", "No se pudo actualizar WebhookEvent", {
+      err: err?.message || String(err),
+    });
+  }
+}
+
+// ======================================================
 // EMAIL Ledger
 // ======================================================
 const buildEmailLedgerKey = (type, value) =>
@@ -123,7 +144,7 @@ async function enviarEmailPagoConfirmadoSafe({
     });
 
     if (!reserved.reserved) {
-      log("info", "Email pago ya reservado/enviado (ledger)", {
+      log("info", "Email pago ya reservado/enviado", {
         reqId,
         ordenId,
         eventId,
@@ -169,7 +190,7 @@ async function enviarEmailPagoConfirmadoSafe({
       eventId,
     });
   } catch (err) {
-    log("warn", "Falló envío email (no bloquea)", {
+    log("warn", "Falló envío email, no bloquea webhook", {
       reqId,
       ordenId,
       eventId,
@@ -255,10 +276,20 @@ async function validarMontoYMonedaSiAplica({
     .select("total moneda estadoPago stripeAmountReceived stripeAmountTotal")
     .lean();
 
-  if (!orden) return { ok: false, reason: "ORDER_NOT_FOUND" };
+  if (!orden) {
+    log("error", "Orden no encontrada para webhook", {
+      reqId,
+      ordenId,
+      eventId,
+      eventType,
+    });
+
+    return { ok: false, reason: "ORDER_NOT_FOUND" };
+  }
 
   if (FLAGS.ENFORCE_AMOUNT_MATCH && stripeAmountTotal != null) {
     const totalCents = toCents(orden.total);
+
     if (totalCents == null) {
       return { ok: false, reason: "ORDER_TOTAL_INVALID" };
     }
@@ -345,21 +376,30 @@ async function marcarOrdenPagadaAtomico({
   const obj = sessionLike || {};
 
   if (obj?.id) update.$set.stripeSessionId = safeStr(obj.id);
+
   if (obj?.payment_intent) {
     update.$set.stripePaymentIntentId = safeStr(obj.payment_intent);
   }
-  if (obj?.currency) update.$set.moneda = safeStr(obj.currency, "usd").toLowerCase();
+
+  if (obj?.currency) {
+    update.$set.moneda = safeStr(obj.currency, "usd").toLowerCase();
+  }
+
   if (obj?.amount_total != null) {
     update.$set.stripeAmountTotal = Number(obj.amount_total) || 0;
   }
+
   if (obj?.amount_received != null) {
     update.$set.stripeAmountReceived = Number(obj.amount_received) || 0;
   }
-  if (obj?.customer) update.$set.stripeCustomerId = safeStr(obj.customer);
+
+  if (obj?.customer) {
+    update.$set.stripeCustomerId = safeStr(obj.customer);
+  }
 
   setOrdenAuditFields({ update, eventId, detail });
 
-  return await Orden.findOneAndUpdate(
+  return Orden.findOneAndUpdate(
     {
       _id: ordenId,
       estadoPago: { $nin: PAYMENT_FINAL_STATES },
@@ -390,7 +430,7 @@ async function marcarOrdenFallidaAtomico({
 
   setOrdenAuditFields({ update, eventId, detail });
 
-  return await Orden.findOneAndUpdate(
+  return Orden.findOneAndUpdate(
     {
       _id: ordenId,
       estadoPago: { $in: PAYMENT_OPEN_STATES },
@@ -433,7 +473,7 @@ async function marcarOrdenReembolsoAtomico({
 
   setOrdenAuditFields({ update, eventId, detail });
 
-  return await Orden.findOneAndUpdate({ _id: ordenId }, update, { new: true });
+  return Orden.findOneAndUpdate({ _id: ordenId }, update, { new: true });
 }
 
 async function obtenerMontoReferenciaOrden(ordenId) {
@@ -472,6 +512,7 @@ function enforceLivemodeOrSkip({ event, reqId }) {
       wantLivemode: want,
       gotLivemode: got,
     });
+
     return { ok: false, reason: "LIVEMODE_MISMATCH" };
   }
 
@@ -492,6 +533,7 @@ function enforceAccountOrSkip({ req, event, reqId }) {
       gotAccount: account,
       expectedAccount: FLAGS.STRIPE_ACCOUNT_ID,
     });
+
     return { ok: false, reason: "ACCOUNT_MISMATCH" };
   }
 
@@ -505,11 +547,13 @@ exports.procesarWebhookStripe = async (req, res) => {
   const reqId = getReqId(req);
 
   const signature = getStripeSignature(req);
+
   if (!signature) {
     return res.status(400).send("Missing stripe-signature header");
   }
 
   const rawBody = getRawBody(req);
+
   if (!rawBody) {
     return res.status(400).json({
       ok: false,
@@ -519,6 +563,7 @@ exports.procesarWebhookStripe = async (req, res) => {
   }
 
   let event;
+
   try {
     event = construirEventoDesdeWebhook(signature, rawBody);
   } catch (err) {
@@ -526,6 +571,7 @@ exports.procesarWebhookStripe = async (req, res) => {
       reqId,
       err: err?.message || String(err),
     });
+
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -549,7 +595,7 @@ exports.procesarWebhookStripe = async (req, res) => {
     ordenId: ordenId || null,
   });
 
-  let eventRow;
+  let eventRow = null;
 
   try {
     const result = await markEvent({
@@ -560,36 +606,36 @@ exports.procesarWebhookStripe = async (req, res) => {
       reqId,
     });
 
-    eventRow = result.doc;
+    eventRow = result.doc || null;
 
     if (!result.created) {
-      log("info", "Evento duplicado ignorado (eventId)", {
+      log("info", "Evento duplicado ignorado", {
         reqId,
         eventId,
         eventType,
       });
+
       return ok(res);
     }
   } catch (err) {
-    log("error", "Error guardando WebhookEvent (no bloquea)", {
+    log("error", "Error guardando WebhookEvent, se continúa procesando orden", {
       reqId,
       eventId,
       err: err?.message || String(err),
     });
-    return ok(res);
+
+    eventRow = null;
   }
 
   try {
     if (!ordenId) {
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "skipped",
-            errorMessage: "Missing ordenId",
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "skipped",
+          errorMessage: "Missing ordenId",
+        },
+      });
+
       return ok(res);
     }
 
@@ -604,10 +650,9 @@ exports.procesarWebhookStripe = async (req, res) => {
       if (session?.mode && session.mode !== "payment") {
         const msg = "Session mode != payment";
 
-        await WebhookEvent.updateOne(
-          { _id: eventRow._id },
-          { $set: { status: "skipped", errorMessage: msg } }
-        );
+        await updateWebhookEventSafe(eventRow, {
+          $set: { status: "skipped", errorMessage: msg },
+        });
 
         await Orden.updateOne(
           { _id: ordenId },
@@ -625,10 +670,9 @@ exports.procesarWebhookStripe = async (req, res) => {
       if (session?.payment_status && session.payment_status !== "paid") {
         const msg = `payment_status != paid (${session.payment_status})`;
 
-        await WebhookEvent.updateOne(
-          { _id: eventRow._id },
-          { $set: { status: "skipped", errorMessage: msg } }
-        );
+        await updateWebhookEventSafe(eventRow, {
+          $set: { status: "skipped", errorMessage: msg },
+        });
 
         await Orden.updateOne(
           { _id: ordenId },
@@ -653,15 +697,13 @@ exports.procesarWebhookStripe = async (req, res) => {
       });
 
       if (!amountCheck.ok) {
-        await WebhookEvent.updateOne(
-          { _id: eventRow._id },
-          {
-            $set: {
-              status: "skipped",
-              errorMessage: amountCheck.reason,
-            },
-          }
-        );
+        await updateWebhookEventSafe(eventRow, {
+          $set: {
+            status: "skipped",
+            errorMessage: amountCheck.reason,
+          },
+        });
+
         return ok(res);
       }
 
@@ -681,16 +723,13 @@ exports.procesarWebhookStripe = async (req, res) => {
         });
       }
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -711,15 +750,13 @@ exports.procesarWebhookStripe = async (req, res) => {
       });
 
       if (!amountCheck.ok) {
-        await WebhookEvent.updateOne(
-          { _id: eventRow._id },
-          {
-            $set: {
-              status: "skipped",
-              errorMessage: amountCheck.reason,
-            },
-          }
-        );
+        await updateWebhookEventSafe(eventRow, {
+          $set: {
+            status: "skipped",
+            errorMessage: amountCheck.reason,
+          },
+        });
+
         return ok(res);
       }
 
@@ -739,16 +776,13 @@ exports.procesarWebhookStripe = async (req, res) => {
         });
       }
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -763,16 +797,13 @@ exports.procesarWebhookStripe = async (req, res) => {
         detail: "checkout.session.async_payment_failed",
       });
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -788,16 +819,13 @@ exports.procesarWebhookStripe = async (req, res) => {
         clearSession: true,
       });
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -812,16 +840,13 @@ exports.procesarWebhookStripe = async (req, res) => {
         detail: "payment_intent.payment_failed",
       });
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -842,15 +867,13 @@ exports.procesarWebhookStripe = async (req, res) => {
       });
 
       if (!amountCheck.ok) {
-        await WebhookEvent.updateOne(
-          { _id: eventRow._id },
-          {
-            $set: {
-              status: "skipped",
-              errorMessage: amountCheck.reason,
-            },
-          }
-        );
+        await updateWebhookEventSafe(eventRow, {
+          $set: {
+            status: "skipped",
+            errorMessage: amountCheck.reason,
+          },
+        });
+
         return ok(res);
       }
 
@@ -876,16 +899,13 @@ exports.procesarWebhookStripe = async (req, res) => {
         });
       }
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -906,15 +926,13 @@ exports.procesarWebhookStripe = async (req, res) => {
       });
 
       if (!amountCheck.ok) {
-        await WebhookEvent.updateOne(
-          { _id: eventRow._id },
-          {
-            $set: {
-              status: "skipped",
-              errorMessage: amountCheck.reason,
-            },
-          }
-        );
+        await updateWebhookEventSafe(eventRow, {
+          $set: {
+            status: "skipped",
+            errorMessage: amountCheck.reason,
+          },
+        });
+
         return ok(res);
       }
 
@@ -940,16 +958,13 @@ exports.procesarWebhookStripe = async (req, res) => {
         });
       }
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -970,16 +985,13 @@ exports.procesarWebhookStripe = async (req, res) => {
         chargeAmountCents: chargeAmount,
       });
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -991,17 +1003,15 @@ exports.procesarWebhookStripe = async (req, res) => {
       const refund = obj;
 
       if (refund?.status !== "succeeded") {
-        await WebhookEvent.updateOne(
-          { _id: eventRow._id },
-          {
-            $set: {
-              status: "skipped",
-              ordenId,
-              summary,
-              errorMessage: `refund_status_${safeStr(refund?.status, "unknown")}`,
-            },
-          }
-        );
+        await updateWebhookEventSafe(eventRow, {
+          $set: {
+            status: "skipped",
+            ordenId,
+            summary,
+            errorMessage: `refund_status_${safeStr(refund?.status, "unknown")}`,
+          },
+        });
+
         return ok(res);
       }
 
@@ -1020,16 +1030,13 @@ exports.procesarWebhookStripe = async (req, res) => {
           : null,
       });
 
-      await WebhookEvent.updateOne(
-        { _id: eventRow._id },
-        {
-          $set: {
-            status: "processed",
-            ordenId,
-            summary,
-          },
-        }
-      );
+      await updateWebhookEventSafe(eventRow, {
+        $set: {
+          status: "processed",
+          ordenId,
+          summary,
+        },
+      });
 
       return ok(res);
     }
@@ -1037,16 +1044,13 @@ exports.procesarWebhookStripe = async (req, res) => {
     // ====================================================
     // unhandled event
     // ====================================================
-    await WebhookEvent.updateOne(
-      { _id: eventRow._id },
-      {
-        $set: {
-          status: "skipped",
-          ordenId,
-          summary,
-        },
-      }
-    );
+    await updateWebhookEventSafe(eventRow, {
+      $set: {
+        status: "skipped",
+        ordenId,
+        summary,
+      },
+    });
 
     await Orden.updateOne(
       { _id: ordenId },
@@ -1068,17 +1072,14 @@ exports.procesarWebhookStripe = async (req, res) => {
       err: err?.message || String(err),
     });
 
-    await WebhookEvent.updateOne(
-      { _id: eventRow?._id },
-      {
-        $set: {
-          status: "failed",
-          errorMessage: safeStr(err?.message || err).slice(0, 500),
-          ordenId: ordenId || null,
-          summary,
-        },
-      }
-    ).catch(() => {});
+    await updateWebhookEventSafe(eventRow, {
+      $set: {
+        status: "failed",
+        errorMessage: safeStr(err?.message || err).slice(0, 500),
+        ordenId: ordenId || null,
+        summary,
+      },
+    });
 
     await Orden.updateOne(
       { _id: ordenId },
