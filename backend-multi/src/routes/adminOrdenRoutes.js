@@ -18,9 +18,7 @@ const {
 function validateRequest(req, res, next) {
   const errors = validationResult(req);
 
-  if (errors.isEmpty()) {
-    return next();
-  }
+  if (errors.isEmpty()) return next();
 
   return res.status(400).json({
     ok: false,
@@ -39,10 +37,7 @@ const validarId = [
 
 const validarListado = [
   query("page").optional().isInt({ min: 1 }).withMessage("page inválido"),
-  query("limit")
-    .optional()
-    .isInt({ min: 1, max: 100 })
-    .withMessage("limit inválido"),
+  query("limit").optional().isInt({ min: 1, max: 100 }).withMessage("limit inválido"),
   query("estadoPago").optional().isString(),
   query("estadoFulfillment").optional().isString(),
   query("sort").optional().isString(),
@@ -67,17 +62,29 @@ const validarPago = [
   body("estadoPago")
     .notEmpty()
     .withMessage("estadoPago es obligatorio")
-    .isIn([
-      "pendiente",
-      "pagado",
-      "fallido",
-      "reembolsado",
-      "reembolsado_parcial",
-    ])
+    .isIn(["pendiente", "pagado", "fallido", "reembolsado", "reembolsado_parcial"])
     .withMessage("estadoPago inválido"),
 ];
 
+// ======================================================
+// MÉTRICAS
+// GET /api/ordenes/admin/metrics
+// ======================================================
 router.get("/metrics", proteger, soloAdmin, adminMetrics);
+
+// ======================================================
+// LISTADO
+// GET /api/ordenes/admin
+// GET /api/ordenes/admin/ordenes
+// ======================================================
+router.get(
+  "/",
+  proteger,
+  soloAdmin,
+  validarListado,
+  validateRequest,
+  adminListarOrdenes
+);
 
 router.get(
   "/ordenes",
@@ -88,6 +95,11 @@ router.get(
   adminListarOrdenes
 );
 
+// ======================================================
+// DETALLE
+// GET /api/ordenes/admin/:id
+// GET /api/ordenes/admin/ordenes/:id
+// ======================================================
 router.get(
   "/ordenes/:id",
   proteger,
@@ -97,6 +109,20 @@ router.get(
   adminObtenerOrden
 );
 
+router.get(
+  "/:id",
+  proteger,
+  soloAdmin,
+  validarId,
+  validateRequest,
+  adminObtenerOrden
+);
+
+// ======================================================
+// ACTUALIZAR FULFILLMENT
+// PUT /api/ordenes/admin/:id/fulfillment
+// PUT /api/ordenes/admin/ordenes/:id/fulfillment
+// ======================================================
 router.put(
   "/ordenes/:id/fulfillment",
   proteger,
@@ -107,7 +133,30 @@ router.put(
 );
 
 router.put(
+  "/:id/fulfillment",
+  proteger,
+  soloAdmin,
+  validarFulfillment,
+  validateRequest,
+  adminActualizarFulfillment
+);
+
+// ======================================================
+// ACTUALIZAR PAGO
+// PUT /api/ordenes/admin/:id/pago
+// PUT /api/ordenes/admin/ordenes/:id/pago
+// ======================================================
+router.put(
   "/ordenes/:id/pago",
+  proteger,
+  soloAdmin,
+  validarPago,
+  validateRequest,
+  adminActualizarPago
+);
+
+router.put(
+  "/:id/pago",
   proteger,
   soloAdmin,
   validarPago,
