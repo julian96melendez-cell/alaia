@@ -46,6 +46,7 @@ function isNonEmptyString(x) {
 function uniqStrings(arr) {
   const out = [];
   const seen = new Set();
+
   for (const v of arr || []) {
     const s = toStringSafe(v).trim();
     if (!s) continue;
@@ -53,6 +54,7 @@ function uniqStrings(arr) {
     seen.add(s);
     out.push(s);
   }
+
   return out;
 }
 
@@ -162,12 +164,7 @@ function normalizePct(v, fallbackPct = DEFAULT_COMMISSION_PCT) {
 }
 
 function getItemSellerId(item) {
-  return (
-    item?.vendedor ||
-    item?.vendedorId ||
-    item?.sellerId ||
-    null
-  );
+  return item?.vendedor || item?.vendedorId || item?.sellerId || null;
 }
 
 function getItemIngresoVendedor(item) {
@@ -185,7 +182,6 @@ function getItemIngresoVendedor(item) {
 // ============================================================
 // Subschemas
 // ============================================================
-
 const ItemSchema = new mongoose.Schema(
   {
     producto: {
@@ -257,7 +253,6 @@ const ItemSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Campo canon
     comisionPorcentaje: {
       type: Number,
       default: DEFAULT_COMMISSION_PCT,
@@ -271,7 +266,6 @@ const ItemSchema = new mongoose.Schema(
       min: 0,
     },
 
-    // Campo canon
     ingresoVendedor: {
       type: Number,
       default: 0,
@@ -280,7 +274,6 @@ const ItemSchema = new mongoose.Schema(
   { _id: false, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
 
-// Compatibilidad de nombres
 ItemSchema.virtual("comisionPct")
   .get(function () {
     return this.comisionPorcentaje;
@@ -493,13 +486,21 @@ const OrdenSchema = new mongoose.Schema(
       index: true,
     },
 
-   usuario: {
-  type: mongoose.Schema.Types.ObjectId,
-  ref: "Usuario",
-  default: null,
-  required: false,
-  index: true,
-},
+    usuario: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Usuario",
+      default: null,
+      required: false,
+      index: true,
+    },
+
+    clienteEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: "",
+      index: true,
+    },
 
     items: {
       type: [ItemSchema],
@@ -551,14 +552,12 @@ const OrdenSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Campo canon
     comisionTotal: {
       type: Number,
       default: 0,
       min: 0,
     },
 
-    // Campo canon
     ingresoVendedorTotal: {
       type: Number,
       default: 0,
@@ -716,6 +715,7 @@ const OrdenSchema = new mongoose.Schema(
 
     direccionEntrega: {
       nombre: { type: String, trim: true, default: "" },
+      email: { type: String, trim: true, lowercase: true, default: "" },
       direccion: { type: String, trim: true, default: "" },
       ciudad: { type: String, trim: true, default: "" },
       provincia: { type: String, trim: true, default: "" },
@@ -781,11 +781,13 @@ function buildFingerprint({ estado, source, meta }) {
   const s = toStringSafe(source, "system").trim().toLowerCase();
   const e = toStringSafe(estado, "").trim().toLowerCase();
   let m = "";
+
   try {
     m = meta ? JSON.stringify(meta) : "";
   } catch {
     m = "";
   }
+
   return `${s}::${e}::${m}`.slice(0, 500);
 }
 
@@ -895,6 +897,8 @@ OrdenSchema.pre("validate", async function () {
 
   this.vendedorPayouts = buildVendedorPayoutsFromItems(items, this.vendedorPayouts);
 
+  this.clienteEmail = toStringSafe(this.clienteEmail).trim().toLowerCase();
+
   this.stripeSessionId = normalizeStripeId(this.stripeSessionId);
   this.stripePaymentIntentId = normalizeStripeId(this.stripePaymentIntentId);
   this.stripeLatestEventId = normalizeStripeId(this.stripeLatestEventId);
@@ -961,6 +965,7 @@ OrdenSchema.pre("validate", async function () {
   if (this.direccionEntrega) {
     for (const k of [
       "nombre",
+      "email",
       "direccion",
       "ciudad",
       "provincia",
@@ -969,6 +974,9 @@ OrdenSchema.pre("validate", async function () {
       "telefono",
     ]) {
       this.direccionEntrega[k] = toStringSafe(this.direccionEntrega[k]).trim();
+      if (k === "email") {
+        this.direccionEntrega[k] = this.direccionEntrega[k].toLowerCase();
+      }
     }
   }
 });
@@ -1339,6 +1347,8 @@ OrdenSchema.statics.searchAdmin = function (q, limit = 50) {
     { stripeSessionId: rx },
     { stripePaymentIntentId: rx },
     { stripeLatestEventId: rx },
+    { clienteEmail: rx },
+    { "direccionEntrega.email": rx },
     { "items.proveedor": rx },
     { "items.nombre": rx },
     { "vendedorPayouts.stripeTransferId": rx },
@@ -1371,6 +1381,7 @@ OrdenSchema.statics.findPayoutEligible = function ({ limit = 50, skip = 0 } = {}
 // ============================================================
 OrdenSchema.index({ createdAt: -1 });
 OrdenSchema.index({ usuario: 1, createdAt: -1 });
+OrdenSchema.index({ clienteEmail: 1, createdAt: -1 });
 OrdenSchema.index({ estadoPago: 1, estadoFulfillment: 1, createdAt: -1 });
 
 OrdenSchema.index({ stripeSessionId: 1, createdAt: -1 });
@@ -1385,7 +1396,11 @@ OrdenSchema.index({ orderNumber: -1 });
 OrdenSchema.index({ "items.proveedor": 1, createdAt: -1 });
 
 OrdenSchema.index({ "items.vendedor": 1, createdAt: -1 });
-OrdenSchema.index({ "vendedorPayouts.vendedor": 1, "vendedorPayouts.status": 1, createdAt: -1 });
+OrdenSchema.index({
+  "vendedorPayouts.vendedor": 1,
+  "vendedorPayouts.status": 1,
+  createdAt: -1,
+});
 OrdenSchema.index({ "vendedorPayouts.stripeTransferId": 1 });
 
 OrdenSchema.index({ payoutPolicy: 1, payoutBlocked: 1, payoutEligibleAt: 1 });
