@@ -1,5 +1,7 @@
 // screens/ProfileScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as ImagePicker from "expo-image-picker";
 import React, {
   useCallback,
@@ -31,9 +33,12 @@ import {
   UploadTask,
 } from "firebase/storage";
 
-import { useAuth } from "../context/AuthContext";
-import { auth, storage } from "../firebase/firebaseConfig";
+import { useAuth } from "../../../context/AuthContext";
+import { auth, storage } from "../../firebase/firebaseConfig";
 import useTheme from "../hooks/useTheme";
+import type { RootStackParamList } from "../navigation/AppNavigator";
+
+type ProfileNavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
 type RowButtonProps = {
   icon: keyof typeof Ionicons.glyphMap;
@@ -49,6 +54,7 @@ const RowButton: React.FC<RowButtonProps> = ({
   trailing,
 }) => {
   const { colors, isDarkMode } = useTheme();
+
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -66,6 +72,7 @@ const RowButton: React.FC<RowButtonProps> = ({
         <Ionicons name={icon} size={22} color={colors.primary} />
         <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
       </View>
+
       {trailing ?? (
         <Ionicons
           name="chevron-forward"
@@ -78,6 +85,8 @@ const RowButton: React.FC<RowButtonProps> = ({
 };
 
 export default function ProfileScreen() {
+  const navigation = useNavigation<ProfileNavigationProp>();
+
   const { colors, isDarkMode, toggleTheme } = useTheme();
   const { user, logout, updateUserProfile } = useAuth();
 
@@ -87,22 +96,21 @@ export default function ProfileScreen() {
   );
   const [localPhoto, setLocalPhoto] = useState<string | undefined>(undefined);
 
-  // Upload state
   const [uploadPct, setUploadPct] = useState<number>(0);
   const [uploading, setUploading] = useState<boolean>(false);
   const uploadTaskRef = useRef<UploadTask | null>(null);
 
-  // Iniciales avatar
   const initials = useMemo(() => {
     const name = user?.displayName || user?.email || "Usuario";
     const parts = (name ?? "").split(" ").filter(Boolean);
+
     return `${(parts[0]?.[0] || "U").toUpperCase()}${(
       parts[1]?.[0] || ""
     ).toUpperCase()}`;
   }, [user?.displayName, user?.email]);
 
-  // Switch animado de tema
   const knobX = useRef(new Animated.Value(isDarkMode ? 18 : 0)).current;
+
   useEffect(() => {
     Animated.timing(knobX, {
       toValue: isDarkMode ? 18 : 0,
@@ -111,10 +119,9 @@ export default function ProfileScreen() {
     }).start();
   }, [isDarkMode, knobX]);
 
-  /* ─────────────── acciones / helpers ─────────────── */
-
   const requestGalleryPermissions = useCallback(async () => {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
     if (!granted) {
       Alert.alert(
         "Permiso denegado",
@@ -122,6 +129,7 @@ export default function ProfileScreen() {
       );
       return false;
     }
+
     return true;
   }, []);
 
@@ -203,7 +211,6 @@ export default function ProfileScreen() {
     }
   }, []);
 
-  // Cancelar subida si se desmonta la pantalla
   useEffect(() => {
     return () => {
       cancelUpload();
@@ -212,6 +219,7 @@ export default function ProfileScreen() {
 
   const onSaveProfile = useCallback(async () => {
     const name = displayName.trim();
+
     if (!name) {
       Alert.alert("Nombre requerido", "Ingresa un nombre válido.");
       return;
@@ -228,6 +236,7 @@ export default function ProfileScreen() {
             Alert.alert("Cancelado", "Se canceló la subida de imagen.");
             return;
           }
+
           Alert.alert("Error al subir imagen", "Intenta nuevamente.");
           return;
         }
@@ -244,6 +253,7 @@ export default function ProfileScreen() {
 
       setEditOpen(false);
       setLocalPhoto(undefined);
+
       Alert.alert(
         "Perfil actualizado",
         "Tus datos fueron actualizados correctamente."
@@ -264,6 +274,7 @@ export default function ProfileScreen() {
       setLocalPhoto(undefined);
       return;
     }
+
     Alert.alert("Quitar foto", "¿Deseas eliminar tu foto de perfil?", [
       { text: "Cancelar", style: "cancel" },
       {
@@ -283,6 +294,7 @@ export default function ProfileScreen() {
             } else if (auth.currentUser) {
               await updateProfile(auth.currentUser, { photoURL: "" });
             }
+
             setLocalPhoto(undefined);
             Alert.alert("Listo", "Se quitó tu foto de perfil.");
           } catch {
@@ -310,17 +322,12 @@ export default function ProfileScreen() {
     ]);
   }, [logout]);
 
-  /* ─────────────── UI ─────────────── */
-
   const currentAvatar = localPhoto || user?.photoURL;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Header */}
       <View style={styles.header}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>
-          Perfil
-        </Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Perfil</Text>
         <View style={{ width: 24 }} />
       </View>
 
@@ -328,7 +335,6 @@ export default function ProfileScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
       >
-        {/* Tarjeta de usuario */}
         <View style={[styles.card, { backgroundColor: colors.card }]}>
           <View style={styles.userRow}>
             <TouchableOpacity
@@ -345,12 +351,7 @@ export default function ProfileScreen() {
                     { backgroundColor: (colors.primary || "#6C63FF") + "22" },
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.avatarTxt,
-                      { color: colors.primary },
-                    ]}
-                  >
+                  <Text style={[styles.avatarTxt, { color: colors.primary }]}>
                     {initials}
                   </Text>
                 </View>
@@ -361,6 +362,7 @@ export default function ProfileScreen() {
               <Text style={[styles.name, { color: colors.text }]}>
                 {user?.displayName || "Usuario"}
               </Text>
+
               {!!user?.email && (
                 <Text
                   style={[
@@ -405,24 +407,30 @@ export default function ProfileScreen() {
           )}
         </View>
 
-        {/* Accesos rápidos */}
         <Text style={[styles.sectionTitle, { color: colors.text }]}>
           Mi cuenta
         </Text>
+
         <RowButton
           icon="receipt-outline"
           label="Mis pedidos"
-          onPress={() => {
-            // TODO: navegación a pantalla de pedidos
-          }}
+          onPress={() => navigation.navigate("Orders")}
         />
+
+        <RowButton
+          icon="shield-checkmark-outline"
+          label="Panel admin - Órdenes"
+          onPress={() => navigation.navigate("AdminOrders")}
+        />
+
         <RowButton
           icon="heart-outline"
           label="Wishlist"
           onPress={() => {
-            // TODO: navegación a wishlist
+            Alert.alert("Próximamente", "Wishlist en preparación.");
           }}
         />
+
         <RowButton
           icon="location-outline"
           label="Direcciones"
@@ -434,10 +442,10 @@ export default function ProfileScreen() {
           }
         />
 
-        {/* Preferencias */}
         <Text style={[styles.sectionTitle, { color: colors.text }]}>
           Preferencias
         </Text>
+
         <RowButton
           icon={isDarkMode ? "sunny-outline" : "moon-outline"}
           label={isDarkMode ? "Tema claro" : "Tema oscuro"}
@@ -464,6 +472,7 @@ export default function ProfileScreen() {
             </View>
           }
         />
+
         <RowButton
           icon="notifications-outline"
           label="Notificaciones"
@@ -475,29 +484,24 @@ export default function ProfileScreen() {
           }
         />
 
-        {/* Soporte */}
         <Text style={[styles.sectionTitle, { color: colors.text }]}>
           Soporte
         </Text>
+
         <RowButton
           icon="help-circle-outline"
           label="Centro de ayuda"
-          onPress={() =>
-            Alert.alert("Ayuda", "Escríbenos a support@alaia.app")
-          }
+          onPress={() => Alert.alert("Ayuda", "Escríbenos a support@alaia.app")}
         />
+
         <RowButton
           icon="shield-checkmark-outline"
           label="Privacidad y seguridad"
           onPress={() =>
-            Alert.alert(
-              "Privacidad",
-              "Política de privacidad próximamente."
-            )
+            Alert.alert("Privacidad", "Política de privacidad próximamente.")
           }
         />
 
-        {/* Cerrar sesión */}
         <TouchableOpacity
           onPress={onLogout}
           activeOpacity={0.9}
@@ -514,7 +518,6 @@ export default function ProfileScreen() {
           <Text style={styles.logoutTxt}>Cerrar sesión</Text>
         </TouchableOpacity>
 
-        {/* Footer */}
         <View style={{ alignItems: "center", marginTop: 10 }}>
           <Text
             style={{
@@ -527,7 +530,6 @@ export default function ProfileScreen() {
         </View>
       </ScrollView>
 
-      {/* Modal editar perfil */}
       <Modal
         visible={editOpen}
         animationType="slide"
@@ -540,6 +542,7 @@ export default function ProfileScreen() {
               <Text style={[styles.modalTitle, { color: colors.text }]}>
                 Editar perfil
               </Text>
+
               <TouchableOpacity
                 onPress={() => setEditOpen(false)}
                 accessibilityRole="button"
@@ -548,7 +551,6 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Campo nombre */}
             <Text
               style={[
                 styles.modalLabel,
@@ -557,6 +559,7 @@ export default function ProfileScreen() {
             >
               Nombre
             </Text>
+
             <TextInput
               value={displayName}
               onChangeText={setDisplayName}
@@ -575,10 +578,10 @@ export default function ProfileScreen() {
               accessibilityLabel="Campo de nombre"
             />
 
-            {/* Previsualización foto si hay local */}
             {localPhoto && (
               <View style={styles.previewRow}>
                 <Image source={{ uri: localPhoto }} style={styles.previewImg} />
+
                 <View style={{ flex: 1 }}>
                   <Text
                     style={{
@@ -613,6 +616,7 @@ export default function ProfileScreen() {
                           ]}
                         />
                       </View>
+
                       <Text
                         style={{
                           marginTop: 6,
@@ -636,7 +640,6 @@ export default function ProfileScreen() {
               </View>
             )}
 
-            {/* Acciones */}
             <View style={styles.modalActions}>
               {uploading ? (
                 <TouchableOpacity
@@ -646,9 +649,7 @@ export default function ProfileScreen() {
                   accessibilityRole="button"
                 >
                   <Ionicons name="close" size={16} color="#ef4444" />
-                  <Text
-                    style={[styles.cancelTxt, { color: "#ef4444" }]}
-                  >
+                  <Text style={[styles.cancelTxt, { color: "#ef4444" }]}>
                     Cancelar subida
                   </Text>
                 </TouchableOpacity>
@@ -664,12 +665,7 @@ export default function ProfileScreen() {
                     size={16}
                     color={colors.primary}
                   />
-                  <Text
-                    style={[
-                      styles.pickTxt,
-                      { color: colors.primary },
-                    ]}
-                  >
+                  <Text style={[styles.pickTxt, { color: colors.primary }]}>
                     Elegir otra foto
                   </Text>
                 </TouchableOpacity>
@@ -692,7 +688,6 @@ export default function ProfileScreen() {
   );
 }
 
-/* ─────────────── estilos ─────────────── */
 const AVATAR = 64;
 
 const styles = StyleSheet.create({
@@ -790,7 +785,6 @@ const styles = StyleSheet.create({
   },
   logoutTxt: { color: "#B91C1C", fontWeight: "800" },
 
-  /* Modal */
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.35)",
