@@ -5,14 +5,14 @@ import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import {
   DefaultTheme,
   NavigationContainer,
-  Theme
+  Theme,
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Platform, Text, View } from "react-native";
 
-import { auth } from "../firebase/firebaseConfig";
+import { auth } from "../../firebase/firebaseConfig";
 
 /* ─────────────── Screens principales ─────────────── */
 import HomeScreen from "../screens/HomeScreen";
@@ -22,6 +22,7 @@ import ProfileScreen from "../screens/ProfileScreen";
 import RegisterScreen from "../screens/RegisterScreen";
 
 /* ─────────────── Screens adicionales ─────────────── */
+import AdminOrdersScreen from "../screens/AdminOrdersScreen";
 import CartScreen from "../screens/CartScreen";
 import OrdersScreen from "../screens/OrdersScreen";
 import ProductDetailScreen from "../screens/ProductDetailScreen";
@@ -39,6 +40,7 @@ export type RootStackParamList = {
   Cart: undefined;
   Settings: undefined;
   Orders: undefined;
+  AdminOrders: undefined;
   Discover: undefined;
 };
 
@@ -125,7 +127,6 @@ function MainTabs() {
           },
           tabBarActiveTintColor: "#6C63FF",
           tabBarInactiveTintColor: "#A1A1AA",
-
           tabBarIcon: ({ color, size }) => (
             <Ionicons
               name={icons[route.name as keyof MainTabParamList]}
@@ -150,14 +151,12 @@ export default function AppNavigator() {
   );
   const [user, setUser] = useState<User | null>(null);
 
-  /* --- Leer Onboarding --- */
   useEffect(() => {
     AsyncStorage.getItem("HAS_SEEN_ONBOARDING")
       .then((v) => setHasSeenOnboarding(!!v))
       .finally(() => setInitializing(false));
   }, []);
 
-  /* --- Escuchar Auth --- */
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -166,7 +165,6 @@ export default function AppNavigator() {
   }, []);
 
   const isAuthenticated = !!user;
-
   const theme: Theme = useMemo(() => DefaultTheme, []);
 
   if (initializing || hasSeenOnboarding === null) {
@@ -177,34 +175,27 @@ export default function AppNavigator() {
     <NavigationContainer theme={theme}>
       <RootStack.Navigator
         initialRouteName={
-          !hasSeenOnboarding
-            ? "Onboarding"
-            : !isAuthenticated
-            ? "Auth"
-            : "Main"
+          !hasSeenOnboarding ? "Onboarding" : !isAuthenticated ? "Auth" : "Main"
         }
         screenOptions={{ headerShown: false }}
       >
-        {/* ONBOARDING */}
         {!hasSeenOnboarding && (
           <RootStack.Screen name="Onboarding" component={OnboardingScreen} />
         )}
 
-        {/* AUTH */}
         {!isAuthenticated && (
           <RootStack.Screen name="Auth" component={AuthNavigator} />
         )}
 
-        {/* TABS */}
         {isAuthenticated && (
           <RootStack.Screen name="Main" component={MainTabs} />
         )}
 
-        {/* RUTAS EXTERNAS */}
         <RootStack.Screen name="ProductDetail" component={ProductDetailScreen} />
         <RootStack.Screen name="ProductList" component={ProductListScreen} />
         <RootStack.Screen name="Settings" component={SettingsScreen} />
         <RootStack.Screen name="Orders" component={OrdersScreen} />
+        <RootStack.Screen name="AdminOrders" component={AdminOrdersScreen} />
         <RootStack.Screen name="Cart" component={CartScreen} />
         <RootStack.Screen name="Discover" component={DiscoverScreen} />
       </RootStack.Navigator>
