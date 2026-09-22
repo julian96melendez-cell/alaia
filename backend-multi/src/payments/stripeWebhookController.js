@@ -10,6 +10,10 @@ const {
 
 const { enviarCorreoOrdenPagada } = require("../services/emailService");
 
+const {
+  updateFirestoreOrderFromStripe,
+} = require("../services/firestoreOrderSync");
+
 // ======================================================
 // Config / Feature flags
 // ======================================================
@@ -58,6 +62,32 @@ function log(level, msg, ctx = {}) {
   );
 }
 
+async function syncFirestoreOrderSafe({
+  stripeObject,
+  status,
+  paymentStatus,
+  eventId,
+  detail,
+  reqId,
+}) {
+  try {
+    await updateFirestoreOrderFromStripe({
+      stripeObject,
+      status,
+      paymentStatus,
+      eventId,
+      detail,
+    });
+  } catch (err) {
+    log("warn", "Firestore order sync failed, webhook continues", {
+      reqId,
+      eventId,
+      detail,
+      err: err?.message || String(err),
+    });
+  }
+}
+
 function getStripeSignature(req) {
   return req.headers["stripe-signature"];
 }
@@ -91,10 +121,7 @@ async function updateWebhookEventSafe(eventRow, update) {
   try {
     if (!eventRow?._id) return;
 
-    await WebhookEvent.updateOne(
-      { _id: eventRow._id },
-      update
-    );
+    await WebhookEvent.updateOne({ _id: eventRow._id }, update);
   } catch (err) {
     log("warn", "No se pudo actualizar WebhookEvent", {
       err: err?.message || String(err),
@@ -628,13 +655,58 @@ exports.procesarWebhookStripe = async (req, res) => {
   }
 
   try {
-    if (!ordenId) {
-      await updateWebhookEventSafe(eventRow, {
-        $set: {
-          status: "skipped",
-          errorMessage: "Missing ordenId",
-        },
-      });
+  if (!ordenId) {
+  const mobileEvents = {
+    "payment_intent.succeeded": {
+      status: "confirmada",
+      paymentStatus: "pagado",
+    },
+    "charge.succeeded": {
+      status: "confirmada",
+      paymentStatus: "pagado",
+    },
+    "payment_intent.payment_failed": {
+      status: "pendiente_pago",
+      paymentStatus: "fallido",
+    },
+    "charge.refunded": {
+      status: "confirmada",
+      paymentStatus: "reembolsado",
+    },
+  };
+
+  const syncConfig = mobileEvents[eventType];
+
+  if (syncConfig) {
+    await syncFirestoreOrderSafe({
+      stripeObject: obj,
+      status: syncConfig.status,
+      paymentStatus: syncConfig.paymentStatus,
+      eventId,
+      detail: eventType,
+      reqId,
+    });
+
+    await updateWebhookEventSafe(eventRow, {
+      $set: {
+        status: "processed",
+        ordenId: null,
+        summary,
+        errorMessage: "",
+      },
+    });
+
+    return ok(res);
+  }
+
+  await updateWebhookEventSafe(eventRow, {
+    $set: {
+      status: "skipped",
+      ordenId: null,
+      summary,
+      errorMessage: "Missing ordenId",
+    },
+  });
 
       return ok(res);
     }
@@ -723,6 +795,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         });
       }
 
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "confirmada",
+        paymentStatus: "pagado",
+        eventId,
+        detail: eventType,
+        reqId,
+      });
+
       await updateWebhookEventSafe(eventRow, {
         $set: {
           status: "processed",
@@ -776,6 +857,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         });
       }
 
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "confirmada",
+        paymentStatus: "pagado",
+        eventId,
+        detail: eventType,
+        reqId,
+      });
+
       await updateWebhookEventSafe(eventRow, {
         $set: {
           status: "processed",
@@ -795,6 +885,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         ordenId,
         eventId,
         detail: "checkout.session.async_payment_failed",
+      });
+
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "pendiente_pago",
+        paymentStatus: "fallido",
+        eventId,
+        detail: eventType,
+        reqId,
       });
 
       await updateWebhookEventSafe(eventRow, {
@@ -819,6 +918,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         clearSession: true,
       });
 
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "pendiente_pago",
+        paymentStatus: "fallido",
+        eventId,
+        detail: eventType,
+        reqId,
+      });
+
       await updateWebhookEventSafe(eventRow, {
         $set: {
           status: "processed",
@@ -838,6 +946,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         ordenId,
         eventId,
         detail: "payment_intent.payment_failed",
+      });
+
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "pendiente_pago",
+        paymentStatus: "fallido",
+        eventId,
+        detail: eventType,
+        reqId,
       });
 
       await updateWebhookEventSafe(eventRow, {
@@ -899,6 +1016,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         });
       }
 
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "confirmada",
+        paymentStatus: "pagado",
+        eventId,
+        detail: eventType,
+        reqId,
+      });
+
       await updateWebhookEventSafe(eventRow, {
         $set: {
           status: "processed",
@@ -958,6 +1084,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         });
       }
 
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "confirmada",
+        paymentStatus: "pagado",
+        eventId,
+        detail: eventType,
+        reqId,
+      });
+
       await updateWebhookEventSafe(eventRow, {
         $set: {
           status: "processed",
@@ -983,6 +1118,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         detail: "charge.refunded",
         refundAmountCents: refundAmount,
         chargeAmountCents: chargeAmount,
+      });
+
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "confirmada",
+        paymentStatus: "reembolsado",
+        eventId,
+        detail: eventType,
+        reqId,
       });
 
       await updateWebhookEventSafe(eventRow, {
@@ -1028,6 +1172,15 @@ exports.procesarWebhookStripe = async (req, res) => {
         chargeAmountCents: Number.isFinite(referenceAmount)
           ? referenceAmount
           : null,
+      });
+
+      await syncFirestoreOrderSafe({
+        stripeObject: obj,
+        status: "confirmada",
+        paymentStatus: "reembolsado",
+        eventId,
+        detail: eventType,
+        reqId,
       });
 
       await updateWebhookEventSafe(eventRow, {

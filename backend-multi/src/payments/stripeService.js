@@ -2,9 +2,6 @@
 
 const Stripe = require("stripe");
 
-// ======================================================
-// Validación ENV
-// ======================================================
 if (!process.env.STRIPE_SECRET_KEY) {
   throw new Error("❌ FALTA STRIPE_SECRET_KEY en el archivo .env");
 }
@@ -14,9 +11,6 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   timeout: 20000,
 });
 
-// ======================================================
-// Helpers
-// ======================================================
 const ALLOWED_CURRENCIES = new Set([
   "usd",
   "eur",
@@ -42,7 +36,7 @@ function safeInt(n) {
   const v = Number(n);
 
   if (!Number.isFinite(v) || v <= 0) {
-    throw new Error("Stripe: unit_amount inválido");
+    throw new Error("Stripe: amount inválido");
   }
 
   return Math.round(v);
@@ -64,16 +58,12 @@ function sanitizeMetadata(metadata = {}) {
     const cleanKey = safeStr(key).slice(0, 40);
     if (!cleanKey) continue;
 
-    const cleanValue = safeStr(value).slice(0, 500);
-    out[cleanKey] = cleanValue;
+    out[cleanKey] = safeStr(value).slice(0, 500);
   }
 
   return out;
 }
 
-// ======================================================
-// Helpers URLs
-// ======================================================
 function getBaseUrl() {
   const base =
     safeStr(process.env.FRONTEND_URL) ||
@@ -111,9 +101,6 @@ function getCancelUrl(ordenId) {
   return withQuery(base, `ordenId=${encodeURIComponent(ordenId)}`);
 }
 
-// ======================================================
-// Normalizar line items (Stripe)
-// ======================================================
 function normalizarLineItems(items = []) {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error("Stripe: lineItems inválidos o vacíos.");
@@ -142,9 +129,6 @@ function normalizarLineItems(items = []) {
   });
 }
 
-// ======================================================
-// Crear sesión Checkout
-// ======================================================
 async function crearSesionPago({
   lineItems,
   metadata = {},
@@ -165,27 +149,23 @@ async function crearSesionPago({
     mode: "payment",
     payment_method_types: ["card"],
     line_items: normalizedItems,
-
     success_url: getSuccessUrl(ordenId),
     cancel_url: getCancelUrl(ordenId),
-
     metadata: cleanMetadata,
-
     payment_intent_data: {
       metadata: cleanMetadata,
       transfer_group: `order_${ordenId}`,
     },
-
     customer_email: email || undefined,
   };
 
   try {
-    const session = await stripe.checkout.sessions.create(
+    return await stripe.checkout.sessions.create(
       payload,
-      idempotencyKey ? { idempotencyKey: safeStr(idempotencyKey).slice(0, 255) } : undefined
+      idempotencyKey
+        ? { idempotencyKey: safeStr(idempotencyKey).slice(0, 255) }
+        : undefined
     );
-
-    return session;
   } catch (err) {
     console.error("❌ Stripe Checkout Error:", {
       message: err?.message,
@@ -200,9 +180,105 @@ async function crearSesionPago({
   }
 }
 
-// ======================================================
-// Construir evento Webhook
-// ======================================================
+async function crearCustomerMobile({ clienteEmail = null, metadata = {} }) {
+  const email = normalizeEmail(clienteEmail);
+  const cleanMetadata = sanitizeMetadata(metadata);
+
+  const customer = await stripe.customers.create({
+    email: email || undefined,
+    metadata: cleanMetadata,
+  });
+
+  return customer;
+}
+
+async function crearEphemeralKeyMobile(customerId) {
+  const customer = safeStr(customerId);
+
+  if (!customer) {
+    throw new Error("Stripe: customerId requerido para ephemeral key.");
+  }
+
+  return stripe.ephemeralKeys.create(
+    { customer },
+    { apiVersion: "2023-10-16" }
+  );
+}
+
+async function crearPaymentIntentMobile({
+  amount,
+  currency = "usd",
+  metadata = {},
+  clienteEmail = null,
+  customerId = null,
+  idempotencyKey = null,
+}) {
+  const cleanAmount = safeInt(amount);
+  const cleanCurrency = normalizeCurrency(currency);
+  const cleanMetadata = sanitizeMetadata(metadata);
+  const email = normalizeEmail(clienteEmail);
+
+  if (cleanAmount < 50 && cleanCurrency === "usd") {
+    throw new Error("Stripe: el monto mínimo en USD debe ser al menos 50 centavos.");
+  }
+
+  let customer = null;
+
+  if (customerId) {
+    customer = await stripe.customers.retrieve(safeStr(customerId));
+  } else {
+    customer = await crearCustomerMobile({
+      clienteEmail: email,
+      metadata: cleanMetadata,
+    });
+  }
+
+  const ephemeralKey = await crearEphemeralKeyMobile(customer.id);
+
+  const payload = {
+    amount: cleanAmount,
+    currency: cleanCurrency,
+    customer: customer.id,
+    automatic_payment_methods: {
+      enabled: true,
+    },
+    metadata: cleanMetadata,
+    receipt_email: email || undefined,
+  };
+
+  try {
+    const paymentIntent = await stripe.paymentIntents.create(
+      payload,
+      idempotencyKey
+        ? { idempotencyKey: safeStr(idempotencyKey).slice(0, 255) }
+        : undefined
+    );
+
+    return {
+      paymentIntentId: paymentIntent.id,
+      clientSecret: paymentIntent.client_secret,
+      customerId: customer.id,
+      ephemeralKeySecret: ephemeralKey.secret,
+      amount: paymentIntent.amount,
+      currency: paymentIntent.currency,
+      status: paymentIntent.status,
+    };
+  } catch (err) {
+    console.error("❌ Stripe PaymentIntent Mobile Error:", {
+      message: err?.message,
+      type: err?.type,
+      code: err?.code,
+      decline_code: err?.decline_code,
+      param: err?.param,
+      amount: cleanAmount,
+      currency: cleanCurrency,
+      customerId: customer?.id,
+    });
+
+    throw err;
+  }
+}
+
 function construirEventoDesdeWebhook(signature, rawBody) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
 
@@ -222,11 +298,8 @@ function construirEventoDesdeWebhook(signature, rawBody) {
   return stripe.webhooks.constructEvent(rawBody, sig, secret);
 }
 
-// ======================================================
-// Utilidades Stripe
-// ======================================================
 function extraerOrdenId(obj) {
-  return obj?.metadata?.ordenId || null;
+  return obj?.metadata?.ordenId || obj?.metadata?.orderId || null;
 }
 
 function resumirEventoStripe(event) {
@@ -238,7 +311,12 @@ function resumirEventoStripe(event) {
     objectType: obj?.object || "",
     objectId: obj?.id || "",
     sessionId: obj?.object === "checkout.session" ? obj?.id || "" : "",
-    paymentIntent: obj?.payment_intent || "",
+    paymentIntent:
+      typeof obj?.payment_intent === "string"
+        ? obj.payment_intent
+        : obj?.id?.startsWith?.("pi_")
+        ? obj.id
+        : "",
     amountTotal: typeof obj?.amount_total === "number" ? obj.amount_total : 0,
     amountReceived:
       typeof obj?.amount_received === "number" ? obj.amount_received : 0,
@@ -248,9 +326,6 @@ function resumirEventoStripe(event) {
   };
 }
 
-// ======================================================
-// Reembolso
-// ======================================================
 async function crearReembolso({
   paymentIntentId,
   motivo = "requested_by_customer",
@@ -279,6 +354,9 @@ async function crearReembolso({
 module.exports = {
   stripe,
   crearSesionPago,
+  crearPaymentIntentMobile,
+  crearCustomerMobile,
+  crearEphemeralKeyMobile,
   construirEventoDesdeWebhook,
   extraerOrdenId,
   resumirEventoStripe,

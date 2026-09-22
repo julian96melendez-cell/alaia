@@ -3,7 +3,9 @@
 const mongoose = require("mongoose");
 const Orden = require("../models/Orden");
 const { pagarVendedoresDeOrden } = require("../services/payoutService");
-
+const {
+  syncFirestoreOrderFromAdmin,
+} = require("../services/firestoreAdminOrderSync");
 // ✅ Realtime SSE emitter (opcional)
 let emitOrdenUpdate = null;
 try {
@@ -834,9 +836,23 @@ exports.adminActualizarEstado = async (req, res) => {
       }
     }
 
-    await orden.save();
+   await orden.save();
 
-    emitRealtimeSafe(orden, { reqId, source: "adminActualizarEstado" });
+await syncFirestoreOrderFromAdmin({
+  orden,
+  estadoPago: paymentCambioReal ? orden.estadoPago : null,
+  estadoFulfillment: fulfillmentCambioReal ? orden.estadoFulfillment : null,
+  reqId,
+  adminId,
+}).catch((err) => {
+  log("warn", "Firestore admin sync failed, Mongo update remains valid", {
+    reqId,
+    ordenId: String(orden?._id || ""),
+    err: err?.message || String(err),
+  });
+});
+
+emitRealtimeSafe(orden, { reqId, source: "adminActualizarEstado" });
 
     // ======================================================
     // Payout automático al marcar entregado

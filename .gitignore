@@ -42,3 +42,8 @@ app-example
 /ios
 /android
 backend-multi/.env
+
+backend-multi/.env
+backend-multi/serviceAccountKey.json
+
+backend-multi/scripts/crearAdminTemporal.js

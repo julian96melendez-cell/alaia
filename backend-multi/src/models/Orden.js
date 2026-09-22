@@ -501,7 +501,33 @@ const OrdenSchema = new mongoose.Schema(
       default: "",
       index: true,
     },
+firebaseUserId: {
+  type: String,
+  trim: true,
+  default: "",
+  index: true,
+},
 
+firestoreOrderId: {
+  type: String,
+  trim: true,
+  default: "",
+  index: true,
+},
+
+mobileOrderRef: {
+  type: String,
+  trim: true,
+  default: "",
+  index: true,
+},
+
+source: {
+  type: String,
+  trim: true,
+  default: "backend",
+  index: true,
+},
     items: {
       type: [ItemSchema],
       required: true,
@@ -747,7 +773,10 @@ OrdenSchema.virtual("totalComisiones")
   .set(function (value) {
     this.comisionTotal = value;
   });
-
+OrdenSchema.index({ firebaseUserId: 1, createdAt: -1 });
+OrdenSchema.index({ firestoreOrderId: 1 });
+OrdenSchema.index({ mobileOrderRef: 1 });
+OrdenSchema.index({ source: 1, createdAt: -1 });
 OrdenSchema.virtual("totalNetoVendedores")
   .get(function () {
     return this.ingresoVendedorTotal;

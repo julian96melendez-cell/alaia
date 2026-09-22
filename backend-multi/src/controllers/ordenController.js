@@ -331,6 +331,9 @@ exports.obtenerMisOrdenes = async (req, res, next) => {
 // ======================================================
 // GET /api/ordenes/public/:id
 // ======================================================
+// ======================================================
+// GET /api/ordenes/public/:id
+// ======================================================
 exports.obtenerOrdenPublica = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -340,7 +343,7 @@ exports.obtenerOrdenPublica = async (req, res, next) => {
     }
 
     const orden = await Orden.findById(id).select(
-      "_id total moneda estadoPago estadoFulfillment metodoPago paymentProvider paidAt failedAt refundedAt stripeSessionId stripePaymentIntentId paymentStatusDetail createdAt updatedAt"
+      "_id orderNumber items subtotal shipping tax discount total moneda estadoPago estadoFulfillment metodoPago paymentProvider paidAt failedAt refundedAt stripeSessionId stripePaymentIntentId paymentStatusDetail historial createdAt updatedAt"
     );
 
     if (!orden) {
