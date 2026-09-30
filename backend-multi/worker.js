@@ -1,4 +1,5 @@
 require("dotenv").config();
+require("./src/utils/safeLogging").installSafeLogging();
 
 const conectarDB = require("./src/config/db");
 const startWorkers = require("./src/hubs/workersHub");

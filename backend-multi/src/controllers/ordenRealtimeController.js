@@ -4,6 +4,7 @@
 
 const mongoose = require("mongoose");
 const Orden = require("../models/Orden");
+const { PUBLIC_ORDER_PROJECTION, toPublicOrder } = require("../dto/publicOrder");
 
 const isObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -55,6 +56,7 @@ exports.conectarOrdenStream = async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no"); // nginx fix
 
     res.flushHeaders?.();
+    res.setTimeout?.(0);
 
     addClient(id, res);
 
@@ -64,7 +66,7 @@ exports.conectarOrdenStream = async (req, res) => {
     // SNAPSHOT
     // ==================================================
     const orden = await Orden.findById(id)
-      .select("_id historial estadoPago estadoFulfillment createdAt")
+      .select(PUBLIC_ORDER_PROJECTION)
       .lean();
 
     if (!orden) {
@@ -73,7 +75,7 @@ exports.conectarOrdenStream = async (req, res) => {
       return res.end();
     }
 
-    send(res, { type: "snapshot", data: orden });
+    send(res, { type: "snapshot", data: toPublicOrder(orden) });
 
     // ==================================================
     // HEARTBEAT
@@ -103,7 +105,8 @@ exports.conectarOrdenStream = async (req, res) => {
 // ======================================================
 // EMIT REALTIME
 // ======================================================
-exports.emitOrdenUpdate = (orden) => {
+exports.emitOrdenUpdate = (orderOrId, update) => {
+  const orden = update ? { ...update, _id: orderOrId } : orderOrId;
   try {
     if (!orden) return;
 
@@ -112,13 +115,7 @@ exports.emitOrdenUpdate = (orden) => {
 
     if (!clients || clients.size === 0) return;
 
-    const payload = {
-      _id: orden._id,
-      historial: orden.historial,
-      estadoPago: orden.estadoPago,
-      estadoFulfillment: orden.estadoFulfillment,
-      createdAt: orden.createdAt,
-    };
+    const payload = toPublicOrder(orden);
 
     const message = JSON.stringify({
       type: "update",

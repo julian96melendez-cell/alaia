@@ -4,6 +4,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useEffect, useRef } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Dimensions,
   Image,
@@ -13,21 +14,27 @@ import {
   View,
 } from "react-native";
 
-const { width } = Dimensions.get("window");
+import { useAuth } from "../context/AuthContext";
 
+const { width } = Dimensions.get("window");
 const HERO_IMAGE = require("../assets/images/welcome-hero.png");
 
 export default function Index() {
   const router = useRouter();
+  const { user, loading } = useAuth();
 
-  // Animaciones de entrada
   const fade = useRef(new Animated.Value(0)).current;
   const slide = useRef(new Animated.Value(40)).current;
   const heroScale = useRef(new Animated.Value(0.9)).current;
   const heroFloat = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // Entrada general
+    if (!loading && user) {
+      router.replace("/(tabs)" as any);
+    }
+  }, [loading, user, router]);
+
+  useEffect(() => {
     Animated.parallel([
       Animated.timing(fade, {
         toValue: 1,
@@ -46,7 +53,6 @@ export default function Index() {
       }),
     ]).start();
 
-    // “Respiración” suave del hero (loop)
     Animated.loop(
       Animated.sequence([
         Animated.timing(heroFloat, {
@@ -63,6 +69,18 @@ export default function Index() {
     ).start();
   }, [fade, slide, heroScale, heroFloat]);
 
+  if (loading) {
+    return (
+      <LinearGradient
+        colors={["#050816", "#0B1220", "#020617"]}
+        style={styles.loadingScreen}
+      >
+        <ActivityIndicator color="#FFFFFF" size="large" />
+        <Text style={styles.loadingText}>Preparando ALAIA…</Text>
+      </LinearGradient>
+    );
+  }
+
   return (
     <LinearGradient
       colors={["#050816", "#0B1220", "#020617"]}
@@ -70,7 +88,6 @@ export default function Index() {
       end={{ x: 1, y: 1 }}
       style={styles.container}
     >
-      {/* Halo de fondo */}
       <View style={styles.blurCircle} />
 
       <Animated.View
@@ -82,21 +99,16 @@ export default function Index() {
           },
         ]}
       >
-        {/* Top pill / branding */}
         <View style={styles.brandPill}>
           <Ionicons name="sparkles-outline" size={18} color="#A5B4FC" />
           <Text style={styles.brandPillText}>ALAIA • Shopping reimaginado</Text>
         </View>
 
-        {/* Hero ilustración */}
         <Animated.View
           style={[
             styles.heroWrapper,
             {
-              transform: [
-                { translateY: heroFloat },
-                { scale: heroScale },
-              ],
+              transform: [{ translateY: heroFloat }, { scale: heroScale }],
             },
           ]}
         >
@@ -107,13 +119,8 @@ export default function Index() {
               end={{ x: 1, y: 1 }}
               style={styles.heroGradient}
             >
-              <Image
-                source={HERO_IMAGE}
-                style={styles.heroImage}
-                resizeMode="contain"
-              />
+              <Image source={HERO_IMAGE} style={styles.heroImage} resizeMode="contain" />
 
-              {/* Glass badge */}
               <View style={styles.heroBadge}>
                 <Ionicons name="flash-outline" size={16} color="#FACC15" />
                 <Text style={styles.heroBadgeText}>Compras rápidas y seguras</Text>
@@ -122,7 +129,6 @@ export default function Index() {
           </View>
         </Animated.View>
 
-        {/* Textos principales */}
         <View style={styles.textBlock}>
           <Text style={styles.title}>Eleva tu forma de comprar</Text>
           <Text style={styles.subtitle}>
@@ -131,13 +137,11 @@ export default function Index() {
           </Text>
         </View>
 
-        {/* Botones principales */}
         <View style={styles.buttonsWrapper}>
-          {/* Login */}
           <TouchableOpacity
             style={styles.button}
             activeOpacity={0.9}
-            onPress={() => router.push("/(auth)/login")}
+            onPress={() => router.push("/(auth)/login" as any)}
           >
             <LinearGradient
               colors={["#6366F1", "#8B5CF6"]}
@@ -150,11 +154,10 @@ export default function Index() {
             </LinearGradient>
           </TouchableOpacity>
 
-          {/* Ir directo al Home (tabs) */}
           <TouchableOpacity
             style={[styles.button, styles.outlineButton]}
             activeOpacity={0.9}
-            onPress={() => router.push("/(tabs)")}
+            onPress={() => router.push("/(tabs)" as any)}
           >
             <View style={styles.outlineInner}>
               <Ionicons name="compass-outline" size={20} color="#E5E7EB" />
@@ -163,31 +166,37 @@ export default function Index() {
           </TouchableOpacity>
         </View>
 
-        {/* Footer pequeño de confianza */}
         <View style={styles.footer}>
-          <View style={styles.footerRow}>
-            <View style={styles.bullet} />
-            <Text style={styles.footerText}>Pagos seguros</Text>
-          </View>
-          <View style={styles.footerRow}>
-            <View style={styles.bullet} />
-            <Text style={styles.footerText}>Historial de pedidos inteligente</Text>
-          </View>
-          <View style={styles.footerRow}>
-            <View style={styles.bullet} />
-            <Text style={styles.footerText}>Recomendaciones personalizadas</Text>
-          </View>
+          <FooterItem text="Pagos seguros" />
+          <FooterItem text="Historial de pedidos inteligente" />
+          <FooterItem text="Recomendaciones personalizadas" />
         </View>
       </Animated.View>
     </LinearGradient>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+function FooterItem({ text }: { text: string }) {
+  return (
+    <View style={styles.footerRow}>
+      <View style={styles.bullet} />
+      <Text style={styles.footerText}>{text}</Text>
+    </View>
+  );
+}
 
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  loadingScreen: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loadingText: {
+    marginTop: 12,
+    color: "#E5E7EB",
+    fontWeight: "800",
+  },
   blurCircle: {
     position: "absolute",
     width: width * 1.3,
@@ -198,7 +207,6 @@ const styles = StyleSheet.create({
     left: -width * 0.15,
     opacity: 0.4,
   },
-
   content: {
     flex: 1,
     paddingHorizontal: 22,
@@ -206,7 +214,6 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
     justifyContent: "space-between",
   },
-
   brandPill: {
     alignSelf: "flex-start",
     flexDirection: "row",
@@ -227,7 +234,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
     textTransform: "uppercase",
   },
-
   heroWrapper: {
     alignItems: "center",
     justifyContent: "center",
@@ -273,7 +279,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
-
   textBlock: {
     marginTop: 4,
   },
@@ -290,7 +295,6 @@ const styles = StyleSheet.create({
     color: "#9CA3AF",
     fontWeight: "500",
   },
-
   buttonsWrapper: {
     marginTop: 18,
   },
@@ -316,7 +320,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginLeft: 8,
   },
-
   outlineButton: {
     marginTop: 6,
   },
@@ -336,7 +339,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     marginLeft: 6,
   },
-
   footer: {
     marginTop: 18,
   },

@@ -1,33 +1,29 @@
+"use strict";
 require("dotenv").config();
+require("./src/utils/safeLogging").installSafeLogging();
 const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
 const Usuario = require("./src/models/Usuario");
 
-async function run() {
-  try {
-    await mongoose.connect(process.env.MONGO_URI);
-
-    const email = "julian96melendez@gmail.com"; // ← tu email exacto
-    const nuevaPassword = "12345678";
-
-    const user = await Usuario.findOne({ email }).select("+password");
-
-    if (!user) {
-      console.log("❌ Usuario no encontrado");
-      process.exit();
-    }
-
-    const salt = await bcrypt.genSalt(12);
-    user.password = await bcrypt.hash(nuevaPassword, salt);
-
-    await user.save();
-
-    console.log("✅ Password actualizada correctamente");
-    process.exit();
-  } catch (err) {
-    console.error("Error:", err);
-    process.exit();
+async function main() {
+  const email = String(process.env.RESET_PASSWORD_EMAIL || "").trim().toLowerCase();
+  const password = process.env.RESET_PASSWORD_NEW_PASSWORD;
+  if (!email || !password || password.length < 8 || !process.env.MONGO_URI) {
+    throw new Error("Configura MONGO_URI, RESET_PASSWORD_EMAIL y RESET_PASSWORD_NEW_PASSWORD (mínimo 8 caracteres)");
   }
+  await mongoose.connect(process.env.MONGO_URI);
+  const usuario = await Usuario.findOne({ email }).select("+password");
+  if (!usuario) throw new Error("Usuario no encontrado");
+  // Usuario's save hook hashes the plaintext once; never pre-hash here.
+  usuario.password = password;
+  usuario.failedLoginCount = 0;
+  usuario.lockedUntil = null;
+  await usuario.save();
+  console.log("Contraseña actualizada correctamente");
 }
 
-run();
+main().catch(() => {
+  console.error("No se pudo actualizar la contraseña; revisa configuración y usuario");
+  process.exitCode = 1;
+}).finally(async () => {
+  await mongoose.disconnect();
+});

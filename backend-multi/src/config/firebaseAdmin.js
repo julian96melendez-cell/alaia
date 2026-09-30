@@ -1,5 +1,6 @@
 "use strict";
 
+require("../utils/safeLogging").installSafeLogging();
 const admin = require("firebase-admin");
 const fs = require("fs");
 const path = require("path");
@@ -25,7 +26,7 @@ function getServiceAccount() {
     } catch (err) {
       console.error(
         "❌ FIREBASE_SERVICE_ACCOUNT_JSON inválido:",
-        err?.message
+        "Revisa el formato JSON de la configuración"
       );
 
       throw new Error(
@@ -36,8 +37,8 @@ function getServiceAccount() {
 
   // Desarrollo local
   const localServiceAccountPath = path.join(
-    process.cwd(),
-    "serviceAccountKey.json"
+    __dirname,
+    "../../serviceAccountKey.json"
   );
 
   if (fs.existsSync(localServiceAccountPath)) {

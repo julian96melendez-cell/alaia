@@ -1,10 +1,10 @@
 "use client";
 
-import AdminLogoutButton from "@/components/AdminLogoutButton";
-import { api } from "@/lib/api";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import AdminLogoutButton from "../../../components/AdminLogoutButton";
+import { api } from "../../lib/api";
 
 type UserRole = "admin" | "vendedor" | "usuario";
 

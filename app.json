@@ -24,11 +24,9 @@
       "package": "com.anonymous.alaiaclean"
     },
     "web": {
-      "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-router",
       [
         "expo-splash-screen",
         {
@@ -40,11 +38,15 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      "expo-router",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.anonymous.alaiaclean",
+          "enableGooglePay": false
+        }
       ]
-    ],
-    "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
-    }
+    ]
   }
 }

@@ -1,217 +1,401 @@
 // services/products.ts
-import {
-    collection,
-    doc,
-    DocumentData,
-    getDoc,
-    getDocs,
-    limit,
-    orderBy,
-    query,
-    QueryDocumentSnapshot,
-    startAfter,
-    where,
-} from "firebase/firestore";
-import { db } from "../firebase/firebaseConfig";
 
-/* ───────────────────────────────────────────
-      MODELO PROFESIONAL DE PRODUCTO
-────────────────────────────────────────────── */
+import * as Network from "expo-network";
+import { API_BASE_URL } from "../config/api";
 
 export interface Product {
-  id: string;
+  id: string; // _id real de MongoDB
+  mongoId: string;
   name: string;
   price: number;
-  image?: string;         // imagen principal
-  images?: string[];      // galería opcional
+  image?: string;
+  images?: string[];
   category: string;
   description?: string;
   featured?: boolean;
+  isFeatured?: boolean;
   rating?: number;
   colors?: string[];
   sizes?: string[];
   stock?: number;
-  createdAt?: number;
+  createdAt?: any;
 }
 
-/* ───────────────────────────────────────────
-    CACHE LOCAL — MEGA OPTIMIZADO
-────────────────────────────────────────────── */
-
-const cacheAll = new Map<string, Product>();
-const cacheFeatured: Product[] = [];
+let cacheAll: Product[] = [];
 let cacheTimestamp = 0;
 
-const productsRef = collection(db, "products");
+function isMongoObjectId(value?: unknown) {
+  return typeof value === "string" && /^[a-f\d]{24}$/i.test(value.trim());
+}
 
-/* Normalización estricta sin duplicar ID */
-function normalizeDoc(d: QueryDocumentSnapshot<DocumentData>): Product {
-  const raw = d.data();
+function normalizeProduct(raw: any): Product {
+  const mongoId = String(raw?._id || raw?.id || "").trim();
 
   return {
-    id: d.id, // <— SE DEFINE UNA SOLA VEZ
-    name: raw.name ?? "Producto sin nombre",
-    price: Number(raw.price ?? 0),
-    image: raw.image,
-    images: raw.images ?? [],
-    category: raw.category ?? "general",
-    description: raw.description ?? "",
-    featured: Boolean(raw.featured),
-    colors: raw.colors ?? [],
-    sizes: raw.sizes ?? [],
-    rating: raw.rating ?? 4.5,
-    stock: raw.stock ?? 0,
-    createdAt: raw.createdAt ?? 0,
+    id: mongoId,
+    mongoId,
+
+    name: String(raw?.nombre || raw?.name || "Producto sin nombre"),
+
+    price: Number(
+      raw?.precioFinal ??
+        raw?.precio ??
+        raw?.price ??
+        0
+    ),
+
+    image:
+      raw?.imagenPrincipal ||
+      raw?.image ||
+      (Array.isArray(raw?.imagenes)
+        ? raw.imagenes[0]
+        : undefined),
+
+    images: Array.isArray(raw?.imagenes)
+      ? raw.imagenes
+      : Array.isArray(raw?.images)
+        ? raw.images
+        : [],
+
+    category: String(
+      raw?.categoria ||
+        raw?.category ||
+        "general"
+    ),
+
+    description: String(
+      raw?.descripcion ||
+        raw?.description ||
+        ""
+    ),
+
+    featured: Boolean(
+      raw?.featured ||
+        raw?.isFeatured ||
+        raw?.destacado
+    ),
+
+    isFeatured: Boolean(
+      raw?.featured ||
+        raw?.isFeatured ||
+        raw?.destacado
+    ),
+
+    colors: Array.isArray(raw?.colors)
+      ? raw.colors
+      : [],
+
+    sizes: Array.isArray(raw?.sizes)
+      ? raw.sizes
+      : [],
+
+    rating: Number(raw?.rating || 4.7),
+
+    stock: Number(raw?.stock || 0),
+
+    createdAt: raw?.createdAt || null,
   };
 }
 
-/* ───────────────────────────────────────────
-      1. Obtener todos (con cache)
-────────────────────────────────────────────── */
-export async function getAllProducts(forceRefresh = false): Promise<Product[]> {
-  const now = Date.now();
-
-  // Cache válido por 30s
-  if (!forceRefresh && now - cacheTimestamp < 30_000 && cacheAll.size > 0) {
-    return [...cacheAll.values()];
+function extractList(json: any): any[] {
+  if (Array.isArray(json)) {
+    return json;
   }
 
-  const q = query(productsRef, orderBy("createdAt", "desc"));
-  const snap = await getDocs(q);
+  if (Array.isArray(json?.data)) {
+    return json.data;
+  }
 
-  cacheAll.clear();
-  snap.docs.forEach((d) => cacheAll.set(d.id, normalizeDoc(d)));
+  if (Array.isArray(json?.productos)) {
+    return json.productos;
+  }
 
-  cacheTimestamp = now;
-  return [...cacheAll.values()];
+  if (Array.isArray(json?.products)) {
+    return json.products;
+  }
+
+  if (Array.isArray(json?.orden)) {
+    return json.orden;
+  }
+
+  return [];
 }
 
-/* ───────────────────────────────────────────
-      2. Destacados
-────────────────────────────────────────────── */
-export async function getFeaturedProducts(): Promise<Product[]> {
-  if (cacheFeatured.length > 0) return cacheFeatured;
+async function requestJson(path: string) {
+  const url = `${API_BASE_URL}${path}`;
 
-  const q = query(
-    productsRef,
-    where("featured", "==", true),
-    orderBy("createdAt", "desc"),
-    limit(10)
+  console.log("🌐 PRODUCTS REQUEST URL:", url);
+
+  try {
+    const networkState =
+      await Network.getNetworkStateAsync();
+
+    console.log(
+      "📶 NETWORK STATE:",
+      networkState
+    );
+
+    // Prueba de diagnóstico:
+    // comprobar si fetch HTTPS funciona en general
+    try {
+      const testRes = await fetch(
+        "https://example.com",
+        {
+          method: "GET",
+        }
+      );
+
+      console.log(
+        "🧪 TEST FETCH STATUS:",
+        testRes.status
+      );
+    } catch (testError) {
+      console.log(
+        "🧪 TEST FETCH ERROR:",
+        testError
+      );
+    }
+
+    // Petición real al backend
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    console.log(
+      "🌐 PRODUCTS STATUS:",
+      res.status
+    );
+
+    const text = await res.text();
+
+    console.log(
+      "🌐 PRODUCTS RAW:",
+      text.slice(0, 300)
+    );
+
+    let json: any = null;
+
+    if (text) {
+      try {
+        json = JSON.parse(text);
+      } catch (parseError) {
+        console.log(
+          "🌐 PRODUCTS JSON PARSE ERROR:",
+          parseError
+        );
+
+        throw new Error(
+          "El backend respondió con contenido inválido."
+        );
+      }
+    }
+
+    if (!res.ok) {
+      throw new Error(
+        json?.message ||
+          `HTTP ${res.status}`
+      );
+    }
+
+    return json;
+  } catch (error) {
+    console.log(
+      "🌐 PRODUCTS FETCH ERROR FULL:",
+      error
+    );
+
+    throw error;
+  }
+}
+
+export async function getAllProducts(
+  forceRefresh = false
+): Promise<Product[]> {
+  const now = Date.now();
+
+  if (
+    !forceRefresh &&
+    cacheAll.length > 0 &&
+    now - cacheTimestamp < 30_000
+  ) {
+    return cacheAll;
+  }
+
+  const json = await requestJson(
+    "/api/productos"
   );
 
-  const snap = await getDocs(q);
-  const list = snap.docs.map((d) => normalizeDoc(d));
+  const list = extractList(json)
+    .map(normalizeProduct)
+    .filter(
+      (product) =>
+        isMongoObjectId(product.id) &&
+        product.price > 0
+    );
 
-  cacheFeatured.push(...list);
+  cacheAll = list;
+  cacheTimestamp = now;
+
   return list;
 }
 
-/* ───────────────────────────────────────────
-      3. Por categoría
-────────────────────────────────────────────── */
-export async function getProductsByCategory(category: string): Promise<Product[]> {
-  const q = query(
-    productsRef,
-    where("category", "==", category),
-    orderBy("createdAt", "desc")
-  );
+export async function getFeaturedProducts(): Promise<
+  Product[]
+> {
+  const all = await getAllProducts();
 
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => normalizeDoc(d));
+  return all
+    .filter(
+      (product) =>
+        product.featured ||
+        product.isFeatured
+    )
+    .slice(0, 10);
 }
 
-/* ───────────────────────────────────────────
-      4. Detalle por ID (SIN DUPLICAR ID)
-────────────────────────────────────────────── */
-export async function getProductById(id: string): Promise<Product | null> {
-  // Cache local primero
-  if (cacheAll.has(id)) return cacheAll.get(id)!;
+export async function getProductsByCategory(
+  category: string
+): Promise<Product[]> {
+  const all = await getAllProducts();
 
-  const ref = doc(db, "products", id);
-  const snap = await getDoc(ref);
+  const cleanCategory = String(
+    category || ""
+  )
+    .trim()
+    .toLowerCase();
 
-  if (!snap.exists()) return null;
+  if (!cleanCategory) {
+    return [];
+  }
 
-  const raw = snap.data();
+  return all.filter(
+    (product) =>
+      product.category
+        .trim()
+        .toLowerCase() === cleanCategory
+  );
+}
 
-  const product: Product = {
-    id: snap.id, // SOLO AQUÍ
-    name: raw.name ?? "Producto",
-    price: Number(raw.price ?? 0),
-    image: raw.image,
-    images: raw.images ?? [],
-    category: raw.category ?? "general",
-    description: raw.description ?? "",
-    featured: raw.featured ?? false,
-    colors: raw.colors ?? [],
-    sizes: raw.sizes ?? [],
-    rating: raw.rating ?? 4.5,
-    stock: raw.stock ?? 0,
-    createdAt: raw.createdAt ?? 0,
-  };
+export async function getProductById(
+  id: string
+): Promise<Product | null> {
+  const cleanId = String(
+    id || ""
+  ).trim();
 
-  cacheAll.set(id, product);
+  if (!isMongoObjectId(cleanId)) {
+    return null;
+  }
+
+  const cached = cacheAll.find(
+    (product) =>
+      product.id === cleanId ||
+      product.mongoId === cleanId
+  );
+
+  if (cached) {
+    return cached;
+  }
+
+  const json = await requestJson(
+    `/api/productos/${cleanId}`
+  );
+
+  const raw =
+    json?.data ||
+    json?.producto ||
+    json?.product ||
+    json;
+
+  const product =
+    normalizeProduct(raw);
+
+  if (!isMongoObjectId(product.id)) {
+    return null;
+  }
+
   return product;
 }
 
-/* ───────────────────────────────────────────
-      5. Paginación profesional
-────────────────────────────────────────────── */
-export async function getPaginatedProducts(
-  lastDoc?: QueryDocumentSnapshot<DocumentData>
-): Promise<{
-  products: Product[];
-  last: QueryDocumentSnapshot<DocumentData> | null;
-}> {
-  const q = lastDoc
-    ? query(productsRef, orderBy("createdAt", "desc"), startAfter(lastDoc), limit(12))
-    : query(productsRef, orderBy("createdAt", "desc"), limit(12));
-
-  const snap = await getDocs(q);
-
-  return {
-    products: snap.docs.map((d) => normalizeDoc(d)),
-    last: snap.docs.length > 0 ? snap.docs[snap.docs.length - 1] : null,
-  };
-}
-
-/* ───────────────────────────────────────────
-      6. Búsqueda avanzada
-────────────────────────────────────────────── */
-export async function searchProducts(text: string): Promise<Product[]> {
+export async function searchProducts(
+  text: string
+): Promise<Product[]> {
   const all = await getAllProducts();
 
-  const q = text.trim().toLowerCase();
-  if (!q) return all;
+  const query = String(
+    text || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!query) {
+    return all;
+  }
 
   return all
-    .map((p) => ({
-      p,
+    .map((product) => ({
+      product,
+
       score:
-        (p.name.toLowerCase().includes(q) ? 2 : 0) +
-        (p.category.toLowerCase().includes(q) ? 1 : 0),
+        (product.name
+          .toLowerCase()
+          .includes(query)
+          ? 2
+          : 0) +
+        (product.category
+          .toLowerCase()
+          .includes(query)
+          ? 1
+          : 0) +
+        (product.description
+          ?.toLowerCase()
+          .includes(query)
+          ? 1
+          : 0),
     }))
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .map((x) => x.p);
+    .filter(
+      (item) =>
+        item.score > 0
+    )
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    )
+    .map(
+      (item) =>
+        item.product
+    );
 }
 
-/* ───────────────────────────────────────────
-      7. Productos relacionados
-────────────────────────────────────────────── */
-export async function getRelatedProducts(product: Product): Promise<Product[]> {
+export async function getRelatedProducts(
+  product: Product
+): Promise<Product[]> {
   const all = await getAllProducts();
 
   return all
-    .filter((p) => p.id !== product.id)
-    .filter((p) => p.category === product.category)
+    .filter(
+      (item) =>
+        item.id !== product.id
+    )
+    .filter(
+      (item) =>
+        item.category
+          .trim()
+          .toLowerCase() ===
+        product.category
+          .trim()
+          .toLowerCase()
+    )
     .slice(0, 8);
 }
 
-/* ───────────────────────────────────────────
-      8. Recomendados (placeholder)
-────────────────────────────────────────────── */
-export async function getRecommendedProducts(): Promise<Product[]> {
+export async function getRecommendedProducts(): Promise<
+  Product[]
+> {
   const all = await getAllProducts();
+
   return all.slice(0, 12);
 }

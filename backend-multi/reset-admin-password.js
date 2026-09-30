@@ -1,44 +1,30 @@
 "use strict";
-
 require("dotenv").config();
-
+require("./src/utils/safeLogging").installSafeLogging();
 const mongoose = require("mongoose");
 const Usuario = require("./src/models/Usuario");
 
 async function main() {
-  const email = "julian96melendez@gmail.com".toLowerCase().trim();
-  const nuevaPassword = "Eduardo1996$$$";
-
-  if (!process.env.MONGO_URI) {
-    throw new Error("Falta MONGO_URI en variables de entorno");
+  const email = String(process.env.RESET_PASSWORD_EMAIL || "").trim().toLowerCase();
+  const password = process.env.RESET_PASSWORD_NEW_PASSWORD;
+  if (!email || !password || password.length < 8 || !process.env.MONGO_URI) {
+    throw new Error("Configura MONGO_URI, RESET_PASSWORD_EMAIL y RESET_PASSWORD_NEW_PASSWORD (mínimo 8 caracteres)");
   }
-
   await mongoose.connect(process.env.MONGO_URI);
-
   const usuario = await Usuario.findOne({ email }).select("+password");
-
-  if (!usuario) {
-    throw new Error(`No se encontró usuario con email: ${email}`);
-  }
-
-  usuario.password = nuevaPassword;
+  if (!usuario) throw new Error("Usuario no encontrado");
+  if (usuario.rol !== "admin") throw new Error("El usuario indicado no es administrador");
+  // Usuario's save hook hashes the plaintext once; never pre-hash here.
+  usuario.password = password;
   usuario.failedLoginCount = 0;
   usuario.lockedUntil = null;
-
   await usuario.save();
-
-  console.log("✅ Contraseña actualizada correctamente para:", usuario.email);
-  console.log("🔐 Nueva contraseña:", nuevaPassword);
-
-  await mongoose.disconnect();
+  console.log("Contraseña actualizada correctamente");
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch(async (err) => {
-    console.error("❌ Error reseteando contraseña:", err.message);
-    try {
-      await mongoose.disconnect();
-    } catch {}
-    process.exit(1);
-  });
+main().catch(() => {
+  console.error("No se pudo actualizar la contraseña; revisa configuración y usuario");
+  process.exitCode = 1;
+}).finally(async () => {
+  await mongoose.disconnect();
+});

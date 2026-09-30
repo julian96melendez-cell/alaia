@@ -2,7 +2,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { Tabs } from "expo-router";
-import React, { useMemo } from "react";
+import { useEffect, useRef } from "react";
 import {
   Animated,
   Easing,
@@ -13,9 +13,9 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import useTheme from "../../hooks/useTheme";
 
-// ==== IMPORTS SEGUROS (no rompen si el módulo no existe) ====
+import { useThemeContext } from "../../context/ThemeContext";
+
 let BlurView: any = View;
 try {
   BlurView = require("expo-blur").BlurView;
@@ -26,7 +26,6 @@ try {
   Haptics = require("expo-haptics");
 } catch {}
 
-// Badges opcionales: si no existen los hooks, se devuelven 0
 let useCartBadge: () => number = () => 0;
 try {
   useCartBadge = require("../../hooks/useCartBadge").default;
@@ -37,17 +36,25 @@ try {
   useNotificationsBadge = require("../../hooks/useNotificationsBadge").default;
 } catch {}
 
-// ==== CONFIG GLOBAL DE TABS (más limpio y escalable) ====
+type TabName =
+  | "index"
+  | "one"
+  | "wishlist"
+  | "cart"
+  | "notifications"
+  | "orders"
+  | "profile"
+  | "search"
+  | "settings";
+
 type TabConfig = {
-  name: string;
+  name: TabName;
   title: string;
   iconActive: keyof typeof Ionicons.glyphMap;
   iconInactive: keyof typeof Ionicons.glyphMap;
-  // Función opcional para badge
-  getBadgeCount?: () => number;
 };
 
-const TAB_CONFIG: TabConfig[] = [
+const MAIN_TABS: TabConfig[] = [
   {
     name: "index",
     title: "Inicio",
@@ -61,12 +68,6 @@ const TAB_CONFIG: TabConfig[] = [
     iconInactive: "compass-outline",
   },
   {
-    name: "two",
-    title: "Panel",
-    iconActive: "grid",
-    iconInactive: "grid-outline",
-  },
-  {
     name: "wishlist",
     title: "Favoritos",
     iconActive: "heart",
@@ -77,20 +78,6 @@ const TAB_CONFIG: TabConfig[] = [
     title: "Carrito",
     iconActive: "cart",
     iconInactive: "cart-outline",
-    getBadgeCount: () => useCartBadge(),
-  },
-  {
-    name: "mobile",
-    title: "Móvil",
-    iconActive: "phone-portrait",
-    iconInactive: "phone-portrait-outline",
-  },
-  {
-    name: "notifications",
-    title: "Alertas",
-    iconActive: "notifications",
-    iconInactive: "notifications-outline",
-    getBadgeCount: () => useNotificationsBadge(),
   },
   {
     name: "orders",
@@ -104,33 +91,23 @@ const TAB_CONFIG: TabConfig[] = [
     iconActive: "person",
     iconInactive: "person-outline",
   },
-  {
-    name: "search",
-    title: "Buscar",
-    iconActive: "search",
-    iconInactive: "search-outline",
-  },
-  {
-    name: "settings",
-    title: "Ajustes",
-    iconActive: "settings",
-    iconInactive: "settings-outline",
-  },
 ];
 
+const HIDDEN_TABS = ["two", "mobile", "notifications", "search", "settings"];
+
 export default function TabsLayout() {
-  const { theme } = useTheme();
+  const { colors } = useThemeContext();
 
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: theme.colors.primary,
-        tabBarInactiveTintColor: theme.colors.textSecondary ?? "#94A3B8",
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textSecondary ?? "#94A3B8",
       }}
       tabBar={(props) => <FloatingGlassTabBar {...props} />}
     >
-      {TAB_CONFIG.map((tab) => (
+      {MAIN_TABS.map((tab) => (
         <Tabs.Screen
           key={tab.name}
           name={tab.name}
@@ -146,154 +123,191 @@ export default function TabsLayout() {
           }}
         />
       ))}
+
+      {HIDDEN_TABS.map((name) => (
+        <Tabs.Screen
+          key={name}
+          name={name}
+          options={{
+            href: null,
+          }}
+        />
+      ))}
     </Tabs>
   );
 }
-
-// ============ TAB BAR CUSTOM AVANZADO ============
 
 function FloatingGlassTabBar({
   state,
   descriptors,
   navigation,
 }: BottomTabBarProps) {
-  const { theme, isDarkMode } = useTheme();
+  const { colors, isDarkMode } = useThemeContext();
   const { width } = useWindowDimensions();
-  const activeIndex = state.index;
 
-  // Animaciones
-  const animatedIndex = useMemo(() => new Animated.Value(activeIndex), []);
-  const itemWidth = (width - 32) / state.routes.length;
+  const cartBadge = useCartBadge();
+  const notificationsBadge = useNotificationsBadge();
 
-  Animated.timing(animatedIndex, {
-    toValue: activeIndex,
-    duration: 260,
-    easing: Easing.out(Easing.quad),
-    useNativeDriver: false,
-  }).start();
+  const visibleRoutes = state.routes.filter((route) =>
+    MAIN_TABS.some((tab) => tab.name === route.name)
+  );
+
+  const activeVisibleIndex = Math.max(
+    0,
+    visibleRoutes.findIndex((route) => route.key === state.routes[state.index]?.key)
+  );
+
+  const animatedIndex = useRef(new Animated.Value(activeVisibleIndex)).current;
+
+  useEffect(() => {
+    Animated.timing(animatedIndex, {
+      toValue: activeVisibleIndex,
+      duration: 240,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: false,
+    }).start();
+  }, [activeVisibleIndex, animatedIndex]);
+
+  const containerWidth = Math.min(width - 28, 440);
+  const itemWidth = containerWidth / visibleRoutes.length;
 
   const pillLeft = animatedIndex.interpolate({
-    inputRange: state.routes.map((_, i) => i),
-    outputRange: state.routes.map((_, i) => i * itemWidth),
+    inputRange: visibleRoutes.map((_, i) => i),
+    outputRange: visibleRoutes.map((_, i) => i * itemWidth),
   });
 
   const cardBg =
     Platform.OS === "android"
-      ? `${theme.colors.card}${isDarkMode ? "E0" : "D0"}`
+      ? isDarkMode
+        ? "rgba(2,6,23,0.94)"
+        : "rgba(255,255,255,0.94)"
       : "transparent";
+
+  const getBadgeCount = (routeName: string) => {
+    if (routeName === "cart") return cartBadge;
+    if (routeName === "notifications") return notificationsBadge;
+    return 0;
+  };
 
   return (
     <View pointerEvents="box-none" style={styles.tabContainerWrapper}>
-      {/* espacio para evitar que tape el contenido */}
-      <View style={styles.spacer} />
-
       <View style={styles.absoluteBottom}>
         <BlurView
-          intensity={Platform.OS === "ios" ? 40 : 25}
+          intensity={Platform.OS === "ios" ? 42 : 28}
           tint={isDarkMode ? "dark" : "light"}
           style={[
             styles.glassWrap,
             {
+              width: containerWidth,
               backgroundColor: cardBg,
-              borderColor: `${theme.colors.border}80`,
+              borderColor: `${colors.border}90`,
             },
           ]}
         >
-          {/* Indicador animado */}
           <Animated.View
             style={[
               styles.activePill,
               {
                 left: pillLeft,
                 width: itemWidth,
-                backgroundColor: `${theme.colors.primary}22`,
-                borderColor: `${theme.colors.primary}55`,
+                backgroundColor: `${colors.primary}20`,
+                borderColor: `${colors.primary}55`,
               },
             ]}
           />
 
-          {/* Items */}
-          {state.routes.map((route, index) => {
+          {visibleRoutes.map((route, visibleIndex) => {
             const { options } = descriptors[route.key];
-            const tabMeta = TAB_CONFIG.find((t) => t.name === route.name);
-            const label = options.tabBarLabel ?? options.title ?? route.name;
-            const isFocused = state.index === index;
+            const tabMeta = MAIN_TABS.find((tab) => tab.name === route.name);
+            const isFocused = state.routes[state.index]?.key === route.key;
+
+            const label = tabMeta?.title || options.title || route.name;
 
             const color = isFocused
-              ? theme.colors.primary
-              : theme.colors.textSecondary ?? "#94A3B8";
+              ? colors.primary
+              : colors.textSecondary ?? "#94A3B8";
+
+            const badgeCount = getBadgeCount(route.name);
+
+            const scale = animatedIndex.interpolate({
+              inputRange: visibleRoutes.map((_, i) => i),
+              outputRange: visibleRoutes.map((_, i) =>
+                i === visibleIndex ? 1.08 : 0.96
+              ),
+            });
+
+            const opacity = animatedIndex.interpolate({
+              inputRange: visibleRoutes.map((_, i) => i),
+              outputRange: visibleRoutes.map((_, i) =>
+                i === visibleIndex ? 1 : 0.72
+              ),
+            });
 
             const onPress = () => {
               Haptics.selectionAsync?.().catch?.(() => {});
+
               const event = navigation.emit({
                 type: "tabPress",
                 target: route.key,
                 canPreventDefault: true,
               });
+
               if (!isFocused && !event.defaultPrevented) {
                 navigation.navigate(route.name);
               }
             };
 
-            const badgeCount =
-              typeof tabMeta?.getBadgeCount === "function"
-                ? tabMeta.getBadgeCount()
-                : 0;
-
-            // Animaciones por item
-            const scale = animatedIndex.interpolate({
-              inputRange: state.routes.map((_, i) => i),
-              outputRange: state.routes.map((_, i) =>
-                i === index ? 1.08 : 0.96
-              ),
-            });
-
-            const opacity = animatedIndex.interpolate({
-              inputRange: state.routes.map((_, i) => i),
-              outputRange: state.routes.map((_, i) => (i === index ? 1 : 0.7)),
-            });
-
-            const icon =
-              typeof options.tabBarIcon === "function"
-                ? options.tabBarIcon({ color, size: 22, focused: isFocused })
-                : null;
-
             return (
               <Pressable
                 key={route.key}
                 accessibilityRole="button"
+                accessibilityLabel={String(label)}
                 accessibilityState={isFocused ? { selected: true } : {}}
                 onPress={onPress}
                 onLongPress={() =>
-                  navigation.emit({ type: "tabLongPress", target: route.key })
+                  navigation.emit({
+                    type: "tabLongPress",
+                    target: route.key,
+                  })
                 }
                 style={[styles.item, { width: itemWidth }]}
               >
                 <Animated.View
-                  style={{
-                    alignItems: "center",
-                    justifyContent: "center",
-                    transform: [{ scale }],
-                    opacity,
-                  }}
+                  style={[
+                    styles.itemInner,
+                    {
+                      transform: [{ scale }],
+                      opacity,
+                    },
+                  ]}
                 >
                   <View style={styles.iconWrapper}>
-                    {icon}
-                    {badgeCount > 0 && (
+                    <Ionicons
+                      name={
+                        isFocused
+                          ? tabMeta?.iconActive || "ellipse"
+                          : tabMeta?.iconInactive || "ellipse-outline"
+                      }
+                      size={22}
+                      color={color}
+                    />
+
+                    {badgeCount > 0 ? (
                       <View style={styles.badge}>
                         <Text style={styles.badgeText}>
                           {badgeCount > 99 ? "99+" : badgeCount}
                         </Text>
                       </View>
-                    )}
+                    ) : null}
                   </View>
+
                   <Text
                     numberOfLines={1}
                     style={[
                       styles.label,
                       {
                         color,
-                        fontWeight: isFocused ? "800" : "600",
+                        fontWeight: isFocused ? "900" : "700",
                       },
                     ]}
                   >
@@ -309,46 +323,40 @@ function FloatingGlassTabBar({
   );
 }
 
-// ============ ESTILOS ============
-
 const styles = StyleSheet.create({
   tabContainerWrapper: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-  },
-  spacer: {
-    height: 90,
+    height: 98,
   },
   absoluteBottom: {
     position: "absolute",
     left: 0,
     right: 0,
-    bottom: 16,
+    bottom: Platform.OS === "ios" ? 20 : 14,
     alignItems: "center",
     justifyContent: "center",
   },
   glassWrap: {
-    width: "92%",
-    borderRadius: 24,
+    borderRadius: 26,
     paddingVertical: 10,
     paddingHorizontal: 4,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
-    justifyContent: "space-between",
     overflow: "hidden",
     shadowColor: "#000",
-    shadowOpacity: 0.20,
+    shadowOpacity: 0.18,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 12 },
     elevation: 24,
   },
   activePill: {
     position: "absolute",
-    top: 6,
-    bottom: 6,
-    borderRadius: 18,
+    top: 7,
+    bottom: 7,
+    borderRadius: 20,
     borderWidth: 1,
   },
   item: {
@@ -356,31 +364,36 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  itemInner: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
   iconWrapper: {
-    minHeight: 24,
-    minWidth: 24,
+    minHeight: 25,
+    minWidth: 25,
     alignItems: "center",
     justifyContent: "center",
   },
   label: {
     marginTop: 2,
-    fontSize: 11,
-    letterSpacing: 0.25,
+    fontSize: 10.5,
+    letterSpacing: 0.2,
   },
   badge: {
     position: "absolute",
-    top: -4,
-    right: -10,
-    minWidth: 16,
-    paddingHorizontal: 3,
+    top: -6,
+    right: -11,
+    minWidth: 17,
+    height: 17,
+    paddingHorizontal: 4,
     borderRadius: 999,
-    backgroundColor: "#ef4444",
+    backgroundColor: "#EF4444",
     alignItems: "center",
     justifyContent: "center",
   },
   badgeText: {
-    color: "#fff",
+    color: "#FFFFFF",
     fontSize: 9,
-    fontWeight: "800",
+    fontWeight: "900",
   },
 });

@@ -1,5 +1,5 @@
 // hooks/useTheme.ts
-import { useThemeContext } from "../frontend/context/ThemeContext";
+import { useThemeContext } from "../context/ThemeContext";
 
 export default function useTheme() {
   const { colors, isDarkMode, toggleTheme } = useThemeContext();

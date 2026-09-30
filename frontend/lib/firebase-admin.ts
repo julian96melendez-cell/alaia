@@ -1,5 +1,8 @@
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
+import { installSafeLogging } from "../../utils/safeLogging";
+
+installSafeLogging();
 
 function getEnv(name: string) {
   const value = process.env[name];

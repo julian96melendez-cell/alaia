@@ -10,6 +10,7 @@ const router = express.Router();
 // =====================================================
 const {
   crearOrden,
+  obtenerMisOrdenesMobile,
   obtenerMisOrdenes,
   obtenerOrdenPorId,
   obtenerOrdenPublica, // ✅ IMPORTANTE (Stripe redirect / público)
@@ -44,6 +45,8 @@ const {
 // Middleware
 // =====================================================
 const { proteger, soloAdmin } = require("../middleware/auth");
+const { verificarFirebase } = require("../middleware/firebaseAuth");
+router.get("/mobile/mias", verificarFirebase, obtenerMisOrdenesMobile);
 
 // =====================================================
 // RUTAS USUARIO

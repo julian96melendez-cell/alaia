@@ -34,7 +34,7 @@ export async function initPushNotifications() {
     const tokenData = await Notifications.getExpoPushTokenAsync();
     pushToken = tokenData.data;
 
-    console.log("Expo push token:", pushToken);
+    console.log("Token push obtenido");
     return pushToken;
   } catch (e) {
     console.log("Push init error:", e);

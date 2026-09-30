@@ -30,7 +30,6 @@ const FLAGS = {
   EMAIL_ON_PAYMENT: envBool("EMAIL_ON_PAYMENT", true),
   ENFORCE_LIVEMODE: process.env.STRIPE_LIVEMODE !== undefined,
   STRIPE_ACCOUNT_ID: (process.env.STRIPE_ACCOUNT_ID || "").trim() || null,
-  ALWAYS_200: envBool("STRIPE_WEBHOOK_ALWAYS_200", true),
   ENFORCE_AMOUNT_MATCH: envBool("STRIPE_ENFORCE_AMOUNT_MATCH", true),
   ENFORCE_CURRENCY_MATCH: envBool("STRIPE_ENFORCE_CURRENCY_MATCH", true),
 };
@@ -70,6 +69,8 @@ async function syncFirestoreOrderSafe({
   detail,
   reqId,
 }) {
+  // Mobile checkout/history now read MongoDB; no Firestore order is created or required.
+  if (stripeObject?.metadata?.source === "mobile_payment_sheet") return;
   try {
     await updateFirestoreOrderFromStripe({
       stripeObject,
@@ -253,13 +254,16 @@ async function markEvent({
     return { created: true, doc };
   } catch (err) {
     if (err?.code === 11000) {
-      return {
-        created: false,
-        doc: await WebhookEvent.findOne({
-          provider: "stripe",
-          eventId: event.id,
-        }),
-      };
+      const filter = { provider: "stripe", eventId: event.id };
+      const reclaimed = await WebhookEvent.findOneAndUpdate({
+        ...filter,
+        $or: [
+          { status: "failed" },
+          { status: "received", updatedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } },
+        ],
+      }, { $set: { status: "received", errorMessage: "", reqId, processedAt: new Date() } }, { new: true });
+      if (reclaimed) return { created: true, doc: reclaimed };
+      return { created: false, doc: await WebhookEvent.findOne(filter) };
     }
 
     throw err;
@@ -599,7 +603,7 @@ exports.procesarWebhookStripe = async (req, res) => {
       err: err?.message || String(err),
     });
 
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).send("Firma de webhook inválida");
   }
 
   const liveCheck = enforceLivemodeOrSkip({ event, reqId });
@@ -636,6 +640,9 @@ exports.procesarWebhookStripe = async (req, res) => {
     eventRow = result.doc || null;
 
     if (!result.created) {
+      if (!result.doc || !["processed", "skipped"].includes(result.doc.status)) {
+        return res.status(503).json({ ok: false, message: "Webhook pendiente; reintentar" });
+      }
       log("info", "Evento duplicado ignorado", {
         reqId,
         eventId,
@@ -645,13 +652,8 @@ exports.procesarWebhookStripe = async (req, res) => {
       return ok(res);
     }
   } catch (err) {
-    log("error", "Error guardando WebhookEvent, se continúa procesando orden", {
-      reqId,
-      eventId,
-      err: err?.message || String(err),
-    });
-
-    eventRow = null;
+    log("error", "No se pudo registrar el evento Stripe", { reqId, eventId });
+    return res.status(503).json({ ok: false, message: "Webhook pendiente; reintentar" });
   }
 
   try {
@@ -1245,8 +1247,6 @@ exports.procesarWebhookStripe = async (req, res) => {
         },
       }
     ).catch(() => {});
-
-    if (FLAGS.ALWAYS_200) return ok(res);
 
     return res.status(500).json({
       ok: false,

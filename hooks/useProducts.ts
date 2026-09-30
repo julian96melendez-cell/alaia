@@ -1,6 +1,6 @@
 import { collection, getDocs, QueryDocumentSnapshot } from "firebase/firestore";
 import { useEffect, useState } from "react";
-import { db } from "../firebase/firebaseConfig";
+import { db } from "../../firebase/firebaseConfig";
 
 export interface Product {
   id: string;

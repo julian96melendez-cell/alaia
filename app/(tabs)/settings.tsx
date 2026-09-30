@@ -1,8 +1,8 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import React from "react";
 import {
   Alert,
   Image,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,131 +10,163 @@ import {
   View,
 } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
+
 import Colors from "../../constants/Colors";
+import { useAuth } from "../../context/AuthContext";
+import { useThemeContext } from "../../context/ThemeContext";
+import { useAppNavigation } from "../../navigation/useAppNavigation";
+
+type SettingOption = {
+  title: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  color: string;
+  onPress: () => void;
+};
 
 export default function SettingsScreen() {
-  const user = {
-    name: "Usuario Invitado",
-    email: "example@mail.com",
-    avatar:
-      "https://cdn-icons-png.flaticon.com/512/3177/3177440.png",
+  const nav = useAppNavigation();
+  const { user, logout } = useAuth();
+  const { isDarkMode, toggleTheme } = useThemeContext();
+
+  const displayName = user?.displayName || "Usuario ALAIA";
+  const email = user?.email || "usuario@example.com";
+  const avatar =
+    user?.photoURL || "https://cdn-icons-png.flaticon.com/512/3177/3177440.png";
+
+  const openSupportEmail = async () => {
+    const url = "mailto:support@alaia.app?subject=Soporte%20ALAIA";
+
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (supported) {
+        await Linking.openURL(url);
+        return;
+      }
+    } catch {}
+
+    Alert.alert("Soporte", "Escríbenos a support@alaia.app");
   };
 
-  const options = [
+  const options: SettingOption[] = [
     {
       title: "Cuenta",
       icon: "person-outline",
       color: Colors.light.primary,
+      onPress: () => nav.push(nav.routes.profileInfo),
     },
     {
       title: "Notificaciones",
       icon: "notifications-outline",
       color: "#F59E0B",
+      onPress: () => nav.push(nav.routes.notifications),
     },
     {
       title: "Pagos",
       icon: "card-outline",
       color: "#10B981",
+      onPress: () =>
+        Alert.alert("Pagos", "La configuración de pagos estará disponible pronto."),
     },
     {
       title: "Direcciones",
       icon: "location-outline",
       color: "#3B82F6",
+      onPress: () =>
+        Alert.alert("Direcciones", "La gestión de direcciones estará disponible pronto."),
     },
     {
       title: "Seguridad",
       icon: "shield-checkmark-outline",
       color: "#EF4444",
+      onPress: () =>
+        Alert.alert("Seguridad", "Las opciones de seguridad estarán disponibles pronto."),
+    },
+    {
+      title: isDarkMode ? "Modo claro" : "Modo oscuro",
+      icon: isDarkMode ? "sunny-outline" : "moon-outline",
+      color: "#6366F1",
+      onPress: toggleTheme,
     },
   ];
 
-  const supportOptions = [
+  const supportOptions: SettingOption[] = [
     {
       title: "Centro de ayuda",
       icon: "help-circle-outline",
       color: "#6366F1",
+      onPress: () =>
+        Alert.alert(
+          "Centro de ayuda",
+          "Puedes contactarnos desde la opción Contáctanos."
+        ),
     },
     {
       title: "Contáctanos",
       icon: "chatbubble-ellipses-outline",
       color: "#0EA5E9",
+      onPress: openSupportEmail,
+    },
+    {
+      title: "Privacidad",
+      icon: "lock-closed-outline",
+      color: "#64748B",
+      onPress: () =>
+        Alert.alert(
+          "Privacidad",
+          "Tu privacidad y seguridad estarán disponibles próximamente."
+        ),
     },
   ];
 
-  const logout = () => {
+  const handleLogout = () => {
     Alert.alert("Cerrar sesión", "¿Deseas cerrar tu sesión?", [
       { text: "Cancelar", style: "cancel" },
-      { text: "Salir", style: "destructive", onPress: () => {} },
+      {
+        text: "Salir",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await logout();
+            nav.replace("/(auth)/login");
+          } catch {
+            Alert.alert("Error", "No se pudo cerrar sesión.");
+          }
+        },
+      },
     ]);
   };
 
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={{ padding: 20 }}
+      contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      {/* 🟦 Perfil del usuario */}
       <Animated.View entering={FadeInDown.duration(350)} style={styles.profileCard}>
-        <Image source={{ uri: user.avatar }} style={styles.avatar} />
+        <Image source={{ uri: avatar }} style={styles.avatar} />
 
         <View style={{ flex: 1 }}>
-          <Text style={styles.name}>{user.name}</Text>
-          <Text style={styles.email}>{user.email}</Text>
+          <Text style={styles.name}>{displayName}</Text>
+          <Text style={styles.email}>{email}</Text>
         </View>
 
-        <Pressable style={styles.editBtn}>
+        <Pressable
+          style={({ pressed }) => [styles.editBtn, pressed && styles.pressed]}
+          onPress={() => nav.push(nav.routes.profileInfo)}
+        >
           <Ionicons name="create-outline" size={20} color="#64748B" />
         </Pressable>
       </Animated.View>
 
-      {/* ⚙️ Configuración */}
-      <Animated.View entering={FadeInDown.delay(150)} style={styles.section}>
-        <Text style={styles.sectionTitle}>Configuración</Text>
+      <SettingsSection title="Configuración" options={options} delay={150} />
 
-        {options.map((opt, index) => (
-          <Animated.View
-            key={index}
-            entering={FadeInDown.delay(180 + index * 80)}
-          >
-            <Pressable style={styles.optionRow}>
-              <View style={[styles.iconBox, { backgroundColor: `${opt.color}22` }]}>
-                <Ionicons name={opt.icon as any} size={22} color={opt.color} />
-              </View>
+      <SettingsSection title="Soporte" options={supportOptions} delay={350} />
 
-              <Text style={styles.optionText}>{opt.title}</Text>
-
-              <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
-            </Pressable>
-          </Animated.View>
-        ))}
-      </Animated.View>
-
-      {/* 🛠️ Soporte */}
-      <Animated.View entering={FadeInDown.delay(350)} style={styles.section}>
-        <Text style={styles.sectionTitle}>Soporte</Text>
-
-        {supportOptions.map((opt, index) => (
-          <Animated.View
-            key={index}
-            entering={FadeInDown.delay(380 + index * 80)}
-          >
-            <Pressable style={styles.optionRow}>
-              <View style={[styles.iconBox, { backgroundColor: `${opt.color}22` }]}>
-                <Ionicons name={opt.icon as any} size={22} color={opt.color} />
-              </View>
-
-              <Text style={styles.optionText}>{opt.title}</Text>
-
-              <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
-            </Pressable>
-          </Animated.View>
-        ))}
-      </Animated.View>
-
-      {/* 🚪 Cerrar sesión */}
       <Animated.View entering={FadeInDown.delay(550)}>
-        <Pressable style={styles.logoutBtn} onPress={logout}>
+        <Pressable
+          style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed]}
+          onPress={handleLogout}
+        >
           <MaterialCommunityIcons name="logout" size={20} color="#EF4444" />
           <Text style={styles.logoutText}>Cerrar sesión</Text>
         </Pressable>
@@ -145,13 +177,51 @@ export default function SettingsScreen() {
   );
 }
 
-// 🧪 Estilos
+function SettingsSection({
+  title,
+  options,
+  delay,
+}: {
+  title: string;
+  options: SettingOption[];
+  delay: number;
+}) {
+  return (
+    <Animated.View entering={FadeInDown.delay(delay)} style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+
+      {options.map((opt, index) => (
+        <Animated.View key={opt.title} entering={FadeInDown.delay(delay + index * 70)}>
+          <Pressable
+            style={({ pressed }) => [styles.optionRow, pressed && styles.pressed]}
+            onPress={opt.onPress}
+          >
+            <View style={[styles.iconBox, { backgroundColor: `${opt.color}22` }]}>
+              <Ionicons name={opt.icon} size={22} color={opt.color} />
+            </View>
+
+            <Text style={styles.optionText}>{opt.title}</Text>
+
+            <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
+          </Pressable>
+        </Animated.View>
+      ))}
+    </Animated.View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.light.background,
   },
-
+  content: {
+    padding: 20,
+    paddingBottom: 50,
+  },
+  pressed: {
+    opacity: 0.55,
+  },
   profileCard: {
     flexDirection: "row",
     backgroundColor: "#FFF",
@@ -169,35 +239,35 @@ const styles = StyleSheet.create({
     height: 64,
     borderRadius: 999,
     marginRight: 16,
+    backgroundColor: "#E5E7EB",
   },
   name: {
     fontSize: 18,
-    fontWeight: "700",
+    fontWeight: "800",
     color: Colors.light.text,
   },
   email: {
     fontSize: 13,
     color: Colors.light.textSecondary,
     marginTop: 2,
+    fontWeight: "500",
   },
   editBtn: {
     padding: 8,
     borderRadius: 10,
     backgroundColor: "#F1F5F9",
   },
-
   section: {
     marginBottom: 20,
   },
   sectionTitle: {
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
     color: Colors.light.textSecondary,
     marginBottom: 10,
     textTransform: "uppercase",
     letterSpacing: 0.6,
   },
-
   optionRow: {
     backgroundColor: "#FFF",
     flexDirection: "row",
@@ -214,7 +284,7 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 14,
     fontSize: 15,
-    fontWeight: "600",
+    fontWeight: "700",
     color: Colors.light.text,
   },
   iconBox: {
@@ -224,7 +294,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-
   logoutBtn: {
     marginTop: 20,
     backgroundColor: "#FEE2E2",
@@ -238,6 +307,6 @@ const styles = StyleSheet.create({
   logoutText: {
     color: "#EF4444",
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "800",
   },
 });

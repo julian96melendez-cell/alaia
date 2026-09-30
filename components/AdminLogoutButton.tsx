@@ -1,7 +1,7 @@
 "use client";
 
-import { clearCurrentUser, logout } from "@/lib/auth";
 import { useState } from "react";
+import { clearCurrentUser, logout } from "../frontend/lib/auth";
 
 export default function AdminLogoutButton() {
   const [loading, setLoading] = useState(false);

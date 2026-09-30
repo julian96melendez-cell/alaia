@@ -3,6 +3,7 @@
 const mongoose = require("mongoose");
 const Orden = require("../models/Orden");
 const Producto = require("../models/Producto");
+const { PUBLIC_ORDER_PROJECTION, toPublicOrder } = require("../dto/publicOrder");
 
 const { crearSesionPago } = require("../payments/stripeService");
 
@@ -342,9 +343,7 @@ exports.obtenerOrdenPublica = async (req, res, next) => {
       return sendError(res, { statusCode: 400, message: "ID inválido" });
     }
 
-    const orden = await Orden.findById(id).select(
-      "_id orderNumber items subtotal shipping tax discount total moneda estadoPago estadoFulfillment metodoPago paymentProvider paidAt failedAt refundedAt stripeSessionId stripePaymentIntentId paymentStatusDetail historial createdAt updatedAt"
-    );
+    const orden = await Orden.findById(id).select(PUBLIC_ORDER_PROJECTION).lean();
 
     if (!orden) {
       return sendError(res, {
@@ -355,7 +354,7 @@ exports.obtenerOrdenPublica = async (req, res, next) => {
 
     return sendSuccess(res, {
       message: "Orden pública",
-      data: orden,
+      data: toPublicOrder(orden),
     });
   } catch (err) {
     next(err);
@@ -493,6 +492,10 @@ exports.actualizarEstado = async (req, res, next) => {
       return sendError(res, { statusCode: 404, message: "Orden no encontrada" });
     }
 
+    if (estadoPago && estadoPago !== orden.estadoPago &&
+        (orden.paymentProvider === "stripe" || orden.metodoPago === "stripe" || estadoPago === "pagado")) {
+      return sendError(res, { statusCode: 400, message: "El estado financiero lo confirma Stripe mediante webhook" });
+    }
     if (estadoPago) orden.estadoPago = estadoPago;
     if (estadoFulfillment) orden.estadoFulfillment = estadoFulfillment;
 
@@ -576,4 +579,12 @@ exports.cancelarOrden = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+};
+// Firebase-authenticated mobile history: MongoDB remains the source of truth.
+exports.obtenerMisOrdenesMobile = async (req, res, next) => {
+  try {
+    const orders = await Orden.find({ firebaseUserId: req.firebaseUser.uid })
+      .select(PUBLIC_ORDER_PROJECTION).sort({ createdAt: -1 }).limit(100).lean();
+    return sendSuccess(res, { data: orders.map(toPublicOrder) });
+  } catch (error) { next(error); }
 };

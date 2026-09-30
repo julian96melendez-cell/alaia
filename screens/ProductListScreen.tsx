@@ -3,6 +3,20 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useNavigation } from "@react-navigation/native";
 import {
+  collection,
+  DocumentData,
+  endAt,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  Query,
+  QueryDocumentSnapshot,
+  startAfter,
+  startAt,
+  Timestamp,
+} from "firebase/firestore";
+import {
   memo,
   useCallback,
   useEffect,
@@ -25,32 +39,13 @@ import {
   View,
 } from "react-native";
 
+import { db } from "../../firebase/firebaseConfig";
 import { useCart } from "../context/CartContext";
 import useTheme from "../hooks/useTheme";
-
-// Firebase
-import {
-  collection,
-  DocumentData,
-  endAt,
-  getDocs,
-  getFirestore,
-  limit,
-  orderBy,
-  query,
-  Query,
-  QueryDocumentSnapshot,
-  startAfter,
-  startAt,
-  Timestamp,
-} from "firebase/firestore";
-
-const db = getFirestore();
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = width / 2 - 24;
 
-// ────────────────────────────── Types ──────────────────────────────
 export type Product = {
   id: string;
   name: string;
@@ -66,16 +61,12 @@ export type Product = {
 };
 
 type FireProduct = Omit<Product, "id">;
-
-// Theme colors inferidos desde useTheme (sin pelear con TS)
 type ThemeColors = ReturnType<typeof useTheme>["colors"];
 
-// ────────────────────────────── Constantes ──────────────────────────────
 const PAGE_SIZE = 12;
 const FAV_KEY = "ALAIA_FAV_PRODUCTS";
 const SEARCH_DEBOUNCE_MS = 350;
 
-// ────────────────────────────── Card Component ──────────────────────────────
 type ProductCardProps = {
   item: Product;
   isFavorite: boolean;
@@ -128,7 +119,6 @@ const ProductCard = memo(function ProductCard({
           },
         ]}
       >
-        {/* Favorito */}
         <TouchableOpacity
           style={styles.favoriteIcon}
           onPress={onToggleFavorite}
@@ -141,14 +131,12 @@ const ProductCard = memo(function ProductCard({
           />
         </TouchableOpacity>
 
-        {/* Badge destacado / nuevo */}
         {showBadge && (
           <View
             style={[
               styles.badge,
               {
-                backgroundColor:
-                  colors.primary + (isDarkMode ? "44" : "22"),
+                backgroundColor: colors.primary + (isDarkMode ? "44" : "22"),
               },
             ]}
           >
@@ -163,15 +151,12 @@ const ProductCard = memo(function ProductCard({
           </View>
         )}
 
-        {/* Imagen */}
         <Image source={{ uri: item.image }} style={styles.image} />
 
-        {/* Nombre */}
         <Text style={[styles.name, { color: colors.text }]} numberOfLines={2}>
           {item.name}
         </Text>
 
-        {/* Precio + rating */}
         <View style={styles.rowBetween}>
           <Text style={[styles.price, { color: colors.primary }]}>
             ${item.price.toFixed(2)}
@@ -180,11 +165,10 @@ const ProductCard = memo(function ProductCard({
           {(item.rating ?? 0) > 0 && (
             <View style={styles.rating}>
               <Ionicons name="star" size={14} color="#FBBF24" />
-              <Text
-                style={[styles.ratingText, { color: colors.text }]}
-              >
+              <Text style={[styles.ratingText, { color: colors.text }]}>
                 {item.rating?.toFixed(1)}
               </Text>
+
               {item.reviews ? (
                 <Text
                   style={[
@@ -199,7 +183,6 @@ const ProductCard = memo(function ProductCard({
           )}
         </View>
 
-        {/* Botón carrito */}
         <TouchableOpacity
           style={[styles.cartButton, { backgroundColor: colors.primary }]}
           onPress={onAddToCart}
@@ -213,7 +196,6 @@ const ProductCard = memo(function ProductCard({
   );
 });
 
-// ────────────────────────────── Header Component ──────────────────────────────
 type HeaderProps = {
   queryText: string;
   onChangeText: (t: string) => void;
@@ -231,9 +213,7 @@ const ListHeader = memo(function ListHeader({
     <View style={styles.header}>
       <View style={styles.headerTopRow}>
         <View>
-          <Text style={[styles.title, { color: colors.text }]}>
-            Productos
-          </Text>
+          <Text style={[styles.title, { color: colors.text }]}>Productos</Text>
           <Text
             style={[
               styles.subtitle,
@@ -243,6 +223,7 @@ const ListHeader = memo(function ListHeader({
             Explora el catálogo y descubre novedades
           </Text>
         </View>
+
         <View
           style={[
             styles.pill,
@@ -252,11 +233,7 @@ const ListHeader = memo(function ListHeader({
             },
           ]}
         >
-          <Ionicons
-            name="sparkles-outline"
-            size={14}
-            color={colors.primary}
-          />
+          <Ionicons name="sparkles-outline" size={14} color={colors.primary} />
           <Text
             style={[
               styles.pillText,
@@ -306,7 +283,6 @@ const ListHeader = memo(function ListHeader({
   );
 });
 
-// ────────────────────────────── Empty & Footer ──────────────────────────────
 const ListEmpty = memo(function ListEmpty({
   loading,
   colors,
@@ -328,21 +304,10 @@ const ListEmpty = memo(function ListEmpty({
   return (
     <View style={styles.center}>
       <Ionicons name="cube-outline" size={48} color={colors.primary} />
-      <Text
-        style={{
-          color: colors.text,
-          fontWeight: "800",
-          marginTop: 8,
-        }}
-      >
+      <Text style={{ color: colors.text, fontWeight: "800", marginTop: 8 }}>
         Sin resultados
       </Text>
-      <Text
-        style={{
-          color: colors.textSecondary || "#6B7280",
-          marginTop: 2,
-        }}
-      >
+      <Text style={{ color: colors.textSecondary || "#6B7280", marginTop: 2 }}>
         Prueba con otro término de búsqueda.
       </Text>
     </View>
@@ -385,40 +350,31 @@ const ListFooter = memo(function ListFooter({
   return null;
 });
 
-// ────────────────────────────── MAIN SCREEN ──────────────────────────────
 export default function ProductListScreen() {
   const { colors, isDarkMode } = useTheme();
   const navigation = useNavigation<any>();
   const { addItem } = useCart();
 
-  // Favoritos
   const [favorites, setFavorites] = useState<string[]>([]);
-
-  // Búsqueda con debounce
-  const [queryText, setQueryText] = useState<string>("");
-  const [internalSearch, setInternalSearch] = useState<string>("");
+  const [queryText, setQueryText] = useState("");
+  const [internalSearch, setInternalSearch] = useState("");
   const debTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Data / paginación
   const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [loadingMore, setLoadingMore] = useState<boolean>(false);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const reachedEndRef = useRef<boolean>(false);
-  const reqIdRef = useRef<number>(0);
+  const reachedEndRef = useRef(false);
+  const reqIdRef = useRef(0);
 
-  // ───────────── Favoritos persistidos ─────────────
   useEffect(() => {
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(FAV_KEY);
+    AsyncStorage.getItem(FAV_KEY)
+      .then((raw) => {
         if (raw) setFavorites(JSON.parse(raw));
-      } catch {
-        // noop
-      }
-    })();
+      })
+      .catch(() => {});
   }, []);
 
   const toggleFavorite = useCallback(async (id: string) => {
@@ -428,14 +384,13 @@ export default function ProductListScreen() {
         : [...prev, id];
 
       AsyncStorage.setItem(FAV_KEY, JSON.stringify(next)).catch(() => {});
-
       return next;
     });
   }, []);
 
-  // ───────────── Debounce búsqueda ─────────────
   useEffect(() => {
     if (debTimer.current) clearTimeout(debTimer.current);
+
     debTimer.current = setTimeout(() => {
       setInternalSearch(queryText.trim());
     }, SEARCH_DEBOUNCE_MS);
@@ -445,7 +400,6 @@ export default function ProductListScreen() {
     };
   }, [queryText]);
 
-  // ───────────── Mapeo de documentos ─────────────
   const mapDoc = useCallback(
     (d: QueryDocumentSnapshot<DocumentData>): Product => {
       const data = d.data() as FireProduct;
@@ -457,8 +411,7 @@ export default function ProductListScreen() {
         price: Number(data.price ?? 0),
         image: String(data.image ?? ""),
         rating: typeof data.rating === "number" ? data.rating : undefined,
-        reviews:
-          typeof data.reviews === "number" ? data.reviews : undefined,
+        reviews: typeof data.reviews === "number" ? data.reviews : undefined,
         category: data.category,
         createdAt: data.createdAt,
         isFeatured: Boolean(data.isFeatured),
@@ -468,63 +421,55 @@ export default function ProductListScreen() {
     []
   );
 
-  // ───────────── Query builders ─────────────
   const buildBaseQuery = useCallback((): Query<DocumentData> => {
+    const productsRef = collection(db, "products");
+
     if (!lastDocRef.current) {
-      return query(
-        collection(db, "products"),
-        orderBy("createdAt", "desc"),
-        limit(PAGE_SIZE)
-      );
+      return query(productsRef, orderBy("createdAt", "desc"), limit(PAGE_SIZE));
     }
 
     return query(
-      collection(db, "products"),
+      productsRef,
       orderBy("createdAt", "desc"),
       startAfter(lastDocRef.current),
       limit(PAGE_SIZE)
     );
   }, []);
 
-  const buildSearchQuery = useCallback(
-    (term: string): Query<DocumentData> => {
-      const qLower = term.toLowerCase();
+  const buildSearchQuery = useCallback((term: string): Query<DocumentData> => {
+    const productsRef = collection(db, "products");
+    const qLower = term.toLowerCase();
 
-      if (!lastDocRef.current) {
-        return query(
-          collection(db, "products"),
-          orderBy("nameLower"),
-          startAt(qLower),
-          endAt(qLower + "\uf8ff"),
-          limit(PAGE_SIZE)
-        );
-      }
-
+    if (!lastDocRef.current) {
       return query(
-        collection(db, "products"),
+        productsRef,
         orderBy("nameLower"),
         startAt(qLower),
         endAt(qLower + "\uf8ff"),
-        startAfter(lastDocRef.current),
         limit(PAGE_SIZE)
       );
-    },
-    []
-  );
+    }
 
-  // ───────────── Carga inicial ─────────────
+    return query(
+      productsRef,
+      orderBy("nameLower"),
+      startAt(qLower),
+      endAt(qLower + "\uf8ff"),
+      startAfter(lastDocRef.current),
+      limit(PAGE_SIZE)
+    );
+  }, []);
+
   const loadFirstPage = useCallback(
     async (term: string) => {
       const myReq = ++reqIdRef.current;
+
       try {
         setLoading(true);
         reachedEndRef.current = false;
         lastDocRef.current = null;
 
-        const q =
-          term.length >= 2
-            ? buildSearchQuery(term)
-            : buildBaseQuery();
+        const q = term.length >= 2 ? buildSearchQuery(term) : buildBaseQuery();
         const snap = await getDocs(q);
 
         if (reqIdRef.current !== myReq) return;
@@ -532,13 +477,10 @@ export default function ProductListScreen() {
         const list = snap.docs.map(mapDoc);
         setProducts(list);
 
-        if (snap.docs.length > 0) {
-          lastDocRef.current = snap.docs[snap.docs.length - 1];
-        }
+        lastDocRef.current =
+          snap.docs.length > 0 ? snap.docs[snap.docs.length - 1] : null;
 
-        if (snap.docs.length < PAGE_SIZE) {
-          reachedEndRef.current = true;
-        }
+        reachedEndRef.current = snap.docs.length < PAGE_SIZE;
       } catch (e) {
         console.error("loadFirstPage:", e);
         Alert.alert("Error", "No se pudieron cargar los productos.");
@@ -558,10 +500,7 @@ export default function ProductListScreen() {
 
     try {
       const term = internalSearch;
-      const q =
-        term.length >= 2
-          ? buildSearchQuery(term)
-          : buildBaseQuery();
+      const q = term.length >= 2 ? buildSearchQuery(term) : buildBaseQuery();
       const snap = await getDocs(q);
 
       if (snap.empty) {
@@ -596,12 +535,10 @@ export default function ProductListScreen() {
     setRefreshing(false);
   }, [loadFirstPage, internalSearch]);
 
-  // Cargar al cambiar búsqueda
   useEffect(() => {
     loadFirstPage(internalSearch);
   }, [internalSearch, loadFirstPage]);
 
-  // ───────────── Render item ─────────────
   const renderProduct: ListRenderItem<Product> = useCallback(
     ({ item }) => {
       const isFavorite = favorites.includes(item.id);
@@ -655,9 +592,7 @@ export default function ProductListScreen() {
             isDarkMode={isDarkMode}
           />
         }
-        ListEmptyComponent={
-          <ListEmpty loading={loading} colors={colors} />
-        }
+        ListEmptyComponent={<ListEmpty loading={loading} colors={colors} />}
         ListFooterComponent={
           <ListFooter
             loadingMore={loadingMore}
@@ -680,7 +615,6 @@ export default function ProductListScreen() {
   );
 }
 
-// ───────────────────────────── Styles ─────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: {
@@ -688,7 +622,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingTop: 40,
   },
-
   header: { paddingHorizontal: 0, paddingTop: 16, paddingBottom: 8 },
   headerTopRow: {
     paddingHorizontal: 16,
@@ -707,7 +640,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     marginTop: 2,
   },
-
   pill: {
     flexDirection: "row",
     alignItems: "center",
@@ -718,7 +650,6 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   pillText: { fontSize: 11, fontWeight: "700" },
-
   searchBox: {
     marginTop: 8,
     marginHorizontal: 16,
@@ -731,8 +662,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   searchInput: { flex: 1, fontSize: 15, paddingVertical: 2 },
-
-  // Cards
   card: {
     marginBottom: 20,
     width: CARD_WIDTH,
@@ -745,7 +674,6 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
   },
   favoriteIcon: { position: "absolute", top: 10, right: 10, zIndex: 2 },
-
   badge: {
     position: "absolute",
     top: 12,
@@ -759,7 +687,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   badgeText: { fontSize: 10, fontWeight: "800" },
-
   image: {
     width: "100%",
     height: 140,
@@ -767,23 +694,19 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     resizeMode: "cover",
   },
-
   name: {
     fontSize: 15,
     fontWeight: "700",
     marginBottom: 4,
     minHeight: 38,
   },
-
   rowBetween: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 6,
   },
-
   price: { fontSize: 16, fontWeight: "800" },
-
   rating: {
     flexDirection: "row",
     alignItems: "center",
@@ -791,7 +714,6 @@ const styles = StyleSheet.create({
   },
   ratingText: { fontSize: 12, fontWeight: "700" },
   ratingReviews: { fontSize: 11, fontWeight: "600" },
-
   cartButton: {
     flexDirection: "row",
     alignItems: "center",

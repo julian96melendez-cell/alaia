@@ -3,6 +3,7 @@
 // ======================================================
 
 const Orden = require("../models/Orden");
+const { PUBLIC_ORDER_PROJECTION, toPublicOrder } = require("../dto/publicOrder");
 
 const clients = new Map(); // ordenId => Set(res)
 
@@ -29,13 +30,13 @@ exports.streamOrden = async (req, res) => {
   // Enviar snapshot inicial
   try {
     const orden = await Orden.findById(ordenId)
-      .select("historial estadoPago estadoFulfillment")
+      .select(PUBLIC_ORDER_PROJECTION)
       .lean();
 
     if (orden) {
       send(res, {
         type: "snapshot",
-        data: orden,
+        data: toPublicOrder(orden),
       });
     }
   } catch {}
@@ -56,7 +57,7 @@ exports.emitOrdenUpdate = (ordenId, payload) => {
   for (const res of subs) {
     send(res, {
       type: "update",
-      data: payload,
+      data: toPublicOrder({ ...payload, _id: ordenId }),
     });
   }
 };

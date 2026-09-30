@@ -1,8 +1,8 @@
 "use client";
 
-import { OrdersChart, RevenueChart } from "@/components/admin/AnalyticsCharts";
-import { api } from "@/lib/api";
 import { useEffect, useMemo, useState } from "react";
+import { api } from "../../../lib/api";
+import { OrdersChart, RevenueChart } from "./AnalyticsCharts";
 
 type OverviewResponse = {
   totalOrdenes: number;

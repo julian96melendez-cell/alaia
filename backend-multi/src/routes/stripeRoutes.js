@@ -10,6 +10,8 @@ const router = express.Router();
 
 const Orden = require("../models/Orden");
 const Producto = require("../models/Producto");
+const { verificarFirebase } = require("../middleware/firebaseAuth");
+const { calculateCheckoutPricing, normalizeCheckoutItems } = require("../services/checkoutPricing");
 
 const {
   procesarWebhookStripe,
@@ -159,56 +161,28 @@ function sendError(res, req, err) {
   console.error("❌ STRIPE ROUTE ERROR:", {
     reqId: getRequestId(req),
     status,
-    message: err?.message,
     code: err?.code,
     type: err?.type,
   });
 
   return res.status(status).json({
     ok: false,
-    message: err?.message || "No se pudo procesar la solicitud de Stripe.",
+    message: status < 500 ? err.message : "No se pudo procesar la solicitud de Stripe.",
     reqId: getRequestId(req),
-  });
-}
-
-function normalizeMobileItems(items = []) {
-  if (!Array.isArray(items) || items.length === 0) {
-    throw Object.assign(
-      new Error("Debes enviar items para crear una orden móvil en Mongo."),
-      { statusCode: 400 }
-    );
-  }
-
-  return items.map((item, index) => {
-    const producto = safeString(item.producto || item.productId || item.id);
-    const cantidad = Math.max(1, parseInt(item.cantidad || item.quantity, 10) || 1);
-
-    if (!producto || !isObjectId(producto)) {
-      throw Object.assign(
-        new Error(
-          `Item inválido en posición ${index}. El producto debe ser un ObjectId de Mongo.`
-        ),
-        { statusCode: 400 }
-      );
-    }
-
-    return { producto, cantidad };
   });
 }
 
 async function buildMongoOrderFromMobilePayload({
   items,
-  tax = 0,
-  shipping = 0,
-  discount = 0,
-  currency = DEFAULT_CURRENCY,
+  couponCode = "",
+  shippingAddress = {},
   firebaseUserId = "",
   userEmail = "",
   firestoreOrderId = "",
   mobileOrderRef = "",
   metadata = {},
 }) {
-  const normalizedItems = normalizeMobileItems(items);
+  const normalizedItems = normalizeCheckoutItems(items);
 
   const productos = await Producto.find({
     _id: { $in: normalizedItems.map((item) => item.producto) },
@@ -219,9 +193,8 @@ async function buildMongoOrderFromMobilePayload({
   const productosMap = new Map(productos.map((p) => [String(p._id), p]));
 
   const orderItems = [];
-  let subtotal = 0;
   let totalCostoProveedor = 0;
-  let moneda = normalizeCurrency(currency);
+  let moneda = DEFAULT_CURRENCY;
 
   for (const item of normalizedItems) {
     const producto = productosMap.get(String(item.producto));
@@ -251,12 +224,18 @@ async function buildMongoOrderFromMobilePayload({
       );
     }
 
-    moneda = normalizeCurrency(producto.moneda || moneda);
+    const productCurrency = normalizeCurrency(producto.moneda || DEFAULT_CURRENCY);
+    if (productCurrency !== DEFAULT_CURRENCY) {
+      throw Object.assign(new Error("El checkout móvil solo admite productos en USD"), { statusCode: 400 });
+    }
+    if (producto.gestionStock !== false && (!Number.isFinite(Number(producto.stock)) || Number(producto.stock) < cantidad)) {
+      throw Object.assign(new Error("Stock insuficiente"), { statusCode: 409 });
+    }
+    moneda = productCurrency;
 
     const itemSubtotal = round2(precioUnitario * cantidad);
     const itemCosto = round2(costoProveedorUnitario * cantidad);
 
-    subtotal = round2(subtotal + itemSubtotal);
     totalCostoProveedor = round2(totalCostoProveedor + itemCosto);
 
     const sellerType =
@@ -273,21 +252,20 @@ async function buildMongoOrderFromMobilePayload({
       sellerType,
       vendedor: sellerType === "seller" ? producto.vendedor : null,
       subtotal: itemSubtotal,
+      category: producto.categoria,
       ganancia: round2(itemSubtotal - itemCosto),
       comisionPorcentaje:
         typeof producto.comisionPct === "number" ? producto.comisionPct : undefined,
     });
   }
 
-  const cleanTax = round2(Math.max(0, safeNumber(tax, 0)));
-  const cleanShipping = round2(Math.max(0, safeNumber(shipping, 0)));
-  const cleanDiscount = round2(Math.max(0, safeNumber(discount, 0)));
-  const total = round2(subtotal + cleanTax + cleanShipping - cleanDiscount);
-
-  if (total <= 0) {
-    throw Object.assign(new Error("Total de orden inválido."), {
-      statusCode: 400,
-    });
+  const pricing = calculateCheckoutPricing(orderItems, couponCode);
+  const addressFields = { nombre: "fullName", telefono: "phone", direccion: "street", ciudad: "city", provincia: "state", codigoPostal: "zip" };
+  const direccionEntrega = { email: safeString(userEmail).toLowerCase() };
+  for (const [field, input] of Object.entries(addressFields)) {
+    const value = typeof shippingAddress?.[input] === "string" ? shippingAddress[input].trim() : "";
+    if (!value || value.length > 200) throw Object.assign(new Error("Dirección de entrega incompleta o inválida"), { statusCode: 400 });
+    direccionEntrega[field] = value;
   }
 
   const orden = await Orden.create({
@@ -297,20 +275,14 @@ async function buildMongoOrderFromMobilePayload({
     source: "mobile_payment_sheet",
 
     clienteEmail: safeString(userEmail).toLowerCase(),
-    direccionEntrega: {
-      email: safeString(userEmail).toLowerCase(),
-    },
+    direccionEntrega,
 
     items: orderItems,
 
-    subtotal,
-    tax: cleanTax,
-    shipping: cleanShipping,
-    discount: cleanDiscount,
-    total,
+    ...pricing,
 
     totalCostoProveedor,
-    gananciaTotal: round2(total - totalCostoProveedor),
+    gananciaTotal: round2(pricing.total - totalCostoProveedor),
 
     moneda,
     metodoPago: "stripe",
@@ -382,75 +354,34 @@ router.post("/checkout", crearOrdenYCheckoutStripe);
 // Mobile PaymentSheet
 // POST /api/stripe/payment-sheet
 // ======================================================
-router.post("/payment-sheet", async (req, res) => {
+router.post("/payment-sheet", verificarFirebase, async (req, res) => {
   let orden = null;
 
   try {
-    const {
-      amount,
-      currency = DEFAULT_CURRENCY,
-      orderId = "",
-      ordenId = "",
-      userId = "",
-      userEmail = "",
-      email = "",
-      items = [],
-      subtotal = 0,
-      tax = 0,
-      shipping = 0,
-      discount = 0,
-      metadata = {},
-    } = req.body || {};
-
-    const clientOrderRef =
-      safeString(orderId || ordenId) || createMobilePaymentRef();
-
-    const finalUserId = safeString(userId);
-    const finalEmail = safeString(userEmail || email);
-    const finalCurrency = normalizeCurrency(currency);
-
-    orden = await buildMongoOrderFromMobilePayload({
-      items,
-      tax,
-      shipping,
-      discount,
-      currency: finalCurrency,
+    const { items = [], couponCode = "", shippingAddress = {} } = req.body || {};
+    const clientOrderRef = createMobilePaymentRef();
+    const finalUserId = req.firebaseUser.uid;
+    const finalEmail = req.firebaseUser.email;
+    const ordenPayload = {
+      items, couponCode, shippingAddress,
       firebaseUserId: finalUserId,
       userEmail: finalEmail,
-      firestoreOrderId: clientOrderRef,
       mobileOrderRef: clientOrderRef,
-      metadata,
-    });
+    };
+    orden = await buildMongoOrderFromMobilePayload(ordenPayload);
 
     const mongoOrdenId = String(orden._id);
     const stripeAmount = toStripeAmount(orden.total);
 
-    if (amount !== undefined && amount !== null) {
-      const clientAmount = toStripeAmount(amount);
-      const diff = Math.abs(clientAmount - stripeAmount);
-
-      if (diff > 1) {
-        throw Object.assign(
-          new Error("El total enviado por la app no coincide con el total calculado por backend."),
-          { statusCode: 400 }
-        );
-      }
-    }
-
-    const sanitizedMetadata = sanitizeMetadata(metadata);
-
     const result = await crearPaymentIntentMobile({
       amount: stripeAmount,
-      currency: finalCurrency,
+      currency: orden.moneda,
       clienteEmail: finalEmail || null,
       metadata: {
-        ...sanitizedMetadata,
-
         ordenId: mongoOrdenId,
         orderId: mongoOrdenId,
         mongoOrdenId,
 
-        firestoreOrderId: clientOrderRef,
         mobileOrderRef: clientOrderRef,
         clientOrderId: clientOrderRef,
 
@@ -481,11 +412,13 @@ router.post("/payment-sheet", async (req, res) => {
 
     await orden.save();
 
+    const pricing = { subtotal: orden.subtotal, tax: orden.tax, shipping: orden.shipping, discount: orden.discount, total: orden.total };
     return res.status(201).json({
       ok: true,
       message: "Orden Mongo y PaymentIntent creados correctamente.",
       data: {
         ...result,
+        pricing,
         mongoOrdenId,
         ordenId: mongoOrdenId,
         orderId: mongoOrdenId,
@@ -496,6 +429,9 @@ router.post("/payment-sheet", async (req, res) => {
       ordenId: mongoOrdenId,
       orderId: mongoOrdenId,
       firestoreOrderId: clientOrderRef,
+      pricing,
+      customerId: result.customerId,
+      ephemeralKeySecret: result.ephemeralKeySecret,
       clientSecret: result.clientSecret,
       paymentIntentId: result.paymentIntentId,
       clientOrderRef,
@@ -530,14 +466,13 @@ router.post("/webhook", validarStripeWebhookRequest, async (req, res) => {
   } catch (err) {
     console.error("❌ Error en webhook Stripe", {
       reqId: getRequestId(req),
-      message: err?.message,
       code: err?.code,
       type: err?.type,
     });
 
-    return res.status(200).json({
+    return res.status(500).json({
       ok: false,
-      message: "Webhook error handled safely",
+      message: "Webhook processing failed",
       reqId: getRequestId(req),
     });
   }

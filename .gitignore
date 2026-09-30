@@ -47,3 +47,35 @@ backend-multi/.env
 backend-multi/serviceAccountKey.json
 
 backend-multi/scripts/crearAdminTemporal.js
+
+# Secrets in every application and directory. Examples must contain placeholders only.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*serviceAccount*.json
+*service-account*.json
+*service_account*.json
+*[Ss]ervice[Aa]ccount*.json
+*firebase-adminsdk*.json
+*credentials*.json
+*.pem
+*.key
+*.pfx
+*.p12
+*.p8
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+*.ppk
+id_rsa*
+id_ed25519*
+.aws/
+.ssh/
+.netrc
+.npmrc
+.pypirc
+# Local Firebase utility that writes to Firestore
+/backend-multi/test-firebase.js

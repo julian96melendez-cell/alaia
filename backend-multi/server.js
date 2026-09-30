@@ -1,6 +1,9 @@
 "use strict";
 
 require("dotenv").config();
+require("./src/utils/safeLogging").installSafeLogging();
+const { getAllowedOrigins, createOriginValidator } = require("./src/config/cors");
+const { redactText } = require("./src/utils/safeLogging");
 const ordenRoutes = require("./src/routes/ordenRoutes");
 const crypto = require("crypto");
 const express = require("express");
@@ -43,19 +46,9 @@ const TRUST_PROXY = (() => {
   return raw;
 })();
 
-const CLIENT_URLS = String(process.env.CLIENT_URL || "")
-  .split(",")
-  .map((v) => v.trim())
-  .filter(Boolean);
-
-const LOCAL_DEV_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"];
-
-const ALLOWED_ORIGINS = Array.from(
-  new Set([...CLIENT_URLS, ...(!isProd ? LOCAL_DEV_ORIGINS : [])])
-);
-
-if (isProd && CLIENT_URLS.length === 0) {
-  console.warn("⚠️ CLIENT_URL not set in production");
+const ALLOWED_ORIGINS = getAllowedOrigins();
+if (isProd && ALLOWED_ORIGINS.size === 0) {
+  console.warn("No hay orígenes web autorizados; configura CORS_ALLOWED_ORIGINS o CLIENT_URL");
 }
 
 app.disable("x-powered-by");
@@ -114,18 +107,7 @@ app.use(
 
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-
-      const allowed =
-        ALLOWED_ORIGINS.includes(origin) || origin.endsWith(".vercel.app");
-
-      if (allowed) return callback(null, true);
-
-      const err = new Error(`Origin no permitido por CORS: ${origin}`);
-      err.statusCode = 403;
-      return callback(err);
-    },
+    origin: createOriginValidator(ALLOWED_ORIGINS),
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
@@ -147,7 +129,8 @@ app.use(
   morgan(
     isProd
       ? ':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" reqId=:reqId'
-      : "dev"
+      : "dev",
+    { stream: { write: (line) => process.stdout.write(redactText(line)) } }
   )
 );
 
@@ -369,7 +352,7 @@ function gracefulShutdown(signal, exitCode = 0) {
 
     server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 BACKEND RUNNING ON ${PORT}`);
-      console.log("🌐 Allowed origins:", ALLOWED_ORIGINS);
+      console.log("🌐 Allowed origins:", [...ALLOWED_ORIGINS]);
       console.log("🛡️ Trust proxy:", TRUST_PROXY);
     });
 

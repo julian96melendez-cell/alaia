@@ -1,166 +1,495 @@
 import { Ionicons } from "@expo/vector-icons";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
+
 import Colors from "../../constants/Colors";
-import { router } from "expo-router";
+import {
+  getAllProducts,
+  type Product,
+} from "../../services/products";
 
 /* ──────────────────────────────────────────── */
 /*                HOME SCREEN                   */
 /* ──────────────────────────────────────────── */
 
 export default function HomeScreen() {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+
+  /* ──────────────────────────────────────────── */
+  /*            CARGAR PRODUCTOS MONGO             */
+  /* ──────────────────────────────────────────── */
+
+  const loadProducts = useCallback(async () => {
+    try {
+      setError("");
+      setLoading(true);
+
+      const data = await getAllProducts(true);
+
+      console.log("✅ PRODUCTOS MONGO:", data);
+
+      setProducts(data);
+    } catch (err: any) {
+      console.log("❌ ERROR PRODUCTOS:", err);
+
+      setError(
+        err?.message ||
+          "No pudimos cargar los productos en este momento."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProducts();
+    }, [loadProducts])
+  );
+
+  /* ──────────────────────────────────────────── */
+  /*                 CATEGORÍAS                   */
+  /* ──────────────────────────────────────────── */
+
+  const categories = useMemo(() => {
+    const values = products
+      .map((product) => product.category?.trim())
+      .filter((value): value is string => Boolean(value));
+
+    return Array.from(new Set(values));
+  }, [products]);
+
+  /* ──────────────────────────────────────────── */
+  /*             FILTRAR PRODUCTOS                */
+  /* ──────────────────────────────────────────── */
+
+  const filteredProducts = useMemo(() => {
+    const query = search.trim().toLowerCase();
+
+    return products.filter((product) => {
+      const matchesSearch =
+        !query ||
+        product.name.toLowerCase().includes(query) ||
+        product.category.toLowerCase().includes(query) ||
+        product.description?.toLowerCase().includes(query);
+
+      const matchesCategory =
+        !selectedCategory ||
+        product.category.toLowerCase() === selectedCategory.toLowerCase();
+
+      return matchesSearch && matchesCategory;
+    });
+  }, [products, search, selectedCategory]);
+
+  /* ──────────────────────────────────────────── */
+  /*              ABRIR PRODUCTO                  */
+  /* ──────────────────────────────────────────── */
+
+  const openProduct = (product: Product) => {
+    router.push({
+      pathname: "/product/[id]",
+      params: {
+        id: product.mongoId || product.id,
+      },
+    });
+  };
+
+  const clearFilters = () => {
+    setSearch("");
+    setSelectedCategory(null);
+  };
+
   return (
     <ScrollView
       style={styles.container}
       showsVerticalScrollIndicator={false}
-      contentContainerStyle={{ paddingBottom: 80 }}
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={{ paddingBottom: 100 }}
     >
-      {/* 🟦 ENCABEZADO */}
-      <Animated.View entering={FadeInDown.duration(400)} style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>Hola 👋</Text>
+      {/* ENCABEZADO */}
+
+      <Animated.View
+        entering={FadeInDown.duration(400)}
+        style={styles.header}
+      >
+        <View style={styles.headerTextWrap}>
+          <Text style={styles.headerTitle}>Explorar 🔎</Text>
+
           <Text style={styles.headerSubtitle}>
-            ¿Qué te gustaría explorar hoy?
+            Encuentra lo que necesitas
           </Text>
         </View>
 
         <Pressable
           style={styles.avatarWrap}
-          onPress={() => router.push("/profile")}
+          onPress={() => router.push("/profile" as any)}
         >
           <Ionicons
             name="person-circle-outline"
-            size={42}
+            size={46}
             color={Colors.light.primary}
           />
         </Pressable>
       </Animated.View>
 
-      {/* 🔍 BUSCADOR */}
-      <Animated.View entering={FadeInDown.delay(150)} style={styles.searchBox}>
-        <Ionicons name="search" size={20} color="#94A3B8" />
-        <Text style={styles.searchText}>Buscar productos...</Text>
+      {/* BUSCADOR REAL */}
+
+      <Animated.View
+        entering={FadeInDown.delay(150)}
+        style={styles.searchBox}
+      >
+        <Ionicons
+          name="search-outline"
+          size={24}
+          color="#94A3B8"
+        />
+
+        <TextInput
+          style={styles.searchInput}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Buscar productos..."
+          placeholderTextColor="#94A3B8"
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+        />
+
+        {search.length > 0 && (
+          <Pressable onPress={() => setSearch("")}>
+            <Ionicons
+              name="close-circle"
+              size={22}
+              color="#94A3B8"
+            />
+          </Pressable>
+        )}
       </Animated.View>
 
-      {/* 🔥 CATEGORÍAS */}
+      {/* CATEGORÍAS */}
+
       <Animated.View entering={FadeInDown.delay(250)}>
-        <Text style={styles.sectionTitle}>Categorías</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Categorías</Text>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {categories.map((c, i) => (
-            <Animated.View
-              entering={FadeInDown.delay(300 + i * 80)}
-              key={i}
-            >
-              <Pressable
-                style={styles.categoryCard}
-                onPress={() =>
-                  router.push({
-                    pathname: "/category/[slug]",
-                    params: { slug: c.title },
-                  })
-                }
-              >
-                <Ionicons
-                  name={c.icon as any}
-                  size={28}
-                  color={Colors.light.primary}
-                />
-                <Text style={styles.categoryText}>{c.title}</Text>
-              </Pressable>
-            </Animated.View>
-          ))}
-        </ScrollView>
-      </Animated.View>
-
-      {/* ⭐ PRODUCTOS DESTACADOS */}
-      <Animated.View entering={FadeInDown.delay(450)}>
-        <Text style={styles.sectionTitle}>Destacados</Text>
-
-        <View style={styles.grid}>
-          {products.map((p, i) => (
-            <Animated.View
-              entering={FadeInDown.delay(500 + i * 120)}
-              key={i}
-            >
-              <Pressable
-                style={styles.card}
-                onPress={() =>
-                  router.push({
-                    pathname: "/product/[id]",
-                    params: {
-                      id: p.id,
-                      name: p.title,
-                      price: p.price,
-                      image: p.img,
-                      category: p.category,
-                    },
-                  })
-                }
-              >
-                <Image source={{ uri: p.img }} style={styles.cardImg} />
-
-                <View style={{ marginTop: 10 }}>
-                  <Text style={styles.cardTitle}>{p.title}</Text>
-                  <Text style={styles.cardPrice}>${p.price}</Text>
-                </View>
-              </Pressable>
-            </Animated.View>
-          ))}
+          {selectedCategory && (
+            <Pressable onPress={() => setSelectedCategory(null)}>
+              <Text style={styles.clearText}>Ver todas</Text>
+            </Pressable>
+          )}
         </View>
+
+        {loading ? (
+          <View style={styles.categoriesLoading}>
+            <ActivityIndicator
+              size="small"
+              color={Colors.light.primary}
+            />
+          </View>
+        ) : categories.length > 0 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoriesContent}
+          >
+            {categories.map((category, index) => {
+              const selected =
+                selectedCategory?.toLowerCase() ===
+                category.toLowerCase();
+
+              return (
+                <Animated.View
+                  entering={FadeInDown.delay(300 + index * 60)}
+                  key={category}
+                >
+                  <Pressable
+                    style={[
+                      styles.categoryCard,
+                      selected && styles.categoryCardSelected,
+                    ]}
+                    onPress={() =>
+                      setSelectedCategory(
+                        selected ? null : category
+                      )
+                    }
+                  >
+                    <Ionicons
+                      name={getCategoryIcon(category)}
+                      size={28}
+                      color={
+                        selected
+                          ? "#FFFFFF"
+                          : Colors.light.primary
+                      }
+                    />
+
+                    <Text
+                      style={[
+                        styles.categoryText,
+                        selected &&
+                          styles.categoryTextSelected,
+                      ]}
+                    >
+                      {category}
+                    </Text>
+                  </Pressable>
+                </Animated.View>
+              );
+            })}
+          </ScrollView>
+        ) : (
+          <Text style={styles.emptyCategoryText}>
+            Todavía no hay categorías disponibles.
+          </Text>
+        )}
       </Animated.View>
 
-      {/* 🔵 CTA FINAL */}
-      <Animated.View entering={FadeInDown.delay(900)} style={styles.ctaBox}>
-        <Text style={styles.ctaTitle}>Explora miles de productos</Text>
-        <Text style={styles.ctaSubtitle}>Nuevas ofertas todos los días</Text>
+      {/* PRODUCTOS */}
 
-        <Pressable style={styles.ctaButton}>
-          <Text style={styles.ctaButtonText}>Ver más</Text>
-        </Pressable>
+      <Animated.View entering={FadeInDown.delay(450)}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>
+            {selectedCategory
+              ? selectedCategory
+              : search
+                ? "Resultados"
+                : "Productos"}
+          </Text>
+
+          {!loading && (
+            <Text style={styles.resultCount}>
+              {filteredProducts.length}
+            </Text>
+          )}
+        </View>
+
+        {loading ? (
+          <View style={styles.centerState}>
+            <ActivityIndicator
+              size="large"
+              color={Colors.light.primary}
+            />
+
+            <Text style={styles.stateText}>
+              Cargando productos...
+            </Text>
+          </View>
+        ) : error ? (
+          <View style={styles.errorBox}>
+            <Ionicons
+              name="cloud-offline-outline"
+              size={42}
+              color="#DC2626"
+            />
+
+            <Text style={styles.errorTitle}>
+              No pudimos cargar los productos
+            </Text>
+
+            <Text style={styles.errorText}>{error}</Text>
+
+            <Pressable
+              style={styles.retryButton}
+              onPress={loadProducts}
+            >
+              <Text style={styles.retryButtonText}>
+                Reintentar
+              </Text>
+            </Pressable>
+          </View>
+        ) : filteredProducts.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Ionicons
+              name="search-outline"
+              size={46}
+              color="#94A3B8"
+            />
+
+            <Text style={styles.emptyTitle}>
+              No encontramos productos
+            </Text>
+
+            <Text style={styles.emptyText}>
+              Prueba otra búsqueda o elimina los filtros.
+            </Text>
+
+            <Pressable
+              style={styles.clearButton}
+              onPress={clearFilters}
+            >
+              <Text style={styles.clearButtonText}>
+                Mostrar todos
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.grid}>
+            {filteredProducts.map((product, index) => (
+              <Animated.View
+                entering={FadeInDown.delay(
+                  Math.min(500 + index * 80, 1000)
+                )}
+                key={product.id}
+                style={styles.gridItem}
+              >
+                <Pressable
+                  style={styles.card}
+                  onPress={() => openProduct(product)}
+                >
+                  {product.image ? (
+                    <Image
+                      source={{ uri: product.image }}
+                      style={styles.cardImg}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={styles.imagePlaceholder}>
+                      <Ionicons
+                        name="cube-outline"
+                        size={42}
+                        color={Colors.light.primary}
+                      />
+
+                      <Text style={styles.placeholderText}>
+                        ALAIA
+                      </Text>
+                    </View>
+                  )}
+
+                  <View style={styles.cardContent}>
+                    <Text
+                      style={styles.cardTitle}
+                      numberOfLines={2}
+                    >
+                      {product.name}
+                    </Text>
+
+                    <Text style={styles.cardCategory}>
+                      {product.category}
+                    </Text>
+
+                    <View style={styles.priceRow}>
+                      <Text style={styles.cardPrice}>
+                        ${product.price.toFixed(2)}
+                      </Text>
+
+                      {typeof product.stock === "number" && (
+                        <Text
+                          style={[
+                            styles.stockText,
+                            product.stock <= 0 &&
+                              styles.outOfStockText,
+                          ]}
+                        >
+                          {product.stock > 0
+                            ? `${product.stock} disponibles`
+                            : "Agotado"}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                </Pressable>
+              </Animated.View>
+            ))}
+          </View>
+        )}
       </Animated.View>
+
+      {/* CTA */}
+
+      {!loading && products.length > 0 && (
+        <Animated.View
+          entering={FadeInDown.delay(800)}
+          style={styles.ctaBox}
+        >
+          <Text style={styles.ctaTitle}>
+            Explora todos nuestros productos
+          </Text>
+
+          <Text style={styles.ctaSubtitle}>
+            Productos reales disponibles en ALAIA
+          </Text>
+
+          <Pressable
+            style={styles.ctaButton}
+            onPress={clearFilters}
+          >
+            <Text style={styles.ctaButtonText}>
+              Ver todos
+            </Text>
+          </Pressable>
+        </Animated.View>
+      )}
     </ScrollView>
   );
 }
 
 /* ──────────────────────────────────────────── */
-/*                    DATA                      */
+/*              CATEGORY ICONS                  */
 /* ──────────────────────────────────────────── */
 
-const categories = [
-  { title: "Tecnología", icon: "laptop-outline" },
-  { title: "Salud", icon: "fitness-outline" },
-  { title: "Hogar", icon: "home-outline" },
-  { title: "Belleza", icon: "sparkles-outline" },
-  { title: "Ropa", icon: "shirt-outline" },
-];
+function getCategoryIcon(category: string): any {
+  const value = category.toLowerCase();
 
-const products = [
-  {
-    id: "1",
-    title: "Smartwatch Pro",
-    price: "129",
-    img: "https://i.imgur.com/UYiroysl.jpg",
-    category: "Tecnología",
-  },
-  {
-    id: "2",
-    title: "Audífonos Air Max",
-    price: "199",
-    img: "https://i.imgur.com/t6nQKFFl.jpg",
-    category: "Tecnología",
-  },
-];
+  if (
+    value.includes("tecn") ||
+    value.includes("electr")
+  ) {
+    return "phone-portrait-outline";
+  }
+
+  if (
+    value.includes("moda") ||
+    value.includes("ropa")
+  ) {
+    return "shirt-outline";
+  }
+
+  if (
+    value.includes("belleza") ||
+    value.includes("cosm")
+  ) {
+    return "sparkles-outline";
+  }
+
+  if (
+    value.includes("hogar") ||
+    value.includes("casa")
+  ) {
+    return "home-outline";
+  }
+
+  if (
+    value.includes("salud") ||
+    value.includes("fitness")
+  ) {
+    return "fitness-outline";
+  }
+
+  if (value.includes("prueba")) {
+    return "flask-outline";
+  }
+
+  return "cube-outline";
+}
 
 /* ──────────────────────────────────────────── */
-/*                    STYLES                   */
+/*                    STYLES                    */
 /* ──────────────────────────────────────────── */
 
 const styles = StyleSheet.create({
@@ -170,116 +499,314 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
 
-  /* HEADER */
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     marginTop: 20,
   },
+
+  headerTextWrap: {
+    flex: 1,
+  },
+
   headerTitle: {
-    fontSize: 26,
+    fontSize: 30,
     fontWeight: "800",
     color: Colors.light.text,
   },
+
   headerSubtitle: {
-    fontSize: 14,
+    fontSize: 16,
     color: Colors.light.textSecondary,
     marginTop: 4,
   },
-  avatarWrap: { borderRadius: 50, overflow: "hidden" },
 
-  /* SEARCH */
+  avatarWrap: {
+    borderRadius: 50,
+    overflow: "hidden",
+  },
+
   searchBox: {
-    marginTop: 20,
+    marginTop: 24,
     backgroundColor: "#F1F5F9",
-    padding: 14,
-    borderRadius: 14,
+    minHeight: 58,
+    paddingHorizontal: 16,
+    borderRadius: 18,
     flexDirection: "row",
     alignItems: "center",
   },
-  searchText: { marginLeft: 10, color: "#94A3B8", fontSize: 15 },
 
-  /* SECTION TITLES */
+  searchInput: {
+    flex: 1,
+    marginLeft: 10,
+    fontSize: 16,
+    color: Colors.light.text,
+    paddingVertical: 14,
+  },
+
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
   sectionTitle: {
-    fontSize: 20,
-    fontWeight: "700",
+    fontSize: 22,
+    fontWeight: "800",
     marginTop: 30,
     marginBottom: 14,
     color: Colors.light.text,
   },
 
-  /* CATEGORY CARDS */
+  clearText: {
+    marginTop: 18,
+    color: Colors.light.primary,
+    fontWeight: "700",
+  },
+
+  resultCount: {
+    marginTop: 18,
+    color: Colors.light.textSecondary,
+    fontWeight: "700",
+  },
+
+  categoriesContent: {
+    paddingRight: 20,
+    paddingBottom: 4,
+  },
+
+  categoriesLoading: {
+    height: 100,
+    justifyContent: "center",
+  },
+
   categoryCard: {
-    backgroundColor: "#FFF",
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderRadius: 18,
+    minWidth: 125,
+    minHeight: 105,
+    backgroundColor: "#FFFFFF",
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    borderRadius: 20,
     marginRight: 12,
     alignItems: "center",
+    justifyContent: "center",
     shadowColor: "#000",
     shadowOpacity: 0.06,
     shadowRadius: 7,
     elevation: 2,
   },
-  categoryText: {
-    marginTop: 8,
-    fontWeight: "600",
-    color: Colors.light.text,
+
+  categoryCardSelected: {
+    backgroundColor: Colors.light.primary,
   },
 
-  /* PRODUCT GRID */
+  categoryText: {
+    marginTop: 9,
+    fontWeight: "700",
+    color: Colors.light.text,
+    textAlign: "center",
+  },
+
+  categoryTextSelected: {
+    color: "#FFFFFF",
+  },
+
+  emptyCategoryText: {
+    color: Colors.light.textSecondary,
+    marginBottom: 10,
+  },
+
   grid: {
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "space-between",
   },
+
+  gridItem: {
+    width: "48%",
+  },
+
   card: {
-    width: 160,
-    backgroundColor: "#FFF",
-    borderRadius: 18,
+    width: "100%",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
     padding: 12,
-    marginBottom: 20,
+    marginBottom: 18,
     shadowColor: "#000",
     shadowOpacity: 0.07,
     shadowRadius: 8,
     elevation: 3,
   },
+
   cardImg: {
     width: "100%",
-    height: 110,
-    borderRadius: 12,
+    height: 145,
+    borderRadius: 14,
+    backgroundColor: "#F1F5F9",
   },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: Colors.light.text,
+
+  imagePlaceholder: {
+    width: "100%",
+    height: 145,
+    borderRadius: 14,
+    backgroundColor: "#EEF2FF",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  cardPrice: {
-    fontSize: 14,
-    fontWeight: "700",
+
+  placeholderText: {
+    marginTop: 7,
     color: Colors.light.primary,
+    fontWeight: "800",
+    letterSpacing: 1,
+  },
+
+  cardContent: {
+    paddingTop: 10,
+  },
+
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: Colors.light.text,
+    minHeight: 40,
+  },
+
+  cardCategory: {
+    fontSize: 12,
+    color: Colors.light.textSecondary,
     marginTop: 4,
   },
 
-  /* CTA */
-  ctaBox: {
-    backgroundColor: Colors.light.primary,
-    borderRadius: 22,
-    padding: 28,
-    marginVertical: 40,
+  priceRow: {
+    marginTop: 8,
   },
-  ctaTitle: { color: "#FFF", fontSize: 22, fontWeight: "800" },
-  ctaSubtitle: { color: "#FFF", opacity: 0.9, marginTop: 4 },
-  ctaButton: {
-    backgroundColor: "#FFF",
-    borderRadius: 14,
-    paddingVertical: 10,
-    marginTop: 18,
+
+  cardPrice: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: Colors.light.primary,
+  },
+
+  stockText: {
+    fontSize: 11,
+    color: "#16A34A",
+    fontWeight: "600",
+    marginTop: 3,
+  },
+
+  outOfStockText: {
+    color: "#DC2626",
+  },
+
+  centerState: {
+    paddingVertical: 50,
     alignItems: "center",
   },
+
+  stateText: {
+    marginTop: 12,
+    color: Colors.light.textSecondary,
+  },
+
+  errorBox: {
+    paddingVertical: 40,
+    alignItems: "center",
+    paddingHorizontal: 20,
+  },
+
+  errorTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: Colors.light.text,
+    marginTop: 12,
+    textAlign: "center",
+  },
+
+  errorText: {
+    marginTop: 8,
+    color: Colors.light.textSecondary,
+    textAlign: "center",
+  },
+
+  retryButton: {
+    marginTop: 18,
+    backgroundColor: Colors.light.primary,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+
+  retryButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+  },
+
+  emptyBox: {
+    paddingVertical: 40,
+    alignItems: "center",
+  },
+
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: Colors.light.text,
+    marginTop: 12,
+  },
+
+  emptyText: {
+    fontSize: 14,
+    color: Colors.light.textSecondary,
+    textAlign: "center",
+    marginTop: 6,
+  },
+
+  clearButton: {
+    marginTop: 18,
+    borderWidth: 1,
+    borderColor: Colors.light.primary,
+    paddingHorizontal: 22,
+    paddingVertical: 11,
+    borderRadius: 14,
+  },
+
+  clearButtonText: {
+    color: Colors.light.primary,
+    fontWeight: "700",
+  },
+
+  ctaBox: {
+    backgroundColor: Colors.light.primary,
+    borderRadius: 24,
+    padding: 28,
+    marginVertical: 32,
+  },
+
+  ctaTitle: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "800",
+  },
+
+  ctaSubtitle: {
+    color: "#FFFFFF",
+    opacity: 0.9,
+    marginTop: 6,
+    fontSize: 15,
+  },
+
+  ctaButton: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    paddingVertical: 12,
+    marginTop: 20,
+    alignItems: "center",
+  },
+
   ctaButtonText: {
     color: Colors.light.primary,
     fontSize: 16,
-    fontWeight: "700",
+    fontWeight: "800",
   },
 });

@@ -2,15 +2,15 @@
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { useCallback, useMemo, useState } from "react";
 import {
-    Alert,
-    FlatList,
-    ListRenderItem,
-    Platform,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Alert,
+  FlatList,
+  ListRenderItem,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
+
 import { useThemeContext } from "../../context/ThemeContext";
 
 type NotificationType = "pedido" | "promo" | "sistema" | "alerta";
@@ -22,6 +22,7 @@ type AppNotification = {
   message: string;
   time: string;
   read: boolean;
+  orderId?: string;
 };
 
 const MOCK_NOTIFICATIONS: AppNotification[] = [
@@ -32,6 +33,7 @@ const MOCK_NOTIFICATIONS: AppNotification[] = [
     message: "Estamos preparando tus artículos. Te avisaremos cuando salga a reparto.",
     time: "Hace 5 min",
     read: false,
+    orderId: "ORD-98231",
   },
   {
     id: "2",
@@ -71,8 +73,6 @@ const typeMeta = (
       return { icon: "settings-outline", color: "#10B981", label: "Sistema" };
     case "alerta":
       return { icon: "warning-outline", color: "#EF4444", label: "Alerta" };
-    default:
-      return { icon: "notifications-outline", color: "#6366F1", label: "Info" };
   }
 };
 
@@ -82,27 +82,45 @@ export default function NotificationsTabScreen() {
     useState<AppNotification[]>(MOCK_NOTIFICATIONS);
 
   const unreadCount = useMemo(
-    () => notifications.filter((n) => !n.read).length,
+    () => notifications.filter((item) => !item.read).length,
     [notifications]
   );
 
   const markAsRead = useCallback((id: string) => {
     setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+      prev.map((item) => (item.id === id ? { ...item, read: true } : item))
     );
   }, []);
 
   const deleteNotification = useCallback((id: string) => {
-    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    setNotifications((prev) => prev.filter((item) => item.id !== id));
   }, []);
+
+  const openNotification = useCallback(
+    (item: AppNotification) => {
+      markAsRead(item.id);
+
+      if (item.type === "pedido" && item.orderId) {
+        Alert.alert(
+          "Pedido",
+          `Abre Órdenes para ver el seguimiento de ${item.orderId}.`
+        );
+        return;
+      }
+
+      Alert.alert(item.title, item.message);
+    },
+    [markAsRead]
+  );
 
   const markAllAsRead = () => {
     if (!unreadCount) return;
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setNotifications((prev) => prev.map((item) => ({ ...item, read: true })));
   };
 
   const clearAll = () => {
     if (!notifications.length) return;
+
     Alert.alert("Limpiar bandeja", "¿Eliminar todas las notificaciones?", [
       { text: "Cancelar", style: "cancel" },
       {
@@ -117,14 +135,16 @@ export default function NotificationsTabScreen() {
     const meta = typeMeta(item.type);
 
     return (
-      <View
-        style={[
+      <Pressable
+        onPress={() => openNotification(item)}
+        style={({ pressed }) => [
           styles.card,
           {
             backgroundColor: isDarkMode ? "#020617" : "#FFFFFF",
             borderColor: isDarkMode ? "#1F2937" : "#E5E7EB",
-            opacity: item.read ? 0.6 : 1,
+            opacity: item.read ? 0.65 : 1,
           },
+          pressed && styles.pressed,
         ]}
       >
         <View style={styles.cardTop}>
@@ -132,7 +152,7 @@ export default function NotificationsTabScreen() {
             <View
               style={[
                 styles.iconCircle,
-                { backgroundColor: meta.color + "20" },
+                { backgroundColor: `${meta.color}20` },
               ]}
             >
               <Ionicons name={meta.icon} size={22} color={meta.color} />
@@ -145,6 +165,7 @@ export default function NotificationsTabScreen() {
               >
                 {item.title}
               </Text>
+
               <Text
                 style={[
                   styles.cardMessage,
@@ -164,10 +185,11 @@ export default function NotificationsTabScreen() {
                 >
                   {item.time}
                 </Text>
+
                 <View
                   style={[
                     styles.typePill,
-                    { borderColor: meta.color + "66" },
+                    { borderColor: `${meta.color}66` },
                   ]}
                 >
                   <Text style={[styles.typePillText, { color: meta.color }]}>
@@ -179,30 +201,24 @@ export default function NotificationsTabScreen() {
           </View>
 
           {!item.read && (
-            <View
-              style={[
-                styles.unreadDot,
-                { backgroundColor: meta.color },
-              ]}
-            />
+            <View style={[styles.unreadDot, { backgroundColor: meta.color }]} />
           )}
         </View>
 
         <View style={styles.actionsRow}>
           {!item.read && (
-            <TouchableOpacity
+            <Pressable
               style={styles.actionBtn}
               onPress={() => markAsRead(item.id)}
-              activeOpacity={0.85}
             >
               <MaterialIcons name="done" size={18} color="#10B981" />
               <Text style={[styles.actionText, { color: "#10B981" }]}>
-                Marcar como leída
+                Leída
               </Text>
-            </TouchableOpacity>
+            </Pressable>
           )}
 
-          <TouchableOpacity
+          <Pressable
             style={styles.actionBtn}
             onPress={() =>
               Alert.alert(
@@ -218,15 +234,14 @@ export default function NotificationsTabScreen() {
                 ]
               )
             }
-            activeOpacity={0.85}
           >
             <MaterialIcons name="delete-outline" size={18} color="#EF4444" />
             <Text style={[styles.actionText, { color: "#EF4444" }]}>
               Eliminar
             </Text>
-          </TouchableOpacity>
+          </Pressable>
         </View>
-      </View>
+      </Pressable>
     );
   };
 
@@ -236,57 +251,48 @@ export default function NotificationsTabScreen() {
         styles.root,
         {
           backgroundColor: colors.background,
-          paddingTop: Platform.OS === "ios" ? 52 : 24,
         },
       ]}
     >
-      {/* HEADER */}
       <View style={styles.headerRow}>
         <View>
           <Text style={[styles.headerTitle, { color: colors.text }]}>
             Notificaciones
           </Text>
+
           <Text
             style={[
               styles.headerSubtitle,
               { color: colors.textSecondary || "#9CA3AF" },
             ]}
           >
-            {unreadCount > 0
-              ? `${unreadCount} sin leer`
-              : "Todo al día ✨"}
+            {unreadCount > 0 ? `${unreadCount} sin leer` : "Todo al día ✨"}
           </Text>
         </View>
 
         <View style={styles.headerActions}>
-          <TouchableOpacity
+          <Pressable
             onPress={markAllAsRead}
             disabled={!unreadCount}
             style={[
               styles.chip,
               {
-                borderColor: colors.primary + "55",
+                borderColor: `${colors.primary}55`,
                 opacity: unreadCount ? 1 : 0.4,
               },
             ]}
-            activeOpacity={0.85}
           >
             <Ionicons
               name="checkmark-done-outline"
               size={16}
               color={colors.primary}
             />
-            <Text
-              style={[
-                styles.chipText,
-                { color: colors.primary },
-              ]}
-            >
+            <Text style={[styles.chipText, { color: colors.primary }]}>
               Leer todo
             </Text>
-          </TouchableOpacity>
+          </Pressable>
 
-          <TouchableOpacity
+          <Pressable
             onPress={clearAll}
             disabled={!notifications.length}
             style={[
@@ -296,18 +302,16 @@ export default function NotificationsTabScreen() {
                 opacity: notifications.length ? 1 : 0.4,
               },
             ]}
-            activeOpacity={0.85}
           >
             <Ionicons
               name="trash-outline"
               size={18}
               color={isDarkMode ? "#E5E7EB" : "#4B5563"}
             />
-          </TouchableOpacity>
+          </Pressable>
         </View>
       </View>
 
-      {/* LISTA / VACÍO */}
       {notifications.length === 0 ? (
         <View style={styles.empty}>
           <Ionicons
@@ -315,16 +319,18 @@ export default function NotificationsTabScreen() {
             size={64}
             color={isDarkMode ? "#475569" : "#CBD5E1"}
           />
+
           <Text style={[styles.emptyTitle, { color: colors.text }]}>
             Sin notificaciones
           </Text>
+
           <Text
             style={[
               styles.emptyText,
               { color: isDarkMode ? "#94A3B8" : "#64748B" },
             ]}
           >
-            Aquí aparecerán tus alertas de pedidos, promos y novedades.
+            Aquí aparecerán tus alertas de pedidos, promociones y novedades.
           </Text>
         </View>
       ) : (
@@ -332,7 +338,7 @@ export default function NotificationsTabScreen() {
           data={notifications}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
+          contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
         />
       )}
@@ -340,13 +346,14 @@ export default function NotificationsTabScreen() {
   );
 }
 
-/* ----------------------------- estilos --------------------------- */
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+    paddingTop: 24,
   },
-
+  pressed: {
+    opacity: 0.65,
+  },
   headerRow: {
     paddingHorizontal: 16,
     flexDirection: "row",
@@ -355,14 +362,14 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: "800",
+    fontSize: 24,
+    fontWeight: "900",
     letterSpacing: 0.2,
   },
   headerSubtitle: {
     marginTop: 4,
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   headerActions: {
     flexDirection: "row",
@@ -380,7 +387,7 @@ const styles = StyleSheet.create({
   },
   chipText: {
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   iconChip: {
     width: 32,
@@ -390,7 +397,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
+  listContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 32,
+  },
   card: {
     borderRadius: 18,
     borderWidth: 1,
@@ -418,12 +428,13 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: 15,
-    fontWeight: "800",
+    fontWeight: "900",
   },
   cardMessage: {
     fontSize: 14,
     marginTop: 4,
     fontWeight: "500",
+    lineHeight: 19,
   },
   metaRow: {
     flexDirection: "row",
@@ -433,7 +444,7 @@ const styles = StyleSheet.create({
   },
   time: {
     fontSize: 12,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   typePill: {
     borderRadius: 999,
@@ -443,7 +454,7 @@ const styles = StyleSheet.create({
   },
   typePillText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   unreadDot: {
     width: 10,
@@ -452,7 +463,6 @@ const styles = StyleSheet.create({
     marginLeft: 6,
     marginTop: 6,
   },
-
   actionsRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
@@ -466,9 +476,8 @@ const styles = StyleSheet.create({
   },
   actionText: {
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "800",
   },
-
   empty: {
     flex: 1,
     alignItems: "center",
@@ -477,7 +486,7 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     fontSize: 18,
-    fontWeight: "800",
+    fontWeight: "900",
     marginTop: 12,
   },
   emptyText: {

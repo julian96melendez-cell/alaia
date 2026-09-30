@@ -1,6 +1,15 @@
 // screens/WishlistScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  Timestamp,
+} from "firebase/firestore";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -15,27 +24,14 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
+import { auth, db } from "../../firebase/firebaseConfig";
 import { useCart } from "../context/CartContext";
 import { useThemeContext } from "../context/ThemeContext";
-import { auth } from "../firebase/firebaseConfig";
-
-// Firestore
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getFirestore,
-  onSnapshot,
-  orderBy,
-  query,
-  Timestamp,
-} from "firebase/firestore";
-
-const db = getFirestore();
 
 type WishItem = {
-  id: string;          // doc id en la subcolección wishlist
-  productId: string;   // id del producto real
+  id: string;
+  productId: string;
   name: string;
   price: number;
   image?: string;
@@ -53,17 +49,20 @@ export default function WishlistScreen() {
   const [items, setItems] = useState<WishItem[]>([]);
   const [queryText, setQueryText] = useState("");
 
-  // Animación de fade-in
   const fade = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    Animated.timing(fade, { toValue: 1, duration: 450, useNativeDriver: true }).start();
+    Animated.timing(fade, {
+      toValue: 1,
+      duration: 450,
+      useNativeDriver: true,
+    }).start();
   }, [fade]);
 
-  // Suscripción a Firestore
   useEffect(() => {
     const user = auth.currentUser;
-    if (!user) {
+
+    if (!user?.uid) {
       setItems([]);
       setLoading(false);
       return;
@@ -71,30 +70,47 @@ export default function WishlistScreen() {
 
     setLoading(true);
 
-    const q = query(
-      collection(db, "users", user.uid, "wishlist"),
-      orderBy("createdAt", "desc")
-    );
+    let unsubscribe: (() => void) | undefined;
 
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const data = snap.docs.map((d) => ({
-          id: d.id,
-          ...(d.data() as any),
-        })) as WishItem[];
-        setItems(data);
-        setLoading(false);
-      },
-      () => setLoading(false)
-    );
+    try {
+      const wishlistRef = collection(db, "users", user.uid, "wishlist");
 
-    return unsub;
+      const wishlistQuery = query(
+        wishlistRef,
+        orderBy("createdAt", "desc")
+      );
+
+      unsubscribe = onSnapshot(
+        wishlistQuery,
+        (snap) => {
+          const data = snap.docs.map((d) => ({
+            id: d.id,
+            ...(d.data() as Omit<WishItem, "id">),
+          }));
+
+          setItems(data);
+          setLoading(false);
+        },
+        (error) => {
+          console.log("WISHLIST SNAPSHOT ERROR:", error);
+          setLoading(false);
+          Alert.alert("Error", "No se pudieron cargar tus favoritos.");
+        }
+      );
+    } catch (error) {
+      console.log("WISHLIST QUERY CREATE ERROR:", error);
+      setLoading(false);
+      Alert.alert("Error", "No se pudo crear la consulta de favoritos.");
+    }
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
-  // Filtro local por texto
   const filtered = useMemo(() => {
     const t = queryText.trim().toLowerCase();
+
     if (!t) return items;
 
     return items.filter(
@@ -107,17 +123,19 @@ export default function WishlistScreen() {
 
   const removeFromWishlist = async (wishDocId: string) => {
     const user = auth.currentUser;
+
     try {
-      if (!user) return;
+      if (!user?.uid) return;
+
       await deleteDoc(doc(db, "users", user.uid, "wishlist", wishDocId));
-    } catch (e) {
-      console.error(e);
+    } catch (error) {
+      console.error("REMOVE WISHLIST ERROR:", error);
       Alert.alert("Error", "No se pudo eliminar de favoritos.");
     }
   };
 
-  const handleAddToCart = (item: WishItem) => {
-    addItem({
+  const handleAddToCart = async (item: WishItem) => {
+    await addItem({
       id: item.productId || item.id,
       name: item.name,
       price: item.price,
@@ -127,24 +145,32 @@ export default function WishlistScreen() {
       size: item.size,
       category: item.category,
     });
+
     Alert.alert("Agregado", `${item.name} se añadió al carrito.`);
   };
 
   const Empty = () => (
-    <View style={[styles.emptyWrap]}>
+    <View style={styles.emptyWrap}>
       <Ionicons name="heart-outline" size={64} color={colors.primary} />
-      <Text style={[styles.emptyTitle, { color: colors.text }]}>Tu lista está vacía</Text>
+
+      <Text style={[styles.emptyTitle, { color: colors.text }]}>
+        Tu lista está vacía
+      </Text>
+
       <Text
         style={[
           styles.emptySub,
-          { color: colors.textSecondary || (isDarkMode ? "#94A3B8" : "#64748B") },
+          {
+            color:
+              colors.textSecondary || (isDarkMode ? "#94A3B8" : "#64748B"),
+          },
         ]}
       >
         Explora productos y guarda tus favoritos para verlos aquí.
       </Text>
+
       <TouchableOpacity
         activeOpacity={0.9}
-        // 👉 Ir a la pantalla principal con Expo Router
         onPress={() => router.push("/")}
         style={[styles.cta, { backgroundColor: colors.primary }]}
       >
@@ -184,7 +210,7 @@ export default function WishlistScreen() {
         </Text>
 
         <Text style={[styles.price, { color: colors.primary }]}>
-          ${item.price.toFixed(2)}
+          ${Number(item.price || 0).toFixed(2)}
         </Text>
 
         <View style={styles.row}>
@@ -229,6 +255,7 @@ export default function WishlistScreen() {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
         <ActivityIndicator color={colors.primary} />
+
         <Text style={{ color: colors.text, marginTop: 8 }}>
           Cargando favoritos…
         </Text>
@@ -243,7 +270,6 @@ export default function WishlistScreen() {
         { backgroundColor: colors.background, opacity: fade },
       ]}
     >
-      {/* Header */}
       <View style={styles.header}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>
           Wishlist
@@ -251,7 +277,6 @@ export default function WishlistScreen() {
         <View style={{ width: 22 }} />
       </View>
 
-      {/* Search */}
       <View
         style={[
           styles.searchWrap,
@@ -266,6 +291,7 @@ export default function WishlistScreen() {
           size={18}
           color={colors.textSecondary || "#94A3B8"}
         />
+
         <TextInput
           value={queryText}
           onChangeText={setQueryText}
@@ -274,6 +300,7 @@ export default function WishlistScreen() {
           style={[styles.searchInput, { color: colors.text }]}
           returnKeyType="search"
         />
+
         {queryText.length > 0 && (
           <TouchableOpacity onPress={() => setQueryText("")}>
             <Ionicons
@@ -285,7 +312,6 @@ export default function WishlistScreen() {
         )}
       </View>
 
-      {/* Lista */}
       {filtered.length === 0 ? (
         <Empty />
       ) : (
@@ -301,7 +327,6 @@ export default function WishlistScreen() {
   );
 }
 
-/* ───────────────────────── estilos ───────────────────────── */
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },

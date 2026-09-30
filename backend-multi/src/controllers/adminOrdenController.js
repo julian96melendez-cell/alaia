@@ -719,11 +719,9 @@ exports.adminActualizarEstado = async (req, res) => {
     const prevFulfillment = orden.estadoFulfillment;
     const prevPago = orden.estadoPago;
 
-    if (FLAGS.ENFORCE_PAYMENT_IS_STRIPE_ONLY && estadoPago === "pagado") {
-      return bad(
-        res,
-        "Pago solo puede marcarlo Stripe (ENFORCE_PAYMENT_IS_STRIPE_ONLY activo)"
-      );
+    if (estadoPago && estadoPago !== orden.estadoPago &&
+        (orden.paymentProvider === "stripe" || orden.metodoPago === "stripe" || estadoPago === "pagado")) {
+      return bad(res, "El estado financiero lo confirma Stripe mediante webhook");
     }
 
     if (

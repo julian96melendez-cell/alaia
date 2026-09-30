@@ -1,8 +1,7 @@
 // screens/ProfileScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
-import { useNavigation } from "@react-navigation/native";
-import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as ImagePicker from "expo-image-picker";
+import { useRouter } from "expo-router";
 import React, {
   useCallback,
   useEffect,
@@ -33,12 +32,9 @@ import {
   UploadTask,
 } from "firebase/storage";
 
-import { useAuth } from "../../../context/AuthContext";
-import { auth, storage } from "../../firebase/firebaseConfig";
+import { useAuth } from "../context/AuthContext";
+import { auth, storage } from "../firebase/firebaseConfig";
 import useTheme from "../hooks/useTheme";
-import type { RootStackParamList } from "../navigation/AppNavigator";
-
-type ProfileNavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
 type RowButtonProps = {
   icon: keyof typeof Ionicons.glyphMap;
@@ -85,24 +81,22 @@ const RowButton: React.FC<RowButtonProps> = ({
 };
 
 export default function ProfileScreen() {
-  const navigation = useNavigation<ProfileNavigationProp>();
+  const router = useRouter();
 
   const { colors, isDarkMode, toggleTheme } = useTheme();
   const { user, logout, updateUserProfile } = useAuth();
 
-  const [editOpen, setEditOpen] = useState<boolean>(false);
-  const [displayName, setDisplayName] = useState<string>(
-    user?.displayName || ""
-  );
+  const [editOpen, setEditOpen] = useState(false);
+  const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [localPhoto, setLocalPhoto] = useState<string | undefined>(undefined);
 
-  const [uploadPct, setUploadPct] = useState<number>(0);
-  const [uploading, setUploading] = useState<boolean>(false);
+  const [uploadPct, setUploadPct] = useState(0);
+  const [uploading, setUploading] = useState(false);
   const uploadTaskRef = useRef<UploadTask | null>(null);
 
   const initials = useMemo(() => {
     const name = user?.displayName || user?.email || "Usuario";
-    const parts = (name ?? "").split(" ").filter(Boolean);
+    const parts = name.split(" ").filter(Boolean);
 
     return `${(parts[0]?.[0] || "U").toUpperCase()}${(
       parts[1]?.[0] || ""
@@ -118,6 +112,10 @@ export default function ProfileScreen() {
       useNativeDriver: true,
     }).start();
   }, [isDarkMode, knobX]);
+
+  useEffect(() => {
+    setDisplayName(user?.displayName || "");
+  }, [user?.displayName]);
 
   const requestGalleryPermissions = useCallback(async () => {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -154,8 +152,8 @@ export default function ProfileScreen() {
     async (uri: string, uid: string): Promise<string> => {
       const response = await fetch(uri);
       const blob = await response.blob();
-      const key = `users/${uid}/avatar.jpg`;
-      const ref = storageRef(storage, key);
+
+      const ref = storageRef(storage, `users/${uid}/avatar.jpg`);
 
       return new Promise<string>((resolve, reject) => {
         const task = uploadBytesResumable(ref, blob, {
@@ -171,10 +169,9 @@ export default function ProfileScreen() {
           "state_changed",
           (snap) => {
             if (snap.totalBytes > 0) {
-              const pct = Math.round(
-                (snap.bytesTransferred / snap.totalBytes) * 100
+              setUploadPct(
+                Math.round((snap.bytesTransferred / snap.totalBytes) * 100)
               );
-              setUploadPct(pct);
             }
           },
           (err) => {
@@ -206,15 +203,11 @@ export default function ProfileScreen() {
   const cancelUpload = useCallback(() => {
     try {
       uploadTaskRef.current?.cancel();
-    } catch {
-      // no-op
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {
-    return () => {
-      cancelUpload();
-    };
+    return () => cancelUpload();
   }, [cancelUpload]);
 
   const onSaveProfile = useCallback(async () => {
@@ -285,9 +278,7 @@ export default function ProfileScreen() {
             try {
               const ref = storageRef(storage, `users/${user.uid}/avatar.jpg`);
               await deleteObject(ref);
-            } catch {
-              // Ignorar si no existe
-            }
+            } catch {}
 
             if (updateUserProfile) {
               await updateUserProfile(user.displayName || "", "");
@@ -314,13 +305,14 @@ export default function ProfileScreen() {
         onPress: async () => {
           try {
             await logout();
+            router.replace("/(auth)/login" as any);
           } catch {
             Alert.alert("Error", "No se pudo cerrar la sesión.");
           }
         },
       },
     ]);
-  }, [logout]);
+  }, [logout, router]);
 
   const currentAvatar = localPhoto || user?.photoURL;
 
@@ -348,7 +340,7 @@ export default function ProfileScreen() {
                 <View
                   style={[
                     styles.avatar,
-                    { backgroundColor: (colors.primary || "#6C63FF") + "22" },
+                    { backgroundColor: `${colors.primary || "#6C63FF"}22` },
                   ]}
                 >
                   <Text style={[styles.avatarTxt, { color: colors.primary }]}>
@@ -394,15 +386,7 @@ export default function ProfileScreen() {
               accessibilityRole="button"
             >
               <Ionicons name="trash-outline" size={14} color="#ef4444" />
-              <Text
-                style={{
-                  color: "#ef4444",
-                  fontWeight: "800",
-                  fontSize: 12,
-                }}
-              >
-                Quitar foto
-              </Text>
+              <Text style={styles.removePhotoText}>Quitar foto</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -414,21 +398,19 @@ export default function ProfileScreen() {
         <RowButton
           icon="receipt-outline"
           label="Mis pedidos"
-          onPress={() => navigation.navigate("Orders")}
+          onPress={() => router.push("/(tabs)/orders" as any)}
         />
 
         <RowButton
           icon="shield-checkmark-outline"
           label="Panel admin - Órdenes"
-          onPress={() => navigation.navigate("AdminOrders")}
+          onPress={() => router.push("/admin/orders" as any)}
         />
 
         <RowButton
           icon="heart-outline"
           label="Wishlist"
-          onPress={() => {
-            Alert.alert("Próximamente", "Wishlist en preparación.");
-          }}
+          onPress={() => router.push("/(tabs)/wishlist" as any)}
         />
 
         <RowButton
@@ -476,12 +458,7 @@ export default function ProfileScreen() {
         <RowButton
           icon="notifications-outline"
           label="Notificaciones"
-          onPress={() =>
-            Alert.alert(
-              "Próximamente",
-              "Preferencias de notificaciones en preparación."
-            )
-          }
+          onPress={() => router.push("/(tabs)/notifications" as any)}
         />
 
         <Text style={[styles.sectionTitle, { color: colors.text }]}>
@@ -583,13 +560,7 @@ export default function ProfileScreen() {
                 <Image source={{ uri: localPhoto }} style={styles.previewImg} />
 
                 <View style={{ flex: 1 }}>
-                  <Text
-                    style={{
-                      color: colors.text,
-                      fontWeight: "800",
-                      marginBottom: 6,
-                    }}
-                  >
+                  <Text style={[styles.previewTitle, { color: colors.text }]}>
                     Nueva foto seleccionada
                   </Text>
 
@@ -628,11 +599,7 @@ export default function ProfileScreen() {
                       </Text>
                     </View>
                   ) : (
-                    <Text
-                      style={{
-                        color: colors.textSecondary || "#94A3B8",
-                      }}
-                    >
+                    <Text style={{ color: colors.textSecondary || "#94A3B8" }}>
                       Al guardar, subiremos tu nueva foto a la nube.
                     </Text>
                   )}
@@ -701,7 +668,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
   },
   headerTitle: { fontSize: 20, fontWeight: "800" },
-
   card: {
     borderRadius: 16,
     padding: 14,
@@ -710,7 +676,6 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     marginBottom: 12,
   },
-
   userRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   avatar: {
     width: AVATAR,
@@ -723,7 +688,6 @@ const styles = StyleSheet.create({
   avatarTxt: { fontSize: 20, fontWeight: "800" },
   name: { fontSize: 18, fontWeight: "800" },
   email: { fontSize: 13, marginTop: 2, fontWeight: "700" },
-
   editBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -733,7 +697,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   editBtnText: { color: "#fff", fontSize: 13, fontWeight: "800" },
-
   removePhoto: {
     marginTop: 8,
     flexDirection: "row",
@@ -741,14 +704,17 @@ const styles = StyleSheet.create({
     gap: 6,
     alignSelf: "flex-start",
   },
-
+  removePhotoText: {
+    color: "#ef4444",
+    fontWeight: "800",
+    fontSize: 12,
+  },
   sectionTitle: {
     fontSize: 16,
     fontWeight: "800",
     marginTop: 8,
     marginBottom: 8,
   },
-
   rowBtn: {
     borderWidth: 1,
     borderRadius: 14,
@@ -761,7 +727,6 @@ const styles = StyleSheet.create({
   },
   rowLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   rowLabel: { fontSize: 14, fontWeight: "700" },
-
   switchPill: {
     width: 38,
     height: 22,
@@ -772,7 +737,6 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   switchDot: { width: 18, height: 18, borderRadius: 9 },
-
   logoutBtn: {
     marginTop: 6,
     borderWidth: 1.5,
@@ -784,7 +748,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   logoutTxt: { color: "#B91C1C", fontWeight: "800" },
-
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.35)",
@@ -812,7 +775,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 15,
   },
-
   previewRow: {
     flexDirection: "row",
     gap: 12,
@@ -820,10 +782,12 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   previewImg: { width: 72, height: 72, borderRadius: 16 },
-
+  previewTitle: {
+    fontWeight: "800",
+    marginBottom: 6,
+  },
   meterBg: { height: 8, borderRadius: 999, overflow: "hidden" },
   meterFill: { height: 8, borderRadius: 999 },
-
   modalActions: {
     marginTop: 14,
     flexDirection: "row",
@@ -841,7 +805,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   pickTxt: { fontWeight: "800" },
-
   cancelBtn: {
     flex: 1,
     borderWidth: 1.5,
@@ -853,7 +816,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cancelTxt: { fontWeight: "800" },
-
   saveBtn: {
     flex: 1,
     borderRadius: 12,
