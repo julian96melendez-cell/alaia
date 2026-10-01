@@ -1,3 +1,4 @@
+import { API_BASE_URL, apiUrl } from "./backend";
 // ======================================================
 // auth.ts — Frontend Auth Helper (Cookie-Based)
 // ======================================================
@@ -38,24 +39,8 @@ function emit() {
   });
 }
 
-function getApiBaseUrl(custom?: string) {
-  return (
-    custom ||
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    process.env.NEXT_PUBLIC_API_URL ||
-    ""
-  ).trim();
-}
-
-function buildApiUrl(path: string, customBaseUrl?: string) {
-  const base = getApiBaseUrl(customBaseUrl);
-
-  if (!base) return path;
-
-  const normalizedBase = base.replace(/\/$/, "");
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-
-  return `${normalizedBase}${normalizedPath}`;
+function buildApiUrl(path: string, _customBaseUrl?: string) {
+  return apiUrl(path);
 }
 
 function broadcastAuthEvent(type: AuthEventType) {
@@ -218,7 +203,7 @@ export function onAuthChange(fn: Listener) {
 export function __debugAuth() {
   return {
     mode: "cookie-based",
-    apiBaseUrl: getApiBaseUrl(),
+    apiBaseUrl: API_BASE_URL,
     currentUser: getCurrentUser(),
   };
 }

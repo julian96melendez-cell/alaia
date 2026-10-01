@@ -1,5 +1,4 @@
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL || "https://alaia-production.up.railway.app";
+import { apiUrl } from "../config/api";
 
 type ApiOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -18,7 +17,7 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetch(apiUrl(path), {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,

@@ -1,5 +1,6 @@
 "use client";
 
+import { apiUrl } from "../../lib/backend";
 import { clearCurrentUser, setCurrentUser } from "@/lib/auth";
 import type { AuthMeData, Usuario } from "@/lib/types";
 import { useRouter } from "next/navigation";
@@ -32,18 +33,7 @@ function FullPageLoader({ text }: { text: string }) {
   );
 }
 
-function getApiBaseUrl() {
-  return (
-    process.env.NEXT_PUBLIC_BACKEND_URL?.trim() ||
-    process.env.NEXT_PUBLIC_API_URL?.trim() ||
-    ""
-  );
-}
-
-function buildAuthMeUrl() {
-  const apiUrl = getApiBaseUrl();
-  return apiUrl ? `${apiUrl.replace(/\/$/, "")}/api/auth/me` : "/api/auth/me";
-}
+function buildAuthMeUrl() { return apiUrl("/api/auth/me"); }
 
 export default function AdminLayout({
   children,

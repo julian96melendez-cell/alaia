@@ -10,6 +10,7 @@
  * - Evita loops (no renderiza children si no está autorizado)
  */
 
+import { API_BASE_URL } from "../../frontend/lib/backend";
 import { getRefreshToken, getToken, logout, setTokens } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useRef, useState } from "react";
@@ -49,12 +50,7 @@ type AdminGuardProps = {
 
 let refreshingPromise: Promise<string | null> | null = null;
 
-function resolveBackendUrl() {
-  return (
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    "https://alaia-backend-multi.onrender.com"
-  );
-}
+function resolveBackendUrl() { return API_BASE_URL; }
 
 async function safeJson<T>(
   res: Response

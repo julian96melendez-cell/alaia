@@ -18,10 +18,8 @@ type ApiResponse<T> = {
   data?: T;
 };
 
-const BACKEND_URL =
-  process.env.EXPO_PUBLIC_BACKEND_URL ||
-  process.env.NEXT_PUBLIC_BACKEND_URL ||
-  "http://localhost:3001";
+// Legacy tracking hook; no current route imports it.
+import { apiUrl } from "../../../config/api";
 
 export function useTracking(ordenId: string) {
   const [data, setData] = useState<TrackingData | null>(null);
@@ -46,7 +44,7 @@ export function useTracking(ordenId: string) {
       setError(null);
 
       const res = await fetch(
-        `${BACKEND_URL}/api/ordenes/public/${ordenId}/timeline`
+        apiUrl(`/api/ordenes/public/${encodeURIComponent(ordenId)}/timeline`)
       );
 
       if (!res.ok) throw new Error("No se pudo cargar el tracking");
@@ -76,7 +74,7 @@ export function useTracking(ordenId: string) {
     stopStream();
 
     const es = new EventSource(
-      `${BACKEND_URL}/api/ordenes/public/${ordenId}/stream`
+      apiUrl(`/api/ordenes/public/${encodeURIComponent(ordenId)}/stream`)
     );
 
     eventSourceRef.current = es;

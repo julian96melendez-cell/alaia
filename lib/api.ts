@@ -1,8 +1,6 @@
 // lib/api.ts — HTTP client para Expo / Mobile
 
-const BACKEND_URL =
-  process.env.EXPO_PUBLIC_BACKEND_URL ||
-  "http://localhost:3001";
+import { apiUrl } from "../config/api";
 
 export type ApiResponse<T> = {
   ok: boolean;
@@ -15,7 +13,7 @@ async function request<T>(
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
   try {
-    const res = await fetch(`${BACKEND_URL}${path}`, {
+    const res = await fetch(apiUrl(path), {
       headers: {
         "Content-Type": "application/json",
         ...(options.headers || {}),

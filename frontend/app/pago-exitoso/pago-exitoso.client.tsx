@@ -1,12 +1,12 @@
 'use client';
 
+import { apiUrl } from "../../lib/backend";
 import { useEffect, useState } from 'react';
 
 // ==============================
 // Config
 // ==============================
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+// Legacy alternative client; configuration shared with the active page.
 
 // ==============================
 // Tipos (contrato backend)
@@ -74,7 +74,7 @@ export default function PagoExitosoClient({
     const cargarOrden = async () => {
       try {
         const response = await fetch(
-          `${API_URL}/api/ordenes/public/${ordenId}`,
+          apiUrl(`/api/ordenes/public/${encodeURIComponent(ordenId)}`),
           { signal: controller.signal }
         );
 

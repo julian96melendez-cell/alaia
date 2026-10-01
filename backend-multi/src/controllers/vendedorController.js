@@ -1,6 +1,8 @@
 // src/controllers/vendedorController.js
 "use strict";
 
+const { validateReturnUrl } = require("../config/returnUrls");
+
 const Vendedor = require("../models/Vendedor");
 
 // Stripe (usa tu stripeService existente si ya exporta stripe)
@@ -31,11 +33,6 @@ function mustStripe() {
 
 function env(key, def = "") {
   return (process.env[key] || def || "").trim();
-}
-
-function safeUrl(u) {
-  const s = String(u || "").trim();
-  return s || null;
 }
 
 /**
@@ -92,15 +89,15 @@ exports.iniciarOnboardingStripe = async (req, res, next) => {
 
     // URLs de retorno (tu frontend)
     const refreshUrl =
-      safeUrl(req.body?.refreshUrl) || safeUrl(env("STRIPE_ONBOARD_REFRESH_URL")) || safeUrl(env("CLIENT_URL"));
+      validateReturnUrl(env("STRIPE_ONBOARD_REFRESH_URL"), "STRIPE_ONBOARD_REFRESH_URL");
     const returnUrl =
-      safeUrl(req.body?.returnUrl) || safeUrl(env("STRIPE_ONBOARD_RETURN_URL")) || safeUrl(env("CLIENT_URL"));
+      validateReturnUrl(env("STRIPE_ONBOARD_RETURN_URL"), "STRIPE_ONBOARD_RETURN_URL");
 
     if (!refreshUrl || !returnUrl) {
       return ok(res, 400, {
         ok: false,
         message:
-          "Faltan URLs de onboarding. Define STRIPE_ONBOARD_REFRESH_URL y STRIPE_ONBOARD_RETURN_URL en .env (o envía refreshUrl/returnUrl).",
+          "Faltan URLs de onboarding. Define STRIPE_ONBOARD_REFRESH_URL y STRIPE_ONBOARD_RETURN_URL en el entorno.",
       });
     }
 

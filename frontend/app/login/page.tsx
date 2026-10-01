@@ -1,5 +1,6 @@
 "use client";
 
+import { apiUrl } from "../../lib/backend";
 import { setCurrentUser } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -28,25 +29,7 @@ type LoginResponse = {
   };
 };
 
-function getApiBaseUrl() {
-  return (
-    process.env.NEXT_PUBLIC_BACKEND_URL?.trim() ||
-    process.env.NEXT_PUBLIC_API_URL?.trim() ||
-    ""
-  );
-}
-
-function buildLoginUrl() {
-  const apiUrl = getApiBaseUrl();
-
-  if (!apiUrl) {
-    throw new Error(
-      "Falta NEXT_PUBLIC_API_URL o NEXT_PUBLIC_BACKEND_URL en el frontend."
-    );
-  }
-
-  return `${apiUrl.replace(/\/$/, "")}/api/auth/login`;
-}
+function buildLoginUrl() { return apiUrl("/api/auth/login"); }
 
 function getRedirectByRole(
   usuario: NonNullable<LoginResponse["data"]>["usuario"]

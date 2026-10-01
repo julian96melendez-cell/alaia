@@ -1,5 +1,7 @@
 "use strict";
 
+const { validateReturnUrl } = require("../config/returnUrls");
+
 const Stripe = require("stripe");
 
 if (!process.env.STRIPE_SECRET_KEY) {
@@ -67,14 +69,13 @@ function sanitizeMetadata(metadata = {}) {
 function getBaseUrl() {
   const base =
     safeStr(process.env.FRONTEND_URL) ||
-    safeStr(process.env.CLIENT_URL).split(",")[0]?.trim() ||
     "";
 
   if (!base) {
-    throw new Error("❌ Falta FRONTEND_URL o CLIENT_URL en el archivo .env");
+    throw new Error("❌ Falta FRONTEND_URL en el archivo .env");
   }
 
-  return base.replace(/\/$/, "");
+  return validateReturnUrl(base, "FRONTEND_URL").replace(/\/$/, "");
 }
 
 function withQuery(url, query) {
@@ -88,7 +89,7 @@ function getSuccessUrl(ordenId) {
     `${getBaseUrl()}/pago-exitoso`;
 
   return withQuery(
-    base,
+    validateReturnUrl(base, "STRIPE_SUCCESS_URL"),
     `ordenId=${encodeURIComponent(ordenId)}&session_id={CHECKOUT_SESSION_ID}`
   );
 }
@@ -98,7 +99,7 @@ function getCancelUrl(ordenId) {
     safeStr(process.env.STRIPE_CANCEL_URL) ||
     `${getBaseUrl()}/pago-cancelado`;
 
-  return withQuery(base, `ordenId=${encodeURIComponent(ordenId)}`);
+  return withQuery(validateReturnUrl(base, "STRIPE_CANCEL_URL"), `ordenId=${encodeURIComponent(ordenId)}`);
 }
 
 function normalizarLineItems(items = []) {

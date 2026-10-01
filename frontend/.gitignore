@@ -47,3 +47,6 @@ next-env.d.ts
 
 # backend env
 backend-multi/.env
+# Deliberately safe templates only
+!.env.example
+!.env.*.example

@@ -16,7 +16,9 @@ const hpp = require("hpp");
 const cookieParser = require("cookie-parser");
 
 const conectarDB = require("./src/config/db");
-const { startWorkers, stopWorkers } = require("./src/workers");
+const mongoose = require("mongoose");
+const { createReadinessHandler } = require("./src/config/readiness");
+let workers = null;
 
 const authRoutes = require("./src/routes/authRoutes");
 const stripeRoutes = require("./src/routes/stripeRoutes");
@@ -237,13 +239,7 @@ app.get("/healthz", (_req, res) => {
   });
 });
 
-app.get("/readyz", (_req, res) => {
-  res.status(200).json({
-    ok: true,
-    status: "ready",
-    timestamp: new Date().toISOString(),
-  });
-});
+app.get("/readyz", createReadinessHandler(mongoose.connection));
 
 // ======================================================
 // ROUTES
@@ -321,7 +317,7 @@ function gracefulShutdown(signal, exitCode = 0) {
   console.log(`[${signal}] Graceful shutdown started`);
 
   try {
-    stopWorkers();
+    workers?.stopWorkers();
   } catch (err) {
     console.error("Error stopping workers:", err?.message || err);
   }
@@ -348,7 +344,15 @@ function gracefulShutdown(signal, exitCode = 0) {
   try {
     await conectarDB();
 
-    startWorkers();
+    // Optional workers are explicitly enabled, never prerequisites for HTTP readiness.
+    if (process.env.API_WORKERS_ENABLED === "true") {
+      try {
+        workers = require("./src/workers");
+        workers.startWorkers();
+      } catch {
+        console.warn("Optional workers unavailable; API continues without workers");
+      }
+    }
 
     server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 BACKEND RUNNING ON ${PORT}`);

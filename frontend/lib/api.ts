@@ -1,3 +1,4 @@
+import { API_BASE_URL, apiUrl } from "./backend";
 // ======================================================
 // api.ts — HTTP Client Enterprise (Cookie-Based Auth)
 // ======================================================
@@ -26,27 +27,13 @@ const RETRY_BASE_DELAY_MS = 400;
 /**
  * Backend URL
  */
-function getBackendBaseUrl(): string {
-  return (
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    process.env.NEXT_PUBLIC_API_URL ||
-    ""
-  ).trim();
-}
+function getBackendBaseUrl(): string { return API_BASE_URL; }
 
 function isDev(): boolean {
   return process.env.NODE_ENV !== "production";
 }
 
-function joinUrl(base: string, path: string): string {
-  if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  if (!base) return path;
-
-  const cleanBase = base.replace(/\/+$/, "");
-  const cleanPath = path.startsWith("/") ? path : `/${path}`;
-
-  return `${cleanBase}${cleanPath}`;
-}
+function joinUrl(_base: string, path: string): string { return apiUrl(path); }
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));

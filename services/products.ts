@@ -1,7 +1,7 @@
 // services/products.ts
 
 import * as Network from "expo-network";
-import { API_BASE_URL } from "../config/api";
+import { apiUrl } from "../config/api";
 
 export interface Product {
   id: string; // _id real de MongoDB
@@ -122,7 +122,7 @@ function extractList(json: any): any[] {
 }
 
 async function requestJson(path: string) {
-  const url = `${API_BASE_URL}${path}`;
+  const url = apiUrl(path);
 
   console.log("🌐 PRODUCTS REQUEST URL:", url);
 
@@ -134,27 +134,6 @@ async function requestJson(path: string) {
       "📶 NETWORK STATE:",
       networkState
     );
-
-    // Prueba de diagnóstico:
-    // comprobar si fetch HTTPS funciona en general
-    try {
-      const testRes = await fetch(
-        "https://example.com",
-        {
-          method: "GET",
-        }
-      );
-
-      console.log(
-        "🧪 TEST FETCH STATUS:",
-        testRes.status
-      );
-    } catch (testError) {
-      console.log(
-        "🧪 TEST FETCH ERROR:",
-        testError
-      );
-    }
 
     // Petición real al backend
     const res = await fetch(url, {

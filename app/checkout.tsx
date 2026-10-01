@@ -11,7 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { API_BASE_URL } from "../config/api";
+import { apiUrl } from "../config/api";
 
 import Colors from "../constants/Colors";
 import { useAuth } from "../context/AuthContext";
@@ -203,7 +203,7 @@ export default function CheckoutScreen() {
 
       const response =
         await fetch(
-          `${API_BASE_URL}/api/stripe/payment-sheet`,
+          apiUrl("/api/stripe/payment-sheet"),
           {
             method:
               "POST",

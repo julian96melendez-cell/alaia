@@ -20,7 +20,7 @@ import {
 import Colors from "../constants/Colors";
 import { useAuth } from "../context/AuthContext";
 import { useCart } from "../context/CartContext";
-import { API_BASE_URL } from "../config/api";
+import { apiUrl } from "../config/api";
 
 const TAX_PERCENT = 0.07;
 const RETURN_URL = "alaiaclean://stripe-redirect";
@@ -179,7 +179,7 @@ export default function CheckoutScreen() {
   const requestPaymentIntent = async (): Promise<PaymentSheetResponse> => {
     if (!user) throw new Error("Debes iniciar sesión para continuar.");
     const token = await user.getIdToken();
-    const response = await fetch(`${API_BASE_URL}/api/stripe/payment-sheet`, {
+    const response = await fetch(apiUrl("/api/stripe/payment-sheet"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({

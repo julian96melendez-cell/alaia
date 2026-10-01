@@ -1,3 +1,4 @@
+import { apiUrl } from "../config/api";
 import { useEffect, useState } from "react";
 
 export function useTrackingWeb(ordenId: string) {
@@ -8,7 +9,7 @@ export function useTrackingWeb(ordenId: string) {
     if (!ordenId) return;
 
     const source = new EventSource(
-      `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/ordenes/public/${ordenId}/stream`
+      apiUrl(`/api/ordenes/public/${encodeURIComponent(ordenId)}/stream`)
     );
 
     source.onmessage = (event) => {

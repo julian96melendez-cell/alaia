@@ -15,7 +15,7 @@ import Animated, { FadeInUp } from "react-native-reanimated";
 
 import Colors from "../../constants/Colors";
 import { useAuth } from "../../context/AuthContext";
-import { API_BASE_URL } from "../../config/api";
+import { apiUrl } from "../../config/api";
 import { useAppNavigation } from "../../navigation/useAppNavigation";
 
 type OrderStatus =
@@ -229,7 +229,7 @@ export default function OrdersScreen() {
       try {
         const token = await user.getIdToken();
         if (!active) return;
-        const response = await fetch(`${API_BASE_URL}/api/ordenes/mobile/mias`, {
+        const response = await fetch(apiUrl("/api/ordenes/mobile/mias"), {
           headers: { Authorization: `Bearer ${token}` }, signal: requestController.signal,
         });
         const json = await response.json();

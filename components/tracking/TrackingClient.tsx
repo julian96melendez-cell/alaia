@@ -16,7 +16,7 @@ import {
   View,
 } from "react-native";
 
-import { API_BASE_URL } from "../../config/api";
+import { apiUrl } from "../../config/api";
 import Colors from "../../constants/Colors";
                  
 const REFRESH_INTERVAL_MS = 8000;
@@ -666,10 +666,7 @@ export default function TrackingClient({
           }
 
           const url =
-            `${API_BASE_URL}/api/ordenes/public/` +
-            encodeURIComponent(
-              cleanOrdenId
-            );
+            apiUrl(`/api/ordenes/public/${encodeURIComponent(cleanOrdenId)}`);
 
           console.log(
             "TRACKING REQUEST:",

@@ -1,3 +1,4 @@
+import { apiUrl as backendApiUrl } from "../../lib/backend";
 import Link from "next/link";
 import { Suspense } from "react";
 import AutoRefresh from "./AutoRefresh";
@@ -89,14 +90,6 @@ function Card({
   );
 }
 
-function getBackendUrl() {
-  return (
-    process.env.BACKEND_URL ||
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    process.env.NEXT_PUBLIC_API_URL ||
-    "http://localhost:3001"
-  ).replace(/\/$/, "");
-}
 
 function getPagoLabel(estadoPago: EstadoPago) {
   if (estadoPago === "pagado") return "✅ Pago confirmado";
@@ -119,7 +112,6 @@ export default async function PagoExitosoPage(props: {
   const sessionId = searchParams?.session_id;
 
   const isDev = process.env.NODE_ENV !== "production";
-  const backendUrl = getBackendUrl();
 
   let ordenId: string | undefined = ordenIdParam;
 
@@ -129,7 +121,7 @@ export default async function PagoExitosoPage(props: {
   if (!ordenId && sessionId) {
     try {
       const res = await fetch(
-        `${backendUrl}/api/pagos/estado?session_id=${encodeURIComponent(sessionId)}`,
+        backendApiUrl(`/api/pagos/estado?session_id=${encodeURIComponent(sessionId)}`),
         { cache: "no-store" }
       );
 
@@ -171,7 +163,7 @@ export default async function PagoExitosoPage(props: {
   }
 
   /* ---------------- Consulta pública de la orden ---------------- */
-  const apiUrl = `${backendUrl}/api/ordenes/public/${encodeURIComponent(ordenId)}`;
+  const apiUrl = backendApiUrl(`/api/ordenes/public/${encodeURIComponent(ordenId)}`);
 
   let response: ApiResponse<OrdenPublica> | null = null;
 
