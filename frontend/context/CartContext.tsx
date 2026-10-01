@@ -1,26 +1,15 @@
-import { onAuthStateChanged, User } from "firebase/auth";
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  runTransaction,
-  serverTimestamp,
-  setDoc,
-  writeBatch,
-} from "firebase/firestore";
+"use client";
+
 import React, {
   createContext,
   useContext,
   useEffect,
   useMemo,
   useReducer,
-  useState,
 } from "react";
 
-import { auth, db } from "../firebase/firebaseConfig";
+import { useAuth } from "./AuthContext";
+import type { UsuarioBase } from "../lib/types";
 
 export interface CartItem {
   id: string;
@@ -47,6 +36,7 @@ export interface Coupon {
 }
 
 type CartState = {
+  owner: string | null;
   items: CartItem[];
   loading: boolean;
   syncing: boolean;
@@ -54,14 +44,12 @@ type CartState = {
 };
 
 type CartAction =
-  | { type: "SET_ITEMS"; payload: CartItem[] }
-  | { type: "SET_LOADING"; payload: boolean }
-  | { type: "SET_SYNCING"; payload: boolean }
-  | { type: "SET_COUPON"; payload: Coupon | null }
-  | { type: "RESET" };
+  | { type: "LOAD"; owner: string; items: CartItem[]; coupon: Coupon | null }
+  | { type: "SET_ITEMS"; owner: string; payload: CartItem[] }
+  | { type: "SET_COUPON"; owner: string; payload: Coupon | null };
 
 type CartContextType = {
-  user: User | null;
+  user: UsuarioBase | null;
   items: CartItem[];
   loading: boolean;
   syncing: boolean;
@@ -85,6 +73,7 @@ const LOCAL_CART_KEY = "ALAIA_GUEST_CART_V1";
 const LOCAL_COUPON_KEY = "ALAIA_GUEST_COUPON_V1";
 
 const initialState: CartState = {
+  owner: null,
   items: [],
   loading: true,
   syncing: false,
@@ -92,21 +81,15 @@ const initialState: CartState = {
 };
 
 function cartReducer(state: CartState, action: CartAction): CartState {
+  if (action.type !== "LOAD" && action.owner !== state.owner) return state;
   switch (action.type) {
+    case "LOAD":
+      return { owner: action.owner, items: action.items, coupon: action.coupon, loading: false, syncing: false };
     case "SET_ITEMS":
       return { ...state, items: action.payload };
 
-    case "SET_LOADING":
-      return { ...state, loading: action.payload };
-
-    case "SET_SYNCING":
-      return { ...state, syncing: action.payload };
-
     case "SET_COUPON":
       return { ...state, coupon: action.payload };
-
-    case "RESET":
-      return initialState;
 
     default:
       return state;
@@ -163,246 +146,47 @@ function clampQuantity(quantity: number, max?: number) {
   return safeQty;
 }
 
-async function saveGuestCart(items: CartItem[]) {
-  await storageSetItem(LOCAL_CART_KEY, JSON.stringify(items.map(cleanCartItem)));
-}
-
-async function loadGuestCart(): Promise<CartItem[]> {
-  try {
-    const raw = await storageGetItem(LOCAL_CART_KEY);
-    if (!raw) return [];
-
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed.map(cleanCartItem);
-  } catch {
-    return [];
-  }
-}
-
-async function clearGuestCart() {
-  await storageRemoveItem(LOCAL_CART_KEY);
-  await storageRemoveItem(LOCAL_COUPON_KEY);
-}
-
-async function saveGuestCoupon(coupon: Coupon | null) {
-  if (!coupon) {
-    await storageRemoveItem(LOCAL_COUPON_KEY);
-    return;
-  }
-
-  await storageSetItem(LOCAL_COUPON_KEY, JSON.stringify(coupon));
-}
-
-async function loadGuestCoupon(): Promise<Coupon | null> {
-  try {
-    const raw = await storageGetItem(LOCAL_COUPON_KEY);
-    if (!raw) return null;
-
-    return JSON.parse(raw) as Coupon;
-  } catch {
-    return null;
-  }
-}
-
-async function addItemInFirestore(uid: string, item: CartItem, qty: number) {
-  const cleanItem = cleanCartItem(item);
-  const itemRef = doc(db, "carts", uid, "items", cleanItem.id);
-
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(itemRef);
-
-    if (snap.exists()) {
-      const current = cleanCartItem(snap.data() as CartItem);
-      const max = current.maxQty ?? cleanItem.maxQty ?? current.stock ?? cleanItem.stock;
-      const nextQty = clampQuantity((current.quantity || 0) + qty, max);
-
-      tx.update(itemRef, {
-        ...current,
-        quantity: nextQty,
-        updatedAt: serverTimestamp(),
-      });
-
-      return;
-    }
-
-    const max = cleanItem.maxQty ?? cleanItem.stock;
-    const nextQty = clampQuantity(qty, max);
-
-    tx.set(itemRef, {
-      ...cleanItem,
-      quantity: nextQty,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  });
-}
-
-async function updateQuantityInFirestore(
-  uid: string,
-  id: string,
-  quantity: number
-) {
-  const itemRef = doc(db, "carts", uid, "items", id);
-
-  if (quantity <= 0) {
-    await deleteDoc(itemRef);
-    return;
-  }
-
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(itemRef);
-    if (!snap.exists()) return;
-
-    const current = cleanCartItem(snap.data() as CartItem);
-    const max = current.maxQty ?? current.stock;
-    const nextQty = clampQuantity(quantity, max);
-
-    tx.update(itemRef, {
-      quantity: nextQty,
-      updatedAt: serverTimestamp(),
-    });
-  });
-}
-
-async function removeItemInFirestore(uid: string, id: string) {
-  await deleteDoc(doc(db, "carts", uid, "items", id));
-}
-
-async function clearCartInFirestore(uid: string) {
-  const colRef = collection(db, "carts", uid, "items");
-  const snap = await getDocs(colRef);
-
-  if (snap.empty) return;
-
-  const batch = writeBatch(db);
-  snap.forEach((item) => batch.delete(item.ref));
-  await batch.commit();
-}
-
-async function saveCouponInFirestore(uid: string, coupon: Coupon | null) {
-  const couponRef = doc(db, "carts", uid, "meta", "coupon");
-
-  if (!coupon) {
-    await deleteDoc(couponRef).catch(() => {});
-    return;
-  }
-
-  await setDoc(
-    couponRef,
-    {
-      ...coupon,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
-}
-
-async function loadCouponFromFirestore(uid: string): Promise<Coupon | null> {
-  const couponRef = doc(db, "carts", uid, "meta", "coupon");
-  const snap = await getDoc(couponRef);
-
-  if (!snap.exists()) return null;
-
-  return snap.data() as Coupon;
-}
-
 export function CartProvider({ children }: React.PropsWithChildren) {
-  const [user, setUser] = useState<User | null>(auth.currentUser);
-  const [state, dispatch] = useReducer(cartReducer, initialState);
+  const { user, loading: authLoading } = useAuth();
+  const owner = authLoading ? null : user ? `user:${user._id || user.id}` : "guest";
+  const [storedState, dispatch] = useReducer(cartReducer, initialState);
+  // Cookie identity scopes browser storage; it never authorizes Firestore access.
+  // Hide the previous owner's cart immediately, before effects run.
+  const state = owner !== null && storedState.owner === owner ? storedState : initialState;
+  const cartKey = owner === "guest" ? LOCAL_CART_KEY : `ALAIA_CART_V1:${owner}`;
+  const couponKey = owner === "guest" ? LOCAL_COUPON_KEY : `ALAIA_COUPON_V1:${owner}`;
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-    });
-
-    return unsubscribe;
-  }, []);
-
-  useEffect(() => {
-    let unsubscribeCart: (() => void) | null = null;
     let alive = true;
-
-    async function setupCart() {
-      dispatch({ type: "SET_LOADING", payload: true });
-
+    if (owner === null) return;
+    async function load() {
+      let items: CartItem[] = [];
+      let coupon: Coupon | null = null;
       try {
-        if (!user?.uid) {
-          const [guestItems, guestCoupon] = await Promise.all([
-            loadGuestCart(),
-            loadGuestCoupon(),
-          ]);
-
-          if (!alive) return;
-
-          dispatch({ type: "SET_ITEMS", payload: guestItems });
-          dispatch({ type: "SET_COUPON", payload: guestCoupon });
-          dispatch({ type: "SET_LOADING", payload: false });
-          dispatch({ type: "SET_SYNCING", payload: false });
-          return;
-        }
-
-        dispatch({ type: "SET_SYNCING", payload: true });
-
-        const guestItems = await loadGuestCart();
-
-        if (guestItems.length > 0) {
-          for (const item of guestItems) {
-            await addItemInFirestore(user.uid, item, item.quantity || 1);
-          }
-
-          await clearGuestCart();
-        }
-
-        const savedCoupon = await loadCouponFromFirestore(user.uid);
-
-        if (!alive) return;
-
-        dispatch({ type: "SET_COUPON", payload: savedCoupon });
-
-        const cartItemsRef = collection(db, "carts", user.uid, "items");
-
-        unsubscribeCart = onSnapshot(
-          cartItemsRef,
-          (snapshot) => {
-           const items = snapshot.docs.map((itemDoc) =>
-  cleanCartItem({
-    ...(itemDoc.data() as CartItem),
-    id: itemDoc.id,
-  })
-);
-
-            dispatch({ type: "SET_ITEMS", payload: items });
-            dispatch({ type: "SET_LOADING", payload: false });
-            dispatch({ type: "SET_SYNCING", payload: false });
-          },
-          (error) => {
-            console.log("CART SNAPSHOT ERROR:", error);
-            dispatch({ type: "SET_LOADING", payload: false });
-            dispatch({ type: "SET_SYNCING", payload: false });
-          }
-        );
-      } catch (error) {
-        console.log("CART SETUP ERROR:", error);
-
-        if (!alive) return;
-
-        dispatch({ type: "SET_LOADING", payload: false });
-        dispatch({ type: "SET_SYNCING", payload: false });
+        const rawItems = await storageGetItem(cartKey);
+        const parsed = rawItems ? JSON.parse(rawItems) : [];
+        if (Array.isArray(parsed)) items = parsed.map(cleanCartItem);
+        const rawCoupon = await storageGetItem(couponKey);
+        coupon = rawCoupon ? JSON.parse(rawCoupon) : null;
+      } catch {
+        // Invalid/unavailable local storage is not an authenticated remote cart.
       }
+      if (alive) dispatch({ type: "LOAD", owner: owner!, items, coupon });
     }
+    void load();
+    return () => { alive = false; };
+  }, [owner, cartKey, couponKey]);
 
-    setupCart();
-
-    return () => {
-      alive = false;
-
-      if (unsubscribeCart) {
-        unsubscribeCart();
-      }
-    };
-  }, [user?.uid]);
+  function requireLoadedCart() {
+    if (state.loading) throw new Error("Espera a que termine de cargar el carrito");
+  }
+  async function saveCart(items: CartItem[]) {
+    await storageSetItem(cartKey, JSON.stringify(items.map(cleanCartItem)));
+  }
+  async function saveCoupon(coupon: Coupon | null) {
+    if (coupon) await storageSetItem(couponKey, JSON.stringify(coupon));
+    else await storageRemoveItem(couponKey);
+  }
 
   const totalItems = useMemo(
     () => state.items.reduce((acc, item) => acc + Number(item.quantity || 0), 0),
@@ -474,10 +258,7 @@ export function CartProvider({ children }: React.PropsWithChildren) {
   const addItem = async (item: CartItem, qty: number = 1) => {
     const cleanItem = cleanCartItem(item);
 
-    if (user?.uid) {
-      await addItemInFirestore(user.uid, cleanItem, qty);
-      return;
-    }
+    requireLoadedCart();
 
     const existing = state.items.find((cartItem) => cartItem.id === cleanItem.id);
 
@@ -505,20 +286,17 @@ export function CartProvider({ children }: React.PropsWithChildren) {
       ];
     }
 
-    dispatch({ type: "SET_ITEMS", payload: nextItems });
-    await saveGuestCart(nextItems);
+    dispatch({ type: "SET_ITEMS", owner: owner!, payload: nextItems });
+    await saveCart(nextItems);
   };
 
   const updateQuantity = async (id: string, quantity: number) => {
-    if (user?.uid) {
-      await updateQuantityInFirestore(user.uid, id, quantity);
-      return;
-    }
+    requireLoadedCart();
 
     if (quantity <= 0) {
       const nextItems = state.items.filter((item) => item.id !== id);
-      dispatch({ type: "SET_ITEMS", payload: nextItems });
-      await saveGuestCart(nextItems);
+      dispatch({ type: "SET_ITEMS", owner: owner!, payload: nextItems });
+      await saveCart(nextItems);
       return;
     }
 
@@ -533,35 +311,29 @@ export function CartProvider({ children }: React.PropsWithChildren) {
       };
     });
 
-    dispatch({ type: "SET_ITEMS", payload: nextItems });
-    await saveGuestCart(nextItems);
+    dispatch({ type: "SET_ITEMS", owner: owner!, payload: nextItems });
+    await saveCart(nextItems);
   };
 
   const removeItem = async (id: string) => {
-    if (user?.uid) {
-      await removeItemInFirestore(user.uid, id);
-      return;
-    }
+    requireLoadedCart();
 
     const nextItems = state.items.filter((item) => item.id !== id);
-    dispatch({ type: "SET_ITEMS", payload: nextItems });
-    await saveGuestCart(nextItems);
+    dispatch({ type: "SET_ITEMS", owner: owner!, payload: nextItems });
+    await saveCart(nextItems);
   };
 
   const clearCart = async () => {
-    if (user?.uid) {
-      await clearCartInFirestore(user.uid);
-      await saveCouponInFirestore(user.uid, null);
-      dispatch({ type: "SET_COUPON", payload: null });
-      return;
-    }
+    requireLoadedCart();
 
-    dispatch({ type: "SET_ITEMS", payload: [] });
-    dispatch({ type: "SET_COUPON", payload: null });
-    await clearGuestCart();
+    dispatch({ type: "SET_ITEMS", owner: owner!, payload: [] });
+    dispatch({ type: "SET_COUPON", owner: owner!, payload: null });
+    await storageRemoveItem(cartKey);
+    await storageRemoveItem(couponKey);
   };
 
   const applyCoupon = async (code: string) => {
+    requireLoadedCart();
     const normalizedCode = code.trim().toUpperCase();
 
     if (!normalizedCode) {
@@ -609,25 +381,17 @@ export function CartProvider({ children }: React.PropsWithChildren) {
       };
     }
 
-    dispatch({ type: "SET_COUPON", payload: coupon });
+    dispatch({ type: "SET_COUPON", owner: owner!, payload: coupon });
 
-    if (user?.uid) {
-      await saveCouponInFirestore(user.uid, coupon);
-    } else {
-      await saveGuestCoupon(coupon);
-    }
+    await saveCoupon(coupon);
 
     return { ok: true, message: "Cupón aplicado." };
   };
 
   const removeCoupon = () => {
-    dispatch({ type: "SET_COUPON", payload: null });
-
-    if (user?.uid) {
-      saveCouponInFirestore(user.uid, null).catch(() => {});
-    } else {
-      saveGuestCoupon(null).catch(() => {});
-    }
+    requireLoadedCart();
+    dispatch({ type: "SET_COUPON", owner: owner!, payload: null });
+    void saveCoupon(null).catch(() => {});
   };
 
   const value: CartContextType = {

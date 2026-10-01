@@ -1,61 +1,58 @@
-import {
-    onAuthStateChanged,
-    signOut,
-    updateProfile,
-    User,
-} from "firebase/auth";
+"use client";
+
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { auth } from "../firebase/firebaseConfig";
+import { api } from "../lib/api";
+import { logout as logoutSession, onAuthChange } from "../lib/auth";
+import type { UsuarioBase } from "../lib/types";
 
 type AuthContextType = {
-  user: User | null;
+  user: UsuarioBase | null;
   loading: boolean;
   logout: () => Promise<void>;
-  updateUserProfile?: (name: string, photo?: string) => Promise<void>;
 };
 
-const AuthContext = createContext<AuthContextType>({
-  user: null,
-  loading: true,
-  logout: async () => {},
-});
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-  const [user, setUser] = useState<User | null>(null);
+export function AuthProvider({ children }: React.PropsWithChildren) {
+  const [user, setUser] = useState<UsuarioBase | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
-    });
-
-    return unsub;
+    let alive = true;
+    let revision = 0;
+    async function refreshSession() {
+      const request = ++revision;
+      // Cache notifications trigger verification; cached users never authenticate.
+      setUser(null);
+      setLoading(true);
+      try {
+        const response = await api.get<{ usuario: UsuarioBase }>("/api/auth/me", {
+          autoLogoutOn401: false,
+        });
+        if (!alive || request !== revision) return;
+        const current = response.ok ? response.data?.usuario : null;
+        setUser(current && (current._id || current.id) ? current : null);
+      } catch {
+        if (alive && request === revision) setUser(null);
+      } finally {
+        if (alive && request === revision) setLoading(false);
+      }
+    }
+    const unsubscribe = onAuthChange(() => { void refreshSession(); });
+    void refreshSession();
+    return () => { alive = false; revision++; unsubscribe(); };
   }, []);
 
   const logout = async () => {
-    await signOut(auth);
+    setUser(null);
+    await logoutSession({ redirect: false });
   };
 
-  const updateUserProfile = async (name: string, photo?: string) => {
-    if (!auth.currentUser) return;
+  return <AuthContext.Provider value={{ user, loading, logout }}>{children}</AuthContext.Provider>;
+}
 
-    await updateProfile(auth.currentUser, {
-      displayName: name,
-      photoURL: photo,
-    });
-
-    // refrescar estado
-    setUser({ ...auth.currentUser });
-  };
-
-  return (
-    <AuthContext.Provider
-      value={{ user, loading, logout, updateUserProfile }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
-};
-
-export const useAuth = () => useContext(AuthContext);
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error("useAuth debe usarse dentro de AuthProvider");
+  return context;
+}

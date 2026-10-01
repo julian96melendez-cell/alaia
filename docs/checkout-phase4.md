@@ -81,7 +81,113 @@ atomically instead of losing a partial restore.
 imported/started by HTTP, workers or a memory timer. A production scheduler must
 invoke it repeatedly; no scheduler, worker or infrastructure was activated here.
 Rows requiring reconciliation do not starve later ordinary expiration batches.
-Runner returns checked/failed counts; failures retain inventory and are retryable.
+Runner logs checked/failed counts. An empty or fully successful batch exits 0;
+any partial failure, connection/batch error or disconnect error exits nonzero.
+Error output is fixed and does not include driver/Stripe messages or credentials.
+Successful releases are not undone when another row fails. A later invocation
+rechecks persistent reservation state, so completed releases are not repeated;
+failed releases retain inventory and are retryable.
+
+## Proposed scheduler and supervision (not enabled)
+
+Propose one scheduled invocation **every minute**, from `backend-multi`, using
+`node scripts/expire-checkout-reservations.js`. Keep the existing 15-minute default
+reservation duration unless separately reviewed. Each invocation inspects at most
+100 eligible expired reservations; the schedule is a proposal, not a guarantee of
+release within one minute. Stripe latency, failures and backlog affect that delay.
+Use one scheduled job with no overlapping invocations; retain transactional
+idempotency as protection against manual retries or process races. Do not run a
+timer inside the HTTP API or enable payout workers to perform this task.
+
+Before activation, separately approve the scheduler, its service identity,
+transaction-capable Mongo connection, matching Stripe mode/account and secret
+configuration. Do not reuse integration-runner credentials or databases. Never
+place a URI or password in the command, logs or this document. The proposed job
+has real effects: it may cancel/expire Stripe objects and return reserved stock.
+Nothing in this document authorizes activating it or running it in production.
+
+Supervision proposal:
+
+- Alert immediately on nonzero exit or a timed-out/terminated invocation; retain
+  sanitized counts, start/end time, duration and exit status for each run.
+- Alert when no successful completion is observed for five minutes. Treat any
+  external job timeout as failure; choose its duration after staging measurements.
+- If `checked=100` persists for three invocations, investigate saturation. Counts
+  alone cannot prove backlog: inspect oldest eligible expiry and remaining rows
+  using an independently approved, read-only operational check.
+- Separately monitor `needsReconciliation=true` and
+  `state=reconciliation_required`, plus failed/stale/manual-review webhook ledger
+  entries. Notify the responsible operator when a new case appears and escalate
+  unresolved cases after 15 minutes. Flagged rows are excluded from normal expiry,
+  and a successful batch does **not** mean that reconciliation is clear.
+- Assign an incident owner and an escalation contact before launch. Investigate
+  connection, permission, Stripe availability or inventory inconsistencies before
+  retrying. Never compensate with unconditional stock increments or flag resets.
+
+The queue/backlog monitors and alert delivery are requirements to implement or
+configure later; the runner currently reports batch counts and exit status only.
+
+## Minimum manual reconciliation procedure
+
+Orders with `needsReconciliation` or `reconciliation_required` must remain blocked
+for fulfillment and payouts until a verified, audited resolution. Do not clear
+flags or bypass `orderInvariants` to make a shipment/payout proceed.
+
+1. Open an incident with order ID, reservation/payment state, reason, relevant
+   webhook event IDs and timestamps. Restrict access to the operational record;
+   exclude credentials, client secrets, correlation tokens and customer address.
+2. Inspect the existing order and its bound Stripe Session/PaymentIntent in the
+   correct account and mode, initially read-only. Check owner, metadata binding,
+   amount, currency and definitive payment status. An unknown intent or ambiguous
+   network outcome is not evidence that no payment exists. Do not create a new
+   intent or re-reserve/release stock to resolve that ambiguity.
+3. For `processing` or an unknown outcome, retain the reservation and blocks;
+   investigate delivery/retry of the existing financial event. A verified signed
+   event through the financial coordinator can resolve the existing reservation;
+   recording a paid state manually is prohibited.
+4. For definitive cancellation, review the permitted lifecycle release and its
+   evidence. For success after inventory release, review actual inventory and
+   payment together and choose an explicitly authorized fulfillment/stock
+   resolution or refund. Do not decrement/release stock again blindly. Refunds,
+   event replays and every other external write require separate authorization.
+   A refund alone is not permission to clear reconciliation or payout blocks.
+5. Record approver/operator, evidence references, before/after state, authorized
+   action, idempotency reference and outcome. There is currently no dedicated
+   administrative resolver: if the existing guarded lifecycle cannot resolve the
+   case, stop and prepare a reviewed resolution tool with tests and audit logging.
+   Do not use raw Mongo updates, disable query guards or invent historical binding.
+6. Close only after read-only verification of payment, reservation/stock and the
+   applicable fulfillment/payout blocks, linking the financial event or resolution
+   audit. Until then keep the case open and the order blocked.
+
+## Web context compatibility
+
+The optional `frontend/context/AuthContext.tsx` now verifies identity using the
+existing cookie API `/api/auth/me` and listens to the existing session notification
+helper. Cached browser user data is never authentication evidence. Session failures
+clear identity, and stale responses cannot overwrite a newer session. Logout uses
+the existing backend-cookie helper; no Firebase authentication or profile writer
+is introduced. These context providers are not newly mounted by this change.
+
+`CartContext.tsx` consumes that provider rather than Firebase Auth/Firestore. Cart
+and coupon storage is browser-local, separately keyed for guests and each verified
+backend user; switching accounts hides the old cart immediately. Guest storage is
+preserved separately, without automatic merging into an account. There is no cloud
+cart migration, cross-device or live cross-tab synchronization. Browser totals and
+coupons remain estimates; checkout continues to calculate authoritative prices
+and stock in the backend. No existing Firestore cart data is read, migrated or
+deleted. Local hook tests cover session rejection/races/logout and cart isolation;
+they are not browser end-to-end tests.
+
+Local validation on 2026-10-01: web TypeScript passed with
+`node frontend/node_modules/typescript/bin/tsc -p frontend/tsconfig.json --noEmit --incremental false --pretty false`.
+The full explicit test-directory suite, `node --test backend-multi/test/*.test.js`,
+passed 127 tests with zero failures: the previous 112 plus eight runner tests and
+seven web-provider tests. Runner coverage includes empty/successful/partial batches,
+connection/batch/disconnect failure, actual Node nonzero exit with injected local
+dependencies, and retry after partial success. Existing lifecycle race tests still
+cover transactional release exactly once. No operational runner, external service,
+payment, scheduler or payout worker was executed for this validation.
 
 Before returning inventory with an attempted/known intent, Stripe must confirm
 final cancellation outside the Mongo transaction. `succeeded`/`processing` never
