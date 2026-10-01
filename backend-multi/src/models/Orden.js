@@ -902,11 +902,7 @@ function shouldBlockPayoutByPaymentStatus(estadoPago) {
 // ============================================================
 OrdenSchema.pre("validate", async function () {
   if (this.isNew && !this.orderNumber) {
-    try {
-      this.orderNumber = await nextOrderNumber(this.$session());
-    } catch {
-      this.orderNumber = undefined;
-    }
+    this.orderNumber = await nextOrderNumber(this.$session());
   }
 
   const items = Array.isArray(this.items) ? this.items : [];
