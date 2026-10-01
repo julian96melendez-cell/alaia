@@ -26,7 +26,7 @@ function loadSource(file, mocks, extra = {}) {
   const module = { exports: {} };
   const context = {
     module, exports: module.exports,
-    require: (name) => Object.hasOwn(mocks, name) ? mocks[name] : localRequire(name),
+    require: (name) => Object.hasOwn(mocks, name) ? mocks[name] : name === "../services/checkoutLifecycle" ? { getLifecycle: () => ({ settlePaid: async () => ({ managed: false }) }) } : localRequire(name),
     console: { log() {}, warn() {}, error() {} },
     process: { env: {} }, Buffer, Date, Math, Set, Map,
     setInterval: () => 1, clearInterval() {}, ...extra,
@@ -53,7 +53,7 @@ test("Firebase token verification checks revocation and never accepts body ident
     assert.equal(token, "fixture-token"); assert.equal(revoked, true);
     return { uid: "verified-buyer", email: "buyer@example.test" };
   } }));
-  const req = { headers: { authorization: "Bearer fixture-token" }, body: { userId: "attacker-choice" } };
+  const req = { headers: { authorization: "Bearer fixture-token", "idempotency-key": "fixture-checkout-key-00000001" }, body: { userId: "attacker-choice" } };
   let called = false;
   await verifier(req, response(), () => { called = true; });
   assert.equal(called, true); assert.equal(req.firebaseUser.uid, "verified-buyer");
@@ -105,10 +105,19 @@ test("server pricing enforces coupon policy and quantity limits", () => {
 function checkoutHarness(productOverrides = {}) {
   const routes = new Map();
   let created; let payment;
-  const router = { post: (route, ...handlers) => routes.set(route, handlers) };
+  const router = { post: (route, ...handlers) => routes.set(route, handlers), get: (route, ...handlers) => routes.set(route, handlers) };
   loadSource("src/routes/stripeRoutes.js", {
     express: { Router: () => router }, mongoose,
     "../models/Producto": { find: () => ({ lean: async () => [{ _id: ID, nombre: "Item", precioFinal: 40, costoProveedor: 5, categoria: "general", gestionStock: true, stock: 10, ...productOverrides }] }) },
+    "../services/checkoutLifecycle": {
+      prepareCheckout: async ({ uid, email, key, input, buildOrder }) => {
+        require("../src/services/checkoutLifecycle").identity(uid, key);
+        created = await buildOrder({ ...input, firebaseUserId: uid, userEmail: email });
+        const order = { ...created, _id: ID };
+        payment = { amount: Math.round(order.total * 100), metadata: { ordenId: ID, userId: uid, firebaseUserId: uid } };
+        return { order, clientSecret: "fixture-client-secret" };
+      },
+    },
     "../models/Orden": { create: async (payload) => { created = payload; return { ...payload, _id: ID, save: async () => {} }; }, updateOne: async () => ({}) },
     "../middleware/firebaseAuth": { verificarFirebase: createFirebaseAuth(() => ({ verifyIdToken: async () => ({ uid: "verified-buyer", email: "buyer@example.test" }) })) },
     "../controllers/ordenController": { crearOrdenYCheckoutStripe() {} },
@@ -121,7 +130,7 @@ function checkoutHarness(productOverrides = {}) {
 test("mobile route ignores forged amounts and identity and persists the verified buyer/address", async () => {
   const harness = checkoutHarness();
   const [auth, checkout] = harness.routes.get("/payment-sheet");
-  const req = { headers: { authorization: "Bearer fixture-token" }, body: {
+  const req = { headers: { authorization: "Bearer fixture-token", "idempotency-key": "fixture-checkout-key-00000001" }, body: {
     userId: "forged", userEmail: "forged@example.test", orderId: "forged", currency: "eur",
     amount: 0.01, total: 0.01, subtotal: 0.01, tax: 0, shipping: 0, discount: 999,
     metadata: { userId: "forged", ordenId: "forged" },
@@ -142,11 +151,11 @@ test("mobile route ignores forged amounts and identity and persists the verified
 
 test("mobile route rejects stock/currency/coupon/address issues before contacting Stripe", async () => {
   for (const [product, body, status] of [
-    [{ stock: 0 }, {}, 409], [{ moneda: "eur" }, {}, 400],
+    [{ stock: 0 }, {}, 409], [{ moneda: "eur" }, {}, 400], [{ precioFinal: 6000 }, {}, 400],
     [{}, { couponCode: "UNAPPROVED" }, 400], [{}, { shippingAddress: {} }, 400],
   ]) {
     const harness = checkoutHarness(product);
-    const req = { headers: {}, firebaseUser: { uid: "buyer", email: "buyer@example.test" }, body: { items: [{ producto: ID, cantidad: 1 }], shippingAddress: address, ...body }, socket: {} };
+    const req = { headers: { "idempotency-key": "fixture-checkout-key-00000001" }, firebaseUser: { uid: "buyer", email: "buyer@example.test" }, body: { items: [{ producto: ID, cantidad: 1 }], shippingAddress: address, ...body }, socket: {} };
     const res = response(); await harness.routes.get("/payment-sheet")[1](req, res);
     assert.equal(res.statusCode, status); assert.equal(harness.payment(), undefined); assert.equal(harness.created(), undefined);
   }
@@ -181,7 +190,7 @@ test("HTTP admin updates cannot override Stripe payment state", async () => {
     "./ordenRealtimeController": {}, "../services/emailService": {}, "../models/Usuario": {},
   });
   const res = response();
-  await controller.adminActualizarEstado({ usuario: { rol: "admin" }, params: { id: ID }, headers: {}, body: { estadoPago: "pagado" } }, res);
+  await controller.adminActualizarEstado({ usuario: { rol: "admin" }, params: { id: ID }, headers: { "idempotency-key": "fixture-checkout-key-00000001" }, body: { estadoPago: "pagado" } }, res);
   assert.equal(res.statusCode, 400); assert.equal(saved, false); assert.equal(order.estadoPago, "pendiente");
 });
 
@@ -201,9 +210,10 @@ test("mobile history filters by verified UID and uses the buyer DTO", async () =
 });
 
 function webhookHarness(ledger, order = {}, syncCache = async () => false) {
-  const event = { id: "evt_fixture", type: "payment_intent.succeeded", data: { object: { id: "pi_fixture", amount_received: 4000, currency: "usd", metadata: { ordenId: ID, source: "mobile_payment_sheet" } } } };
+  const event = { id: "evt_fixture", type: "payment_intent.succeeded", data: { object: { id: "pi_fixture", amount: 4000, amount_received: 4000, currency: "usd", metadata: { ordenId: ID, source: "mobile_payment_sheet" } } } };
   const mocks = {
     "../models/Orden": order,
+    "../services/financialCoordinator": { applyFinancialEvent: async (_id, fields) => order.applyFinancial(fields) },
     "../models/WebhookEvent": ledger,
     "./stripeService": {
       construirEventoDesdeWebhook: () => event,
@@ -238,9 +248,9 @@ test("webhook reclaims failed delivery atomically and marks paid only after a ve
     updateOne: async () => ({}),
   };
   const order = {
-    findById: () => ({ select: () => ({ lean: async () => ({ total: 40, moneda: "usd", estadoPago: "pendiente" }) }) }),
+    findById: () => ({ select: () => ({ then: resolve => resolve({ _id: ID, stripePaymentIntentId: "pi_fixture", total: 40, moneda: "usd", estadoPago: "pendiente" }), lean: async () => ({ total: 40, moneda: "usd", estadoPago: "pendiente" }) }) }),
     updateOne: async () => ({}),
-    findOneAndUpdate: async (_filter, update) => { paymentUpdate = update; return { _id: ID }; },
+    applyFinancial: async fields => { paymentUpdate = { $set: fields }; return { _id: ID }; },
   };
   const controller = webhookHarness(ledger, order, async () => { cacheWrites++; });
   const res = response();

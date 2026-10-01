@@ -217,6 +217,8 @@ exports.crearOrden = async (req, res, next) => {
 // Crea orden REAL en MongoDB y usa ese mismo _id en Stripe
 // ======================================================
 exports.crearOrdenYCheckoutStripe = async (req, res, next) => {
+  return res.status(410).json({ ok: false, message: "Implementación heredada deshabilitada; utiliza checkout transaccional autenticado", code: "LEGACY_CHECKOUT_DISABLED" });
+  // Historical implementation retained for inspection only; not mounted.
   try {
     const usuarioId = getUserId(req);
 
@@ -496,6 +498,7 @@ exports.actualizarEstado = async (req, res, next) => {
         (orden.paymentProvider === "stripe" || orden.metodoPago === "stripe" || estadoPago === "pagado")) {
       return sendError(res, { statusCode: 400, message: "El estado financiero lo confirma Stripe mediante webhook" });
     }
+    require("../services/orderInvariants").assertFulfillmentAllowed(orden, estadoFulfillment);
     if (estadoPago) orden.estadoPago = estadoPago;
     if (estadoFulfillment) orden.estadoFulfillment = estadoFulfillment;
 

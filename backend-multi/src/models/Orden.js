@@ -2,6 +2,7 @@
 
 const mongoose = require("mongoose");
 const Counter = require("./Counter");
+const { consumeStripePaidAuthorization, assertFulfillmentAllowed } = require("../services/orderInvariants");
 
 // ============================================================
 // Utils
@@ -481,6 +482,25 @@ const HistorialSchema = new mongoose.Schema(
 // ============================================================
 const OrdenSchema = new mongoose.Schema(
   {
+    // Only new managed checkout orders populate these fields. Historical orders remain untouched.
+    checkoutIntent: {
+      keyHash: { type: String, default: "" },
+      fingerprint: { type: String, default: "" },
+      stripeCorrelation: { type: String, default: "", select: false },
+      state: { type: String, enum: ["preparing", "ready", "completed", "terminal"], default: "preparing" },
+      stripeAttemptStartedAt: { type: Date, default: null },
+    },
+    inventoryReservation: {
+      state: { type: String, enum: ["none", "reserved", "consumed", "released", "reconciliation_required"], default: "none" },
+      reservedAt: { type: Date, default: null },
+      expiresAt: { type: Date, default: null },
+      consumedAt: { type: Date, default: null },
+      releasedAt: { type: Date, default: null },
+      releaseReason: { type: String, default: "" },
+      needsReconciliation: { type: Boolean, default: false },
+      reconciliationReason: { type: String, default: "" },
+      lines: [{ _id: false, producto: { type: mongoose.Schema.Types.ObjectId, ref: "Producto" }, cantidad: { type: Number, min: 1, max: 100 } }],
+    },
     orderNumber: {
       type: Number,
       index: true,
@@ -760,8 +780,8 @@ source: {
     versionKey: "__v",
     optimisticConcurrency: true,
     minimize: false,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true },
+    toJSON: { virtuals: true, transform: (_doc, ret) => { delete ret.checkoutIntent; return ret; } },
+    toObject: { virtuals: true, transform: (_doc, ret) => { delete ret.checkoutIntent; return ret; } },
   }
 );
 
@@ -788,11 +808,11 @@ OrdenSchema.virtual("totalNetoVendedores")
 // ============================================================
 // Auto increment
 // ============================================================
-async function nextOrderNumber() {
+async function nextOrderNumber(session) {
   const doc = await Counter.findOneAndUpdate(
     { key: "order" },
     { $inc: { seq: 1 } },
-    { new: true, upsert: true }
+    { new: true, upsert: true, ...(session ? { session } : {}) }
   ).lean();
 
   return doc.seq;
@@ -883,7 +903,7 @@ function shouldBlockPayoutByPaymentStatus(estadoPago) {
 OrdenSchema.pre("validate", async function () {
   if (this.isNew && !this.orderNumber) {
     try {
-      this.orderNumber = await nextOrderNumber();
+      this.orderNumber = await nextOrderNumber(this.$session());
     } catch {
       this.orderNumber = undefined;
     }
@@ -1167,6 +1187,7 @@ OrdenSchema.methods.setEstadoFulfillment = function (
     throw new Error(`estadoFulfillment inválido: ${to}`);
   }
 
+  assertFulfillmentAllowed(this, to);
   const from = this.estadoFulfillment;
   if (from && !canTransition(FUL_TRANSITIONS, from, to)) {
     throw new Error(`Transición fulfillment inválida: ${from} -> ${to}`);
@@ -1235,7 +1256,8 @@ OrdenSchema.pre("save", function () {
     const from = this.$locals?.prevEstadoPago ?? null;
     const to = this.estadoPago;
 
-    if (from && !canTransition(PAGO_TRANSITIONS, from, to)) {
+    const trustedLatePayment = consumeStripePaidAuthorization(this) && from === "fallido" && to === "pagado";
+    if (from && !canTransition(PAGO_TRANSITIONS, from, to) && !trustedLatePayment) {
       throw new Error(`Transición estadoPago inválida: ${from} -> ${to}`);
     }
 
@@ -1268,6 +1290,7 @@ OrdenSchema.pre("save", function () {
   }
 
   if (this.isModified("estadoFulfillment")) {
+    assertFulfillmentAllowed(this, this.estadoFulfillment);
     const from = this.$locals?.prevEstadoFulfillment ?? null;
     const to = this.estadoFulfillment;
 
@@ -1438,4 +1461,12 @@ OrdenSchema.index({ payoutEligibleAt: 1, payoutReleasedAt: 1 });
 // ============================================================
 // Export
 // ============================================================
-module.exports = mongoose.model("Orden", OrdenSchema);
+require("../services/financialQueryGuard").installFinancialQueryGuard(OrdenSchema);
+const OrdenModel = mongoose.model("Orden", OrdenSchema);
+const originalBulkWrite = OrdenModel.bulkWrite;
+OrdenModel.bulkWrite = function (operations, options) {
+  try { require("../services/financialQueryGuard").assertSafeBulk(operations); }
+  catch (err) { return Promise.reject(err); }
+  return originalBulkWrite.call(this, operations, options);
+};
+module.exports = OrdenModel;

@@ -1,6 +1,7 @@
 "use strict";
 
 const Orden = require("../models/Orden");
+const { getLifecycle } = require("../services/checkoutLifecycle");
 const WebhookEvent = require("../models/WebhookEvent");
 
 const {
@@ -70,7 +71,7 @@ async function syncFirestoreOrderSafe({
   reqId,
 }) {
   // Mobile checkout/history now read MongoDB; no Firestore order is created or required.
-  if (stripeObject?.metadata?.source === "mobile_payment_sheet") return;
+  if (["mobile_payment_sheet", "web_checkout"].includes(stripeObject?.metadata?.source)) return;
   try {
     await updateFirestoreOrderFromStripe({
       stripeObject,
@@ -390,6 +391,7 @@ async function validarMontoYMonedaSiAplica({
 async function marcarOrdenPagadaAtomico({
   ordenId,
   sessionLike,
+  financialProof,
   eventId,
   detail = "",
 }) {
@@ -430,20 +432,17 @@ async function marcarOrdenPagadaAtomico({
 
   setOrdenAuditFields({ update, eventId, detail });
 
-  return Orden.findOneAndUpdate(
-    {
-      _id: ordenId,
-      estadoPago: { $nin: PAYMENT_FINAL_STATES },
-    },
-    update,
-    { new: true }
-  );
+  const reservedPayment = await getLifecycle().settlePaid(ordenId, update.$set, financialProof);
+  if (reservedPayment.managed) return reservedPayment.changed ? reservedPayment.order : null;
+
+  return require("../services/financialCoordinator").applyFinancialEvent(ordenId, update.$set, financialProof);
 }
 
 async function marcarOrdenFallidaAtomico({
   ordenId,
   eventId,
   detail = "",
+  financialProof,
   clearSession = false,
 }) {
   const update = {
@@ -455,26 +454,18 @@ async function marcarOrdenFallidaAtomico({
     },
   };
 
-  if (clearSession) {
-    update.$set.stripeSessionId = "";
-  }
+  // Preserve the persisted Stripe binding even when payment fails.
 
   setOrdenAuditFields({ update, eventId, detail });
 
-  return Orden.findOneAndUpdate(
-    {
-      _id: ordenId,
-      estadoPago: { $in: PAYMENT_OPEN_STATES },
-    },
-    update,
-    { new: true }
-  );
+  return require("../services/financialCoordinator").applyFinancialEvent(ordenId, update.$set, financialProof);
 }
 
 async function marcarOrdenReembolsoAtomico({
   ordenId,
   eventId,
   detail = "",
+  financialProof,
   refundAmountCents = null,
   chargeAmountCents = null,
 }) {
@@ -504,7 +495,7 @@ async function marcarOrdenReembolsoAtomico({
 
   setOrdenAuditFields({ update, eventId, detail });
 
-  return Orden.findOneAndUpdate({ _id: ordenId }, update, { new: true });
+  return require("../services/financialCoordinator").applyFinancialEvent(ordenId, update.$set, financialProof);
 }
 
 async function obtenerMontoReferenciaOrden(ordenId) {
@@ -617,7 +608,22 @@ exports.procesarWebhookStripe = async (req, res) => {
   const eventType = safeStr(summary?.eventType || event?.type);
 
   const obj = event?.data?.object || {};
-  const ordenId = summary?.ordenId || getOrdenIdFromStripeObject(obj);
+  let ordenId = summary?.ordenId || getOrdenIdFromStripeObject(obj);
+  let resolvedFinancialObject;
+  const eventPaymentIntentId = eventType.startsWith("payment_intent.") ? obj.id : typeof obj.payment_intent === "string" ? obj.payment_intent : obj.payment_intent?.id;
+  // Refunds/charges do not always include order metadata. Resolve through their
+  // authoritative PI, then validate its opaque correlation before order writes.
+  if (!ordenId && eventPaymentIntentId && /^(payment_intent|charge|refund)\./.test(eventType)) {
+    try {
+      if (eventType.startsWith("payment_intent.")) {
+        const linked = await Orden.findOne({ stripePaymentIntentId: eventPaymentIntentId }).select("_id").lean();
+        ordenId = linked?._id ? String(linked._id) : null;
+      } else {
+        resolvedFinancialObject = await require("./stripeService").stripe.paymentIntents.retrieve(eventPaymentIntentId);
+        ordenId = getOrdenIdFromStripeObject(resolvedFinancialObject);
+      }
+    } catch { return res.status(503).json({ ok: false, message: "Correlación Stripe pendiente; reintentar" }); }
+  }
 
   log("info", "Stripe webhook received", {
     reqId,
@@ -658,6 +664,10 @@ exports.procesarWebhookStripe = async (req, res) => {
 
   try {
   if (!ordenId) {
+    if (/^(payment_intent|charge|refund|checkout\.session)\./.test(eventType)) {
+      await updateWebhookEventSafe(eventRow, { $set: { status: "skipped", ordenId: null, summary: { ...summary, ordenId: null }, errorMessage: "LEGACY_BINDING_REQUIRED: no verified order; manual review" } });
+      return ok(res);
+    }
   const mobileEvents = {
     "payment_intent.succeeded": {
       status: "confirmada",
@@ -713,6 +723,40 @@ exports.procesarWebhookStripe = async (req, res) => {
       return ok(res);
     }
 
+    let financialProof;
+    if (/^(payment_intent|charge|refund|checkout\.session)\./.test(eventType)) {
+      const order = await Orden.findById(ordenId).select("+checkoutIntent.stripeCorrelation");
+      if (!order) {
+        await updateWebhookEventSafe(eventRow, { $set: { status: "skipped", ordenId: null, summary: { ...summary, ordenId: null }, errorMessage: "LEGACY_BINDING_REQUIRED: no verified order; manual review" } });
+        return ok(res);
+      }
+      if (order.checkoutIntent?.keyHash && !order.checkoutIntent.stripeCorrelation) throw Object.assign(new Error("Intención sin correlación requiere revisión manual"), { publicCode: "FINANCIAL_REVIEW_REQUIRED" });
+      const piId = eventPaymentIntentId;
+      if (order?.checkoutIntent?.keyHash && order?.stripePaymentIntentId && piId !== order.stripePaymentIntentId) throw Object.assign(new Error("Evento Stripe incompatible"), { publicCode: "STRIPE_CORRELATION_MISMATCH" });
+      if (order?.checkoutIntent?.keyHash && eventType.startsWith("checkout.session.") && order?.stripeSessionId && obj.id !== order.stripeSessionId) throw Object.assign(new Error("Session Stripe incompatible"), { publicCode: "STRIPE_CORRELATION_MISMATCH" });
+      if (order && !order.checkoutIntent?.keyHash) {
+        const binding = { eventType, paymentIntentId: piId, sessionId: eventType.startsWith("checkout.session.") ? obj.id : undefined };
+        if (!require("../services/orderInvariants").hasExactLegacyBinding(order, binding)) {
+          await updateWebhookEventSafe(eventRow, { $set: { status: "skipped", ordenId: null, summary: { ...summary, ordenId: null }, errorMessage: "LEGACY_BINDING_REQUIRED: manual review; no order effects" } });
+          return ok(res);
+        }
+        const reference = eventType.startsWith("payment_intent.") || !piId ? obj : resolvedFinancialObject || await require("./stripeService").stripe.paymentIntents.retrieve(piId);
+        financialProof = { ...binding, amount: reference.amount ?? reference.amount_total, currency: reference.currency };
+        require("../services/orderInvariants").assertFinancialEventBinding(order, financialProof);
+      }
+      if (order?.checkoutIntent?.keyHash) {
+        // Charge/refund metadata may not carry PI metadata. Retrieve the PI only
+        // after ensuring a stored identity cannot disagree with this event.
+        if (order.stripePaymentIntentId && piId !== order.stripePaymentIntentId) throw Object.assign(new Error("Evento Stripe incompatible"), { publicCode: "STRIPE_CORRELATION_MISMATCH" });
+        const financialObject = resolvedFinancialObject || (eventType.startsWith("payment_intent.") || !piId ? obj : await require("./stripeService").stripe.paymentIntents.retrieve(piId));
+        financialProof = { orderId: financialObject.metadata?.ordenId, correlation: financialObject.metadata?.checkoutCorrelation, uid: financialObject.metadata?.firebaseUserId, paymentIntentId: piId, sessionId: eventType.startsWith("checkout.session.") ? obj.id : undefined, amount: financialObject.amount ?? financialObject.amount_total, currency: financialObject.currency };
+        require("../services/orderInvariants").assertStripeCorrelation(order, financialProof);
+        const confirmsPayment = eventType === "payment_intent.succeeded" || eventType === "charge.succeeded" || eventType === "checkout.session.async_payment_succeeded" || (eventType === "checkout.session.completed" && obj.payment_status === "paid");
+        if (confirmsPayment && (financialObject.status !== "succeeded" || financialObject.amount_received !== Math.round(order.total * 100))) {
+          throw Object.assign(new Error("Pago Stripe no confirmado por el importe esperado"), { publicCode: "STRIPE_CORRELATION_MISMATCH" });
+        }
+      }
+    }
     await addStripeEventIdToOrden({ ordenId, eventId });
 
     // ====================================================
@@ -783,6 +827,7 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       const ordenActualizada = await marcarOrdenPagadaAtomico({
         ordenId,
+        financialProof,
         sessionLike: session,
         eventId,
         detail: "checkout.session.completed",
@@ -845,6 +890,7 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       const ordenActualizada = await marcarOrdenPagadaAtomico({
         ordenId,
+        financialProof,
         sessionLike: session,
         eventId,
         detail: "checkout.session.async_payment_succeeded",
@@ -885,6 +931,7 @@ exports.procesarWebhookStripe = async (req, res) => {
     if (eventType === "checkout.session.async_payment_failed") {
       await marcarOrdenFallidaAtomico({
         ordenId,
+        financialProof,
         eventId,
         detail: "checkout.session.async_payment_failed",
       });
@@ -913,8 +960,14 @@ exports.procesarWebhookStripe = async (req, res) => {
     // checkout.session.expired
     // ====================================================
     if (eventType === "checkout.session.expired") {
+      if (financialProof?.correlation) {
+        await getLifecycle("web").expiredWebhook(ordenId, obj.id, financialProof);
+        await updateWebhookEventSafe(eventRow, { $set: { status: "processed", ordenId, summary } });
+        return ok(res);
+      }
       await marcarOrdenFallidaAtomico({
         ordenId,
+        financialProof,
         eventId,
         detail: "checkout.session.expired",
         clearSession: true,
@@ -941,11 +994,18 @@ exports.procesarWebhookStripe = async (req, res) => {
     }
 
     // ====================================================
+    if (eventType === "payment_intent.canceled") {
+      await getLifecycle().cancelledWebhook(ordenId, obj.id, financialProof);
+      await updateWebhookEventSafe(eventRow, { $set: { status: "processed", ordenId, summary } });
+      return ok(res);
+    }
+
     // payment_intent.payment_failed
     // ====================================================
     if (eventType === "payment_intent.payment_failed") {
       await marcarOrdenFallidaAtomico({
         ordenId,
+        financialProof,
         eventId,
         detail: "payment_intent.payment_failed",
       });
@@ -998,6 +1058,7 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       const ordenActualizada = await marcarOrdenPagadaAtomico({
         ordenId,
+        financialProof,
         sessionLike: {
           id: null,
           payment_intent: intent?.id,
@@ -1066,6 +1127,7 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       const ordenActualizada = await marcarOrdenPagadaAtomico({
         ordenId,
+        financialProof,
         sessionLike: {
           id: null,
           payment_intent: charge?.payment_intent,
@@ -1116,6 +1178,7 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await marcarOrdenReembolsoAtomico({
         ordenId,
+        financialProof,
         eventId,
         detail: "charge.refunded",
         refundAmountCents: refundAmount,
@@ -1168,6 +1231,7 @@ exports.procesarWebhookStripe = async (req, res) => {
 
       await marcarOrdenReembolsoAtomico({
         ordenId,
+        financialProof,
         eventId,
         detail: "refund.updated",
         refundAmountCents: Number(refund?.amount) || 0,
@@ -1219,6 +1283,10 @@ exports.procesarWebhookStripe = async (req, res) => {
 
     return ok(res);
   } catch (err) {
+    if (err.publicCode === "FINANCIAL_REVIEW_REQUIRED") {
+      await updateWebhookEventSafe(eventRow, { $set: { status: "skipped", ordenId: null, summary: { ...summary, ordenId: null }, errorMessage: "FINANCIAL_REVIEW_REQUIRED: no order effects; manual review" } });
+      return ok(res);
+    }
     log("error", "Webhook fatal error", {
       reqId,
       eventId,
@@ -1236,7 +1304,7 @@ exports.procesarWebhookStripe = async (req, res) => {
       },
     });
 
-    await Orden.updateOne(
+    if (err.publicCode !== "STRIPE_CORRELATION_MISMATCH") await Orden.updateOne(
       { _id: ordenId },
       {
         $set: {
@@ -1248,7 +1316,7 @@ exports.procesarWebhookStripe = async (req, res) => {
       }
     ).catch(() => {});
 
-    return res.status(500).json({
+    return res.status(err.publicCode === "STRIPE_CORRELATION_MISMATCH" ? 409 : 500).json({
       ok: false,
       message: "Webhook processing failed",
     });

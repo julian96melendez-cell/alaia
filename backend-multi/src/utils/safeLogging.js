@@ -16,7 +16,7 @@ function redactText(value) {
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[REDACTED token]")
     .replace(/Bearer\s+[^\s'",}]+/gi, "Bearer [REDACTED]")
     .replace(/ExponentPushToken\[[^\]]+\]|ExpoPushToken\[[^\]]+\]/g, "[REDACTED push token]")
-    .replace(/((?:password|contrase[nñ]a|nuevaPassword|newPassword|idToken|accessToken|refreshToken|clientSecret|client_secret|ephemeralKeySecret|private_key|authorization|cookie|token|secret)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}&]+)/gi, "$1[REDACTED]");
+    .replace(/((?:password|contrase[nñ]a|nuevaPassword|newPassword|idToken|accessToken|refreshToken|clientSecret|client_secret|ephemeralKeySecret|checkoutCorrelation|stripeCorrelation|private_key|authorization|cookie|token|secret)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}&]+)/gi, "$1[REDACTED]");
 }
 
 function sanitize(value, seen = new WeakSet()) {
@@ -28,7 +28,7 @@ function sanitize(value, seen = new WeakSet()) {
   if (Array.isArray(value)) return value.map((item) => sanitize(item, seen));
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
     key,
-    /password|contrase|token|secret|private.?key|service.?account|authorization|cookie|mongo.*(?:uri|url)/i.test(key)
+    /password|contrase|token|secret|correlation|private.?key|service.?account|authorization|cookie|mongo.*(?:uri|url)/i.test(key)
       ? "[REDACTED]" : sanitize(item, seen),
   ]));
 }

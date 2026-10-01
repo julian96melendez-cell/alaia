@@ -181,14 +181,14 @@ async function crearSesionPago({
   }
 }
 
-async function crearCustomerMobile({ clienteEmail = null, metadata = {} }) {
+async function crearCustomerMobile({ clienteEmail = null, metadata = {}, idempotencyKey = null }) {
   const email = normalizeEmail(clienteEmail);
   const cleanMetadata = sanitizeMetadata(metadata);
 
   const customer = await stripe.customers.create({
     email: email || undefined,
     metadata: cleanMetadata,
-  });
+  }, idempotencyKey ? { idempotencyKey } : undefined);
 
   return customer;
 }
@@ -231,10 +231,9 @@ async function crearPaymentIntentMobile({
     customer = await crearCustomerMobile({
       clienteEmail: email,
       metadata: cleanMetadata,
+      idempotencyKey: idempotencyKey ? `${idempotencyKey}_customer` : null,
     });
   }
-
-  const ephemeralKey = await crearEphemeralKeyMobile(customer.id);
 
   const payload = {
     amount: cleanAmount,
@@ -259,7 +258,6 @@ async function crearPaymentIntentMobile({
       paymentIntentId: paymentIntent.id,
       clientSecret: paymentIntent.client_secret,
       customerId: customer.id,
-      ephemeralKeySecret: ephemeralKey.secret,
       amount: paymentIntent.amount,
       currency: paymentIntent.currency,
       status: paymentIntent.status,

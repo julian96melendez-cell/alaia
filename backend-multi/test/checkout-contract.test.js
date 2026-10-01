@@ -15,7 +15,7 @@ const exportsMobile = {};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, "../../services/checkout.ts"), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText,
  { exports: exportsMobile, fetch() { throw new Error("No real network allowed"); }, AbortController, setTimeout, clearTimeout });
 const { requestCheckout, pricingChanged } = exportsMobile;
-const input = { items: [{ producto: ID, cantidad: 1 }], couponCode: "", shippingAddress: address };
+const input = { idempotencyKey: "fixture-checkout-key-00000001", items: [{ producto: ID, cantidad: 1 }], couponCode: "", shippingAddress: address };
 const pricing = { subtotal: 40, tax: 2.8, shipping: 6.99, discount: 0, total: 49.79 };
 const user = { uid: "fixture-buyer", getIdToken: async () => "fixture-token" };
 const success = async () => ({ ok: true, json: async () => ({ ok: true, data: { ordenId: ID, clientSecret: "fixture-sheet-credential", pricing } }) });
@@ -25,7 +25,7 @@ function loadSource(file, mocks, extra = {}) {
   const module = { exports: {} };
   const context = {
     module, exports: module.exports,
-    require: (name) => Object.hasOwn(mocks, name) ? mocks[name] : localRequire(name),
+    require: (name) => Object.hasOwn(mocks, name) ? mocks[name] : name === "../services/checkoutLifecycle" ? { getLifecycle: () => ({ settlePaid: async () => ({ managed: false }) }) } : localRequire(name),
     console: { log() {}, warn() {}, error() {} },
     process: { env: {} }, Buffer, Date, Math, Set, Map,
     setInterval: () => 1, clearInterval() {}, ...extra,
@@ -36,10 +36,19 @@ function loadSource(file, mocks, extra = {}) {
 function checkoutHarness(productOverrides = {}) {
   const routes = new Map();
   let created; let payment;
-  const router = { post: (route, ...handlers) => routes.set(route, handlers) };
+  const router = { post: (route, ...handlers) => routes.set(route, handlers), get: (route, ...handlers) => routes.set(route, handlers) };
   loadSource("src/routes/stripeRoutes.js", {
     express: { Router: () => router }, mongoose,
     "../models/Producto": { find: () => ({ lean: async () => [{ _id: ID, nombre: "Item", precioFinal: 40, costoProveedor: 5, categoria: "general", gestionStock: true, stock: 10, ...productOverrides }] }) },
+    "../services/checkoutLifecycle": {
+      prepareCheckout: async ({ uid, email, key, input, buildOrder }) => {
+        require("../src/services/checkoutLifecycle").identity(uid, key);
+        created = await buildOrder({ ...input, firebaseUserId: uid, userEmail: email });
+        const order = { ...created, _id: ID };
+        payment = { amount: Math.round(order.total * 100), metadata: { ordenId: ID, userId: uid, firebaseUserId: uid } };
+        return { order, clientSecret: "fixture-client-secret" };
+      },
+    },
     "../models/Orden": { create: async (payload) => { created = payload; return { ...payload, _id: ID, save: async () => {} }; }, updateOne: async () => ({}) },
     "../middleware/firebaseAuth": { verificarFirebase: createFirebaseAuth(() => ({ verifyIdToken: async () => ({ uid: "verified-buyer", email: "buyer@example.test" }) })) },
     "../controllers/ordenController": { crearOrdenYCheckoutStripe() {} },
@@ -52,7 +61,7 @@ function checkoutHarness(productOverrides = {}) {
 test("mobile obtains a refreshed token and sends only the secure request contract", async () => {
  let sent; let refresh;
  const result = await requestCheckout({ ...user, getIdToken: async flag => { refresh = flag; return "fixture-token"; } }, "/fixture", { ...input, userId: "forged", total: 0.01, discount: 999 }, async (_url, options) => { sent = options; return success(); });
- assert.equal(refresh, true); assert.equal(sent.headers.Authorization, "Bearer fixture-token");
+ assert.equal(refresh, true); assert.equal(sent.headers.Authorization, "Bearer fixture-token"); assert.equal(sent.headers["Idempotency-Key"], input.idempotencyKey);
  assert.deepEqual(Object.keys(JSON.parse(sent.body)).sort(), ["couponCode", "items", "shippingAddress"]);
  assert.equal(result.ordenId, ID); assert.equal(result.pricing.total, 49.79);
 });
@@ -81,12 +90,12 @@ test("authoritative price differences require a new confirmation; malformed resp
 });
 test("backend rejects absent token before checkout writes", async () => {
  const harness = checkoutHarness(); const res = response();
- await harness.routes.get("/payment-sheet")[0]({ headers: {}, body: input }, res, () => assert.fail("must reject"));
+ await harness.routes.get("/payment-sheet")[0]({ headers: { "idempotency-key": "fixture-checkout-key-00000001" }, body: input }, res, () => assert.fail("must reject"));
  assert.equal(res.statusCode, 401); assert.equal(harness.created(), undefined);
 });
 test("backend correlates verified identity/order/Stripe, ignores money and paid flag, returns minimal DTO", async () => {
  const harness = checkoutHarness(); const [authenticate, checkout] = harness.routes.get("/payment-sheet");
- const req = { headers: { authorization: "Bearer fixture-token" }, socket: {}, body: { ...input, userId: "forged", userEmail: "forged@example.test", total: .01, discount: 999, pagado: true, estadoPago: "pagado" } };
+ const req = { headers: { authorization: "Bearer fixture-token", "idempotency-key": "fixture-checkout-key-00000001" }, socket: {}, body: { ...input, userId: "forged", userEmail: "forged@example.test", total: .01, discount: 999, pagado: true, estadoPago: "pagado" } };
  const res = response(); await authenticate(req, res, () => {}); await checkout(req, res);
  assert.equal(res.statusCode, 201); assert.equal(harness.created().firebaseUserId, "verified-buyer");
  assert.equal(harness.created().estadoPago, "pendiente"); assert.equal(harness.created().discount, 0);
@@ -100,7 +109,7 @@ test("backend correlates verified identity/order/Stripe, ignores money and paid 
 test("backend rejects invalid product/quantity, stock, coupon and address before Stripe", async () => {
  for (const [product, payload, status] of [[{}, { items: [{ producto: "invalid", cantidad: 1 }] }, 400], [{}, { items: [{ producto: ID, cantidad: 1.5 }] }, 400], [{ stock: 0 }, {}, 409], [{}, { couponCode: "INVALID" }, 400], [{}, { shippingAddress: {} }, 400], [{ _id: "ffffffffffffffffffffffff" }, {}, 404]]) {
   const harness = checkoutHarness(product); const res = response();
-  await harness.routes.get("/payment-sheet")[1]({ firebaseUser: { uid: user.uid }, headers: {}, socket: {}, body: { ...input, ...payload } }, res);
+  await harness.routes.get("/payment-sheet")[1]({ firebaseUser: { uid: user.uid }, headers: { "idempotency-key": "fixture-checkout-key-00000001" }, socket: {}, body: { ...input, ...payload } }, res);
   assert.equal(res.statusCode, status); assert.equal(harness.created(), undefined); assert.equal(harness.payment(), undefined);
  }
 });

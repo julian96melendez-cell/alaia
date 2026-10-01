@@ -37,13 +37,10 @@ Order ID and verified UID go into server-generated Stripe metadata. The PaymentI
 ID is stored in Mongo, with Stripe idempotency `mobile_pi_<Mongo order ID>`.
 The signed webhook resolves that metadata and controls financial state.
 
-Cancellation/init/card errors retain the cart and reuse the prepared intent when
-input/identity are unchanged. A synchronous guard prevents double button presses.
-Network/invalid-response/5xx outcomes block another create attempt in this mount
-because the server may already have created an order/intent. The user must inspect
-history before retrying. This is not durable backend idempotency: remounts, other
-devices, input edits and lost responses can still create duplicates. A persistent
-per-user request key with atomic claim/recovery is required before production.
+Phase 4 adds persisted opaque intent keys, mandatory Mongo transactions and an
+explicit cancellation/recovery lifecycle. See `checkout-phase4.md`. Cancellation
+of the PaymentSheet UI alone retains the intention and cart; financial state still
+comes exclusively from Stripe/webhook.
 
 Only local PaymentSheet success clears the cart. It is presented as received/verifying,
 never as backend-paid. A completed guard prevents another charge in this mount even
@@ -51,15 +48,11 @@ if cart cleanup fails. Tracking navigates using the same Mongo `ordenId` that th
 backend history maps from `_id`. No orders/payment state are written to Firestore.
 CartContext's existing Firestore cart/coupon storage is outside this phase.
 
-## Inventory blocker
+## Inventory update
 
-The mobile route only checks current stock. It does not reserve or definitively
-consume inventory. Concurrent paid orders can oversell and stock may remain unchanged.
-The alternate stripeController decrements stock inside a transaction but lacks an
-integrated cancellation/expiry/release lifecycle and permits a session-less fallback.
-Copying it into mobile would risk stranded/partial reservations. Production requires
-atomic multi-item reservation, Mongo transaction support, expiry/release and signed
-webhook reconciliation. No inventory changes were executed in this phase.
+Phase 4 replaces the simple stock check with transactional reservation and an
+idempotent release/consume lifecycle. Production still requires a verified Mongo
+replica-set/sharded topology, scheduled expiration and reconciliation operations.
 
 ## Verification boundaries
 
@@ -68,4 +61,4 @@ payment, worker, deployment or migration was run. Existing TypeScript failures r
 Before external tests: configure the frontend backend URL, matching Firebase project,
 backend Stripe/webhook credentials and endpoint; validate the app's existing Stripe
 publishable key/account pairing, mobile return scheme and actual device connectivity.
-Inventory and durable idempotency remain production blockers.
+See Phase 4 for the remaining topology, scheduling and reconciliation prerequisites.

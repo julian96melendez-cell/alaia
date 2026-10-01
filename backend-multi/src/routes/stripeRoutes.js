@@ -9,7 +9,10 @@ const mongoose = require("mongoose");
 const router = express.Router();
 
 const Orden = require("../models/Orden");
+const { prepareCheckout, getLifecycle } = require("../services/checkoutLifecycle");
+const { toPublicOrder } = require("../dto/publicOrder");
 const Producto = require("../models/Producto");
+const { proteger } = require("../middleware/auth");
 const { verificarFirebase } = require("../middleware/firebaseAuth");
 const { calculateCheckoutPricing, normalizeCheckoutItems } = require("../services/checkoutPricing");
 
@@ -168,7 +171,7 @@ function sendError(res, req, err) {
   return res.status(status).json({
     ok: false,
     message: status < 500 && !/^Stripe/.test(String(err?.type || "")) ? err.message : "No se pudo procesar la solicitud de Stripe.",
-    code: /^Stripe/.test(String(err?.type || "")) ? "STRIPE_ERROR" : "CHECKOUT_ERROR",
+    code: err.publicCode || (/^Stripe/.test(String(err?.type || "")) ? "STRIPE_ERROR" : "CHECKOUT_ERROR"),
     reqId: getRequestId(req),
   });
 }
@@ -182,6 +185,8 @@ async function buildMongoOrderFromMobilePayload({
   firestoreOrderId = "",
   mobileOrderRef = "",
   metadata = {},
+  session = null,
+  web = false,
 }) {
   const normalizedItems = normalizeCheckoutItems(items);
 
@@ -189,7 +194,7 @@ async function buildMongoOrderFromMobilePayload({
     _id: { $in: normalizedItems.map((item) => item.producto) },
     activo: true,
     visible: { $ne: false },
-  }).lean();
+  }, null, session ? { session } : undefined).lean();
 
   const productosMap = new Map(productos.map((p) => [String(p._id), p]));
 
@@ -261,6 +266,10 @@ async function buildMongoOrderFromMobilePayload({
   }
 
   const pricing = calculateCheckoutPricing(orderItems, couponCode);
+  // Preserve the hardened amount ceiling and reject local Stripe constraints
+  // before reserving inventory or attempting any external preparation.
+  const amountCents = toStripeAmount(pricing.total);
+  if (amountCents < 50) throw Object.assign(new Error("Monto mínimo de pago no alcanzado"), { statusCode: 400 });
   const addressFields = { nombre: "fullName", telefono: "phone", direccion: "street", ciudad: "city", provincia: "state", codigoPostal: "zip" };
   const direccionEntrega = { email: safeString(userEmail).toLowerCase() };
   for (const [field, input] of Object.entries(addressFields)) {
@@ -269,11 +278,11 @@ async function buildMongoOrderFromMobilePayload({
     direccionEntrega[field] = value;
   }
 
-  const orden = await Orden.create({
+  const orden = {
     firebaseUserId: safeString(firebaseUserId),
     firestoreOrderId: safeString(firestoreOrderId),
     mobileOrderRef: safeString(mobileOrderRef),
-    source: "mobile_payment_sheet",
+    source: web ? "web_checkout" : "mobile_payment_sheet",
 
     clienteEmail: safeString(userEmail).toLowerCase(),
     direccionEntrega,
@@ -297,7 +306,7 @@ async function buildMongoOrderFromMobilePayload({
       {
         estado: "creada",
         fecha: now(),
-        source: "mobile_payment_sheet",
+        source: web ? "web_checkout" : "mobile_payment_sheet",
         meta: {
           firebaseUserId: safeString(firebaseUserId),
           firestoreOrderId: safeString(firestoreOrderId),
@@ -306,7 +315,7 @@ async function buildMongoOrderFromMobilePayload({
         },
       },
     ],
-  });
+  };
 
   return orden;
 }
@@ -349,96 +358,61 @@ function validarStripeWebhookRequest(req, res, next) {
 // Web Checkout
 // POST /api/stripe/checkout
 // ======================================================
-router.post("/checkout", crearOrdenYCheckoutStripe);
+router.post("/checkout", proteger, async (req, res) => {
+  try {
+    const uid = `web:${req.usuario._id || req.usuario.id}`;
+    const prepared = await getLifecycle("web").prepare({ uid, email: req.usuario.email || "", key: req.headers["idempotency-key"], input: req.body || {},
+      buildOrder: async input => ({ ...await buildMongoOrderFromMobilePayload({ ...input, web: true }), usuario: req.usuario._id || req.usuario.id }),
+    });
+    if (!prepared.checkoutUrl) throw Object.assign(new Error("Checkout pendiente; recupera la misma intención"), { statusCode: 409 });
+    return res.status(201).json({ ok: true, data: { ordenId: String(prepared.order._id), url: prepared.checkoutUrl } });
+  } catch (err) { return sendError(res, req, err); }
+});
 
 // ======================================================
 // Mobile PaymentSheet
 // POST /api/stripe/payment-sheet
 // ======================================================
 router.post("/payment-sheet", verificarFirebase, async (req, res) => {
-  let orden = null;
-
   try {
-    const { items = [], couponCode = "", shippingAddress = {} } = req.body || {};
-    const clientOrderRef = createMobilePaymentRef();
-    const finalUserId = req.firebaseUser.uid;
-    const finalEmail = req.firebaseUser.email;
-    const ordenPayload = {
-      items, couponCode, shippingAddress,
-      firebaseUserId: finalUserId,
-      userEmail: finalEmail,
-      mobileOrderRef: clientOrderRef,
-    };
-    orden = await buildMongoOrderFromMobilePayload(ordenPayload);
-
-    const mongoOrdenId = String(orden._id);
-    const stripeAmount = toStripeAmount(orden.total);
-
-    const result = await crearPaymentIntentMobile({
-      amount: stripeAmount,
-      currency: orden.moneda,
-      clienteEmail: finalEmail || null,
-      metadata: {
-        ordenId: mongoOrdenId,
-        orderId: mongoOrdenId,
-        mongoOrdenId,
-
-        mobileOrderRef: clientOrderRef,
-        clientOrderId: clientOrderRef,
-
-        userId: finalUserId || "guest",
-        firebaseUserId: finalUserId || "",
-
-        source: "mobile_payment_sheet",
-        platform: "expo_react_native",
-        ip: getClientIp(req),
-        reqId: getRequestId(req),
-      },
-      idempotencyKey: `mobile_pi_${mongoOrdenId}`,
+    const prepared = await prepareCheckout({
+      uid: req.firebaseUser.uid,
+      email: req.firebaseUser.email,
+      key: req.headers["idempotency-key"],
+      input: req.body || {},
+      buildOrder: buildMongoOrderFromMobilePayload,
     });
-
-    orden.stripePaymentIntentId = result.paymentIntentId || "";
-    orden.stripeAmountTotal = result.amount || stripeAmount;
-    orden.paymentStatusDetail = "mobile_payment_intent_created";
-    orden.historial.push({
-      estado: "stripe_payment_intent_created",
-      fecha: now(),
-      source: "stripe_routes",
-      meta: {
-        paymentIntentId: result.paymentIntentId,
-        amount: result.amount,
-        currency: result.currency,
-      },
-    });
-
-    await orden.save();
-
+    const orden = prepared.order;
+    const ordenId = String(orden._id);
     const pricing = { subtotal: orden.subtotal, tax: orden.tax, shipping: orden.shipping, discount: orden.discount, total: orden.total };
-    // Only the PaymentSheet credential is needed by the buyer; keep internal Stripe IDs server-side.
-    return res.status(201).json({
-      ok: true,
-      data: { clientSecret: result.clientSecret, ordenId: mongoOrdenId, pricing },
-      clientSecret: result.clientSecret,
-      ordenId: mongoOrdenId,
-      pricing,
-    });
-  } catch (err) {
-    if (orden?._id && !orden?.stripePaymentIntentId) {
-      await Orden.updateOne(
-        { _id: orden._id },
-        {
-          $set: {
-            estadoPago: "fallido",
-            paymentStatusDetail: `payment_intent_create_failed:${safeString(
-              err?.message || err
-            ).slice(0, 250)}`,
-          },
-        }
-      ).catch(() => {});
-    }
+    return res.status(201).json({ ok: true, data: { clientSecret: prepared.clientSecret, ordenId, pricing }, clientSecret: prepared.clientSecret, ordenId, pricing });
+  } catch (err) { return sendError(res, req, err); }
+});
 
-    return sendError(res, req, err);
-  }
+const webOwner = req => `web:${req.usuario._id || req.usuario.id}`;
+router.get("/web/checkout-intent", proteger, async (req, res) => {
+  try { return res.json({ ok: true, data: intentView(await getLifecycle("web").resolve(webOwner(req), req.headers["idempotency-key"])) }); }
+  catch (err) { return sendError(res, req, err); }
+});
+router.post("/web/checkout-intent/cancel", proteger, async (req, res) => {
+  try { return res.json({ ok: true, data: intentView(await getLifecycle("web").cancel(webOwner(req), req.headers["idempotency-key"])) }); }
+  catch (err) { return sendError(res, req, err); }
+});
+
+function intentView(order) {
+  return { order: toPublicOrder(order), reservationState: order.inventoryReservation.state, expiresAt: order.inventoryReservation.expiresAt, needsReconciliation: order.inventoryReservation.needsReconciliation === true };
+}
+router.get("/checkout-intent", verificarFirebase, async (req, res) => {
+  try {
+    const order = await getLifecycle().resolve(req.firebaseUser.uid, req.headers["idempotency-key"]);
+    return res.json({ ok: true, data: intentView(order) });
+  } catch (err) { return sendError(res, req, err); }
+});
+router.post("/checkout-intent/cancel", verificarFirebase, async (req, res) => {
+  try {
+    const order = await getLifecycle().cancel(req.firebaseUser.uid, req.headers["idempotency-key"]);
+    return res.json({ ok: true, data: intentView(order) });
+  } catch (err) { return sendError(res, req, err); }
 });
 
 // ======================================================

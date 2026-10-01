@@ -221,42 +221,9 @@ async function resolverComisionPct({ producto }) {
 // - Se usa dentro de transacción si hay sesión.
 // -----------------------------
 async function reservarStockAtomico({ productoId, cantidad, session }) {
-  const qty = Math.max(1, parseInt(cantidad, 10) || 1);
-
-  // Solo descuenta si gestionStock true y stock suficiente
-  const res = await Producto.updateOne(
-    { _id: productoId, activo: true, visible: true, gestionStock: true, stock: { $gte: qty } },
-    { $inc: { stock: -qty } },
-    session ? { session } : undefined
-  );
-
-  // Si no modificó, puede ser porque:
-  // - gestionStock=false (no matchea el filtro) => no es error
-  // - stock insuficiente => error
-  // - producto no activo/visible => error
-  if (res?.modifiedCount === 1) return { reserved: true };
-
-  // Si no reservó, revisa si gestionStock está apagado (permitimos)
-  const p = await Producto.findById(productoId)
-    .select("gestionStock stock activo visible")
-    .lean()
-    .session(session || null)
-    .catch(() => null);
-
-  if (!p || p.activo === false || p.visible === false) {
-    const err = new Error("Producto no disponible (inactivo/no visible).");
-    err.statusCode = 404;
-    throw err;
-  }
-
-  if (p.gestionStock === false) {
-    return { reserved: false, reason: "STOCK_NOT_MANAGED" };
-  }
-
-  const err = new Error("Stock insuficiente para este producto.");
-  err.statusCode = 409;
-  err.debug = { productoId: String(productoId), stock: p.stock, qty };
-  throw err;
+  const { reserveProductStock } = require("../services/inventoryReservation");
+  const reserved = await reserveProductStock(Producto, productoId, cantidad, session);
+  return { reserved };
 }
 
 // -----------------------------

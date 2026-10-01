@@ -7,6 +7,8 @@
 const mongoose = require("mongoose");
 const { validationResult } = require("express-validator");
 const Producto = require("../models/Producto");
+const Orden = require("../models/Orden");
+const { preserveOmittedStock, updateProductWithReservationGuard } = require("../services/stockEditing");
 
 // ----------------------------------------------
 // Helpers respuesta
@@ -467,10 +469,8 @@ exports.editarProducto = async (req, res, next) => {
       });
     }
 
-    const actualizado = await Producto.findByIdAndUpdate(id, payload, {
-      new: true,
-      runValidators: true,
-    });
+    preserveOmittedStock(req.body || {}, payload);
+    const actualizado = await updateProductWithReservationGuard({ mongoose, Orden, Producto, filter: { _id: id }, payload });
 
     if (!actualizado) {
       return sendError(res, {

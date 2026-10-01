@@ -36,7 +36,6 @@ type ProductoUI = {
 
 type CheckoutResponse = {
   ordenId: string;
-  sessionId: string;
   url: string;
 };
 
@@ -250,6 +249,7 @@ export default function ProductosPage() {
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [categoria, setCategoria] = useState("todas");
+  const [shippingAddress, setShippingAddress] = useState({ fullName: "", phone: "", street: "", city: "", state: "", zip: "" });
 
   async function loadProductos() {
     setLoadingProductos(true);
@@ -309,6 +309,17 @@ export default function ProductosPage() {
     });
   }, [productos, search, categoria]);
 
+  async function cancelarIntencionWeb() {
+    try {
+      const raw = sessionStorage.getItem("alaia.web-checkout-intent.v1");
+      if (!raw) return;
+      const intention = JSON.parse(raw);
+      const result = await api.post<{ reservationState: string }>("/api/stripe/web/checkout-intent/cancel", {}, { headers: { "Idempotency-Key": intention.key } });
+      if (!result.ok || result.data?.reservationState !== "released") throw new Error(result.message || "Stripe aún no permite liberar esta intención. Revisa tus órdenes.");
+      sessionStorage.removeItem("alaia.web-checkout-intent.v1"); setError(null);
+    } catch (err: any) { setError(err.message || "No se pudo cancelar la intención"); }
+  }
+
   async function comprar(productoIdBackend: string) {
     if (loadingProductId) return;
 
@@ -316,9 +327,21 @@ export default function ProductosPage() {
     setError(null);
 
     try {
+      const storageKey = "alaia.web-checkout-intent.v1";
+      const previous = sessionStorage.getItem(storageKey);
+      const intention = previous ? JSON.parse(previous) : { key: crypto.randomUUID(), product: productoIdBackend };
+      if (previous) {
+        const recovery = await api.get<{ reservationState: string; order: { estadoPago: string } }>("/api/stripe/web/checkout-intent", { headers: { "Idempotency-Key": intention.key } });
+        if (recovery.ok && recovery.data && (recovery.data.reservationState !== "reserved" || recovery.data.order.estadoPago === "pagado")) {
+          sessionStorage.removeItem(storageKey);
+          throw new Error("La intención anterior finalizó. Revisa tus órdenes antes de iniciar otra compra.");
+        }
+      }
+      if (intention.product !== productoIdBackend) throw new Error("Existe una intención pendiente para otro producto. Finalízala antes de iniciar otra compra.");
+      sessionStorage.setItem(storageKey, JSON.stringify(intention));
       const res = await api.post<CheckoutResponse>("/api/stripe/checkout", {
-        items: [{ producto: productoIdBackend, cantidad: 1 }],
-      });
+        items: [{ producto: productoIdBackend, cantidad: 1 }], shippingAddress,
+      }, { headers: { "Idempotency-Key": intention.key } });
 
       const checkoutUrl = (res.data as any)?.url || (res.data as any)?.checkoutUrl;
 
@@ -341,6 +364,13 @@ window.location.href = checkoutUrl;
         padding: 24,
       }}
     >
+      <fieldset>
+        <legend>Dirección de entrega para checkout</legend>
+        {([['fullName', 'Nombre'], ['phone', 'Teléfono'], ['street', 'Dirección'], ['city', 'Ciudad'], ['state', 'Provincia/estado'], ['zip', 'Código postal']] as const).map(([field, label]) => (
+          <label key={field}>{label}<input value={shippingAddress[field]} maxLength={200} onChange={event => setShippingAddress(previous => ({ ...previous, [field]: event.target.value }))} /></label>
+        ))}
+      </fieldset>
+      {error && <button type="button" onClick={() => void cancelarIntencionWeb()}>Cancelar intención de pago pendiente</button>}
       <div
         style={{
           width: "min(1180px, 100%)",

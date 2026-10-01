@@ -2,6 +2,8 @@
 
 const mongoose = require("mongoose");
 const Producto = require("../models/Producto");
+const Orden = require("../models/Orden");
+const { preserveOmittedStock, updateProductWithReservationGuard } = require("../services/stockEditing");
 
 const isObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -403,22 +405,11 @@ exports.actualizarProducto = async (req, res) => {
       return bad(res, "Los productos afiliados requieren affiliateUrl");
     }
 
-    const producto = await Producto.findOneAndUpdate(
-      {
-        _id: id,
-        vendedor: vendedorId,
-        sellerType: "seller",
-      },
-      {
-        ...payload,
-        vendedor: vendedorId,
-        sellerType: "seller",
-      },
-      {
-        new: true,
-        runValidators: true,
-      }
-    );
+    preserveOmittedStock(req.body || {}, payload);
+    const producto = await updateProductWithReservationGuard({ mongoose, Orden, Producto,
+      filter: { _id: id, vendedor: vendedorId, sellerType: "seller" },
+      payload: { ...payload, vendedor: vendedorId, sellerType: "seller" },
+    });
 
     if (!producto) {
       return notFound(res, "Producto no encontrado");
@@ -430,6 +421,7 @@ exports.actualizarProducto = async (req, res) => {
       meta: { reqId },
     });
   } catch (err) {
+    if (err.statusCode === 409) return send(res, 409, { ok: false, message: err.message, code: err.publicCode });
     console.error("SELLER PRODUCTOS UPDATE ERROR:", {
       reqId,
       name: err?.name,

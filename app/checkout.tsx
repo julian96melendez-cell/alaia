@@ -1,3 +1,6 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Crypto from "expo-crypto";
+import { createCheckoutIntentStore } from "../services/checkoutIntent";
 import { Ionicons } from "@expo/vector-icons";
 import { useStripe } from "@stripe/stripe-react-native";
 import { useRouter } from "expo-router";
@@ -14,13 +17,14 @@ import {
 } from "react-native";
 import { apiUrl } from "../config/api";
 import { auth } from "../firebase/firebaseConfig";
-import { requestCheckout, pricingChanged, CheckoutError, CheckoutPayment, CheckoutPricing, ShippingAddress } from "../services/checkout";
+import { requestCheckout, normalizeCheckoutInput, manageCheckoutIntent, pricingChanged, CheckoutError, CheckoutPayment, CheckoutPricing, ShippingAddress } from "../services/checkout";
 
 import Colors from "../constants/Colors";
 import { useAuth } from "../context/AuthContext";
 import { useCart } from "../context/CartContext";
 
 const TAX_PERCENT = 0.07;
+const intentStore = createCheckoutIntentStore(AsyncStorage, () => Crypto.randomUUID(), value => Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, value));
 
 
 const RETURN_URL = "alaiaclean://stripe-redirect";
@@ -65,8 +69,7 @@ export default function CheckoutScreen() {
   const [shippingAddress, setShippingAddress] = useState<ShippingAddress>({ fullName: user?.displayName || "", phone: "", street: "", city: "", state: "", zip: "" });
   const [serverPricing, setServerPricing] = useState<CheckoutPricing | null>(null);
   const processingRef = useRef(false);
-  const paymentRef = useRef<{ fingerprint: string; payment: CheckoutPayment } | null>(null);
-  const uncertainRef = useRef(false);
+  const intentKeyRef = useRef<string | null>(null);
   const completedRef = useRef(false);
   useEffect(() => { setServerPricing(null); }, [items, coupon?.code, shippingAddress, user?.uid]);
 
@@ -109,16 +112,45 @@ export default function CheckoutScreen() {
     validateCartForMongo();
     const firebaseUser = auth.currentUser;
     if (!firebaseUser || firebaseUser.uid !== user?.uid) throw new CheckoutError("SESSION", "Inicia sesión de nuevo para continuar.");
-    if (uncertainRef.current) throw new CheckoutError("NETWORK", "El resultado de la solicitud anterior es incierto. Revisa tus órdenes antes de volver a pagar.");
-    const input = { items: items.map(item => ({ producto: item.id, cantidad: Number(item.quantity) })), couponCode: coupon?.code || "", shippingAddress };
-    const fingerprint = JSON.stringify({ uid: firebaseUser.uid, ...input });
-    if (paymentRef.current?.fingerprint === fingerprint) return paymentRef.current.payment;
+    const previousIntent = await intentStore.load(firebaseUser.uid);
+    if (previousIntent?.submitted) {
+      const view = await manageCheckoutIntent(firebaseUser, apiUrl("/api/stripe/checkout-intent"), previousIntent.key);
+      if (view?.order.estadoPago === "pagado") {
+        await intentStore.complete(firebaseUser.uid, previousIntent.key);
+        completedRef.current = true;
+        // A re-mounted checkout can have another cart/address. Never delete that cart
+        // merely because an earlier order was paid.
+        try {
+          const normalized = normalizeCheckoutInput({ items: items.map(item => ({ producto: item.id, cantidad: Number(item.quantity) })), couponCode: coupon?.code || "", shippingAddress });
+          const fingerprint = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, JSON.stringify(normalized));
+          if (fingerprint === previousIntent.fingerprint) await clearCart();
+        } catch { /* Preserve the cart when current input differs or is incomplete. */ }
+      }
+      throw new CheckoutError("PAYMENT_VERIFYING", "Consulta el estado de la compra anterior antes de abrir otro pago.", view?.order._id);
+    }
+    const input = normalizeCheckoutInput({ items: items.map(item => ({ producto: item.id, cantidad: Number(item.quantity) })), couponCode: coupon?.code || "", shippingAddress });
+    const intent = await intentStore.get(firebaseUser.uid, input);
+    intentKeyRef.current = intent.key;
+    if (intent.submitted) {
+      const view = await manageCheckoutIntent(firebaseUser, apiUrl("/api/stripe/checkout-intent"), intent.key);
+      if (view?.order.estadoPago === "pagado") {
+        await intentStore.complete(firebaseUser.uid, intent.key);
+        if (intent.matchesPayload) {
+          completedRef.current = true;
+          await clearCart();
+        }
+      }
+      throw new CheckoutError("PAYMENT_VERIFYING", "Consulta el estado backend antes de iniciar otro pago.", view?.order._id);
+    }
     try {
-      const payment = await requestCheckout(firebaseUser, apiUrl("/api/stripe/payment-sheet"), input);
-      paymentRef.current = { fingerprint, payment };
-      return payment;
+      return await requestCheckout(firebaseUser, apiUrl("/api/stripe/payment-sheet"), { ...input, idempotencyKey: intent.key });
     } catch (error) {
-      if (error instanceof CheckoutError && ["NETWORK", "RESPONSE", "SERVER", "STRIPE"].includes(error.code)) uncertainRef.current = true;
+      if (error instanceof CheckoutError && ["PAYMENT_VERIFYING", "INTENT_TERMINAL", "INTENT_EXPIRED"].includes(error.code)) {
+        const view = await manageCheckoutIntent(firebaseUser, apiUrl("/api/stripe/checkout-intent"), intent.key);
+        if (view?.reservationState === "released") await intentStore.complete(firebaseUser.uid, intent.key);
+        else if (view?.order.estadoPago === "pagado" || error.code === "PAYMENT_VERIFYING") await intentStore.submitted(firebaseUser.uid, intent.key);
+        if (view) error.orderId = view.order._id;
+      }
       throw error;
     }
   };
@@ -231,6 +263,9 @@ export default function CheckoutScreen() {
          */
 
         completedRef.current = true;
+        if (intentKeyRef.current) {
+          try { await intentStore.submitted(user.uid, intentKeyRef.current); } catch { /* The already persisted key still recovers the same backend order. */ }
+        }
         try { await clearCart(); } catch { Alert.alert("Carrito pendiente", "El pago terminó en el dispositivo. El carrito no pudo limpiarse; revisa el historial antes de pagar otra vez."); }
 
         const trackingId = paymentData.ordenId;
@@ -274,13 +309,34 @@ export default function CheckoutScreen() {
       ) {
         Alert.alert(
           "No se pudo completar el pago",
-          err instanceof CheckoutError ? err.message : "No se pudo completar el proceso. El carrito se conserva; revisa tus órdenes antes de reintentar."
+          err instanceof CheckoutError ? err.message : "No se pudo completar el proceso. El carrito se conserva; revisa tus órdenes antes de reintentar.",
+          err instanceof CheckoutError && err.orderId ? [{ text: "Ver seguimiento", onPress: () => router.replace(`/track/${err.orderId}` as any) }] : undefined
         );
       } finally {
         processingRef.current = false;
         setProcessing(false);
       }
     };
+
+  const cancelIntention = async () => {
+    if (processingRef.current || !auth.currentUser || auth.currentUser.uid !== user?.uid) return;
+    processingRef.current = true; setProcessing(true);
+    try {
+      const intent = await intentStore.load(auth.currentUser.uid);
+      if (!intent) { Alert.alert("Sin intención pendiente", "Todavía no se ha preparado una compra."); return; }
+      const view = await manageCheckoutIntent(auth.currentUser, apiUrl("/api/stripe/checkout-intent/cancel"), intent.key, true);
+      if (view?.reservationState === "released" || view?.order.estadoPago === "pagado") {
+        await intentStore.complete(auth.currentUser.uid, intent.key);
+        setServerPricing(null);
+        Alert.alert("Intención finalizada", "Consulta el historial. Una compra nueva tendrá otra clave.");
+      } else if (!view) {
+        // No backend order was created (validation/stock rejection). A subsequent
+        // request still uses the same key, so a racing delayed request cannot bypass Mongo uniqueness.
+        Alert.alert("Sin orden preparada", "Puedes corregir los datos y reintentar con la misma intención.");
+      } else Alert.alert("Intención pendiente", "No se puede liberar inventario hasta confirmar el estado Stripe. Revisa el seguimiento.");
+    } catch { Alert.alert("No se pudo cancelar", "Se conserva la intención y el carrito. Reintenta cuando puedas consultar el backend."); }
+    finally { processingRef.current = false; setProcessing(false); }
+  };
 
   if (!items.length) {
     return (
@@ -367,6 +423,9 @@ export default function CheckoutScreen() {
           con Stripe.
         </Text>
 
+        <Pressable disabled={processing} onPress={() => Alert.alert("Cancelar intención de compra", "Solo se liberará la reserva si Stripe confirma que el pago no puede completarse.", [{ text: "Volver", style: "cancel" }, { text: "Cancelar intención", onPress: cancelIntention }])}>
+          <Text style={{ marginBottom: 16 }}>Cancelar intención de compra pendiente</Text>
+        </Pressable>
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Dirección de entrega</Text>
           {([['fullName', 'Nombre completo'], ['phone', 'Teléfono'], ['street', 'Dirección'], ['city', 'Ciudad'], ['state', 'Provincia / estado'], ['zip', 'Código postal']] as const).map(([field, label]) => (

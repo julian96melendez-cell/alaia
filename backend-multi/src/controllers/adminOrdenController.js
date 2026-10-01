@@ -677,6 +677,8 @@ exports.adminObtenerOrden = async (req, res) => {
 // PUT /api/ordenes/admin/ordenes/:id/fulfillment
 // PUT /api/ordenes/admin/ordenes/:id/pago
 // ==========================================================
+const { assertFulfillmentAllowed } = require("../services/orderInvariants");
+
 exports.adminActualizarEstado = async (req, res) => {
   const reqId = getRequestId(req);
 
@@ -716,6 +718,7 @@ exports.adminActualizarEstado = async (req, res) => {
     let fulfillmentCambioReal = false;
     let paymentCambioReal = false;
 
+    assertFulfillmentAllowed(orden, estadoFulfillment);
     const prevFulfillment = orden.estadoFulfillment;
     const prevPago = orden.estadoPago;
 
@@ -937,6 +940,7 @@ emitRealtimeSafe(orden, { reqId, source: "adminActualizarEstado" });
       meta: { reqId },
     });
   } catch (err) {
+    if (err.statusCode === 409) return res.status(409).json({ ok: false, message: err.message, code: err.publicCode });
     log("error", "adminActualizarEstado error", {
       reqId,
       err: err?.message || String(err),
