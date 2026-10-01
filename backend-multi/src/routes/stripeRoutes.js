@@ -167,7 +167,8 @@ function sendError(res, req, err) {
 
   return res.status(status).json({
     ok: false,
-    message: status < 500 ? err.message : "No se pudo procesar la solicitud de Stripe.",
+    message: status < 500 && !/^Stripe/.test(String(err?.type || "")) ? err.message : "No se pudo procesar la solicitud de Stripe.",
+    code: /^Stripe/.test(String(err?.type || "")) ? "STRIPE_ERROR" : "CHECKOUT_ERROR",
     reqId: getRequestId(req),
   });
 }
@@ -413,29 +414,13 @@ router.post("/payment-sheet", verificarFirebase, async (req, res) => {
     await orden.save();
 
     const pricing = { subtotal: orden.subtotal, tax: orden.tax, shipping: orden.shipping, discount: orden.discount, total: orden.total };
+    // Only the PaymentSheet credential is needed by the buyer; keep internal Stripe IDs server-side.
     return res.status(201).json({
       ok: true,
-      message: "Orden Mongo y PaymentIntent creados correctamente.",
-      data: {
-        ...result,
-        pricing,
-        mongoOrdenId,
-        ordenId: mongoOrdenId,
-        orderId: mongoOrdenId,
-        firestoreOrderId: clientOrderRef,
-        clientOrderRef,
-      },
-      mongoOrdenId,
-      ordenId: mongoOrdenId,
-      orderId: mongoOrdenId,
-      firestoreOrderId: clientOrderRef,
-      pricing,
-      customerId: result.customerId,
-      ephemeralKeySecret: result.ephemeralKeySecret,
+      data: { clientSecret: result.clientSecret, ordenId: mongoOrdenId, pricing },
       clientSecret: result.clientSecret,
-      paymentIntentId: result.paymentIntentId,
-      clientOrderRef,
-      reqId: getRequestId(req),
+      ordenId: mongoOrdenId,
+      pricing,
     });
   } catch (err) {
     if (orden?._id && !orden?.stripePaymentIntentId) {

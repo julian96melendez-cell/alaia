@@ -37,7 +37,6 @@ type SavedAddress = {
 
 type PaymentSheetResponse = {
   clientSecret: string;
-  paymentIntentId: string;
   customerId?: string;
   ephemeralKeySecret?: string;
   mongoOrdenId: string;
@@ -198,7 +197,7 @@ export default function CheckoutScreen() {
       throw new Error("Respuesta inválida del backend.");
     }
 
-    if (!response.ok || !json?.clientSecret || !json?.paymentIntentId) {
+    if (!response.ok || !json?.clientSecret) {
       throw new Error(
         json?.message || `No se pudo iniciar Stripe. Status: ${response.status}`
       );
@@ -210,7 +209,6 @@ export default function CheckoutScreen() {
     return {
       pricing: json.pricing,
       clientSecret: String(json.clientSecret),
-      paymentIntentId: String(json.paymentIntentId),
       customerId: json.customerId ? String(json.customerId) : "",
       ephemeralKeySecret: json.ephemeralKeySecret
         ? String(json.ephemeralKeySecret)

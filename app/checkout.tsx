@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useStripe } from "@stripe/stripe-react-native";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -9,9 +9,12 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { apiUrl } from "../config/api";
+import { auth } from "../firebase/firebaseConfig";
+import { requestCheckout, pricingChanged, CheckoutError, CheckoutPayment, CheckoutPricing, ShippingAddress } from "../services/checkout";
 
 import Colors from "../constants/Colors";
 import { useAuth } from "../context/AuthContext";
@@ -29,32 +32,12 @@ function formatMoney(value: number) {
   }).format(Number(value || 0));
 }
 
-function createCheckoutReference() {
-  const random = Math.random()
-    .toString(36)
-    .slice(2, 8)
-    .toUpperCase();
-
-  return `CHECKOUT-${Date.now()}-${random}`;
-}
-
 function isMongoObjectId(value: unknown) {
   return (
     typeof value === "string" &&
     /^[a-f\d]{24}$/i.test(value.trim())
   );
 }
-
-type PaymentSheetResponse = {
-  clientSecret: string;
-  paymentIntentId: string;
-
-  mongoOrdenId: string;
-  ordenId: string;
-  orderId: string;
-
-  clientOrderRef?: string;
-};
 
 export default function CheckoutScreen() {
   const router = useRouter();
@@ -72,11 +55,20 @@ export default function CheckoutScreen() {
     shipping,
     discount,
     total,
+    coupon,
     clearCart,
   } = useCart();
 
   const [processing, setProcessing] =
     useState(false);
+
+  const [shippingAddress, setShippingAddress] = useState<ShippingAddress>({ fullName: user?.displayName || "", phone: "", street: "", city: "", state: "", zip: "" });
+  const [serverPricing, setServerPricing] = useState<CheckoutPricing | null>(null);
+  const processingRef = useRef(false);
+  const paymentRef = useRef<{ fingerprint: string; payment: CheckoutPayment } | null>(null);
+  const uncertainRef = useRef(false);
+  const completedRef = useRef(false);
+  useEffect(() => { setServerPricing(null); }, [items, coupon?.code, shippingAddress, user?.uid]);
 
   const tax = useMemo(
     () =>
@@ -109,216 +101,35 @@ export default function CheckoutScreen() {
     );
 
     if (invalidItem) {
-      throw new Error(
-        `El producto "${invalidItem.name}" no tiene un ObjectId válido de Mongo. Vacía el carrito y agrega productos sincronizados desde Mongo/admin.`
-      );
+      throw new CheckoutError("PRODUCT", "Un producto no es válido. Revisa el carrito antes de pagar.");
     }
   };
 
-  const requestPaymentIntent =
-    async (): Promise<PaymentSheetResponse> => {
-      validateCartForMongo();
-
-      if (!user?.uid) {
-        throw new Error(
-          "Debes iniciar sesión para continuar."
-        );
-      }
-
-      if (
-        !Number.isFinite(
-          finalTotal
-        ) ||
-        finalTotal <= 0
-      ) {
-        throw new Error(
-          "El total de la orden no es válido."
-        );
-      }
-
-      const checkoutReference =
-        createCheckoutReference();
-
-      const payload = {
-        amount: finalTotal,
-
-        currency: "usd",
-
-        orderId:
-          checkoutReference,
-
-        userId: user.uid,
-
-        userEmail:
-          user.email || null,
-
-        items: items.map(
-          (item) => ({
-            producto:
-              item.id,
-
-            cantidad:
-              Number(
-                item.quantity ||
-                  1
-              ),
-          })
-        ),
-
-        subtotal: Number(
-          subtotal || 0
-        ),
-
-        tax,
-
-        shipping: Number(
-          shipping || 0
-        ),
-
-        discount: Number(
-          discount || 0
-        ),
-
-        metadata: {
-          itemsCount:
-            String(
-              items.reduce(
-                (
-                  acc,
-                  item
-                ) =>
-                  acc +
-                  Number(
-                    item.quantity ||
-                      1
-                  ),
-                0
-              )
-            ),
-
-          source:
-            "expo_checkout",
-        },
-      };
-
-      const response =
-        await fetch(
-          apiUrl("/api/stripe/payment-sheet"),
-          {
-            method:
-              "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-              Accept:
-                "application/json",
-            },
-
-            body:
-              JSON.stringify(
-                payload
-              ),
-          }
-        );
-
-      const text =
-        await response.text();
-
-      let json: any = {};
-
-      try {
-        json = text
-          ? JSON.parse(text)
-          : {};
-      } catch {
-        throw new Error(
-          `Respuesta inválida del backend: ${
-            text ||
-            "respuesta vacía"
-          }`
-        );
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          json?.message ||
-            json?.error ||
-            `No se pudo iniciar el pago con Stripe (${response.status}).`
-        );
-      }
-
-      if (
-        !json?.clientSecret
-      ) {
-        throw new Error(
-          "El backend no devolvió clientSecret."
-        );
-      }
-
-      if (
-        !json?.paymentIntentId
-      ) {
-        throw new Error(
-          "El backend no devolvió paymentIntentId."
-        );
-      }
-
-      const mongoOrdenId =
-        String(
-          json?.mongoOrdenId ||
-            json?.ordenId ||
-            json?.orderId ||
-            ""
-        ).trim();
-
-      if (
-        !isMongoObjectId(
-          mongoOrdenId
-        )
-      ) {
-        throw new Error(
-          "El backend no devolvió un ID válido de orden Mongo."
-        );
-      }
-
-      return {
-        clientSecret:
-          String(
-            json.clientSecret
-          ),
-
-        paymentIntentId:
-          String(
-            json.paymentIntentId
-          ),
-
-        mongoOrdenId,
-
-        ordenId:
-          String(
-            json?.ordenId ||
-              mongoOrdenId
-          ),
-
-        orderId:
-          String(
-            json?.orderId ||
-              mongoOrdenId
-          ),
-
-        clientOrderRef:
-          json?.clientOrderRef
-            ? String(
-                json.clientOrderRef
-              )
-            : undefined,
-      };
-    };
+  const requestPaymentIntent = async (): Promise<CheckoutPayment> => {
+    validateCartForMongo();
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser || firebaseUser.uid !== user?.uid) throw new CheckoutError("SESSION", "Inicia sesión de nuevo para continuar.");
+    if (uncertainRef.current) throw new CheckoutError("NETWORK", "El resultado de la solicitud anterior es incierto. Revisa tus órdenes antes de volver a pagar.");
+    const input = { items: items.map(item => ({ producto: item.id, cantidad: Number(item.quantity) })), couponCode: coupon?.code || "", shippingAddress };
+    const fingerprint = JSON.stringify({ uid: firebaseUser.uid, ...input });
+    if (paymentRef.current?.fingerprint === fingerprint) return paymentRef.current.payment;
+    try {
+      const payment = await requestCheckout(firebaseUser, apiUrl("/api/stripe/payment-sheet"), input);
+      paymentRef.current = { fingerprint, payment };
+      return payment;
+    } catch (error) {
+      if (error instanceof CheckoutError && ["NETWORK", "RESPONSE", "SERVER", "STRIPE"].includes(error.code)) uncertainRef.current = true;
+      throw error;
+    }
+  };
 
   const handlePay =
     async () => {
-      if (processing) {
+      if (completedRef.current) {
+        Alert.alert("Pago recibido / verificando", "Revisa tu orden en el historial o seguimiento antes de iniciar otro pago.");
+        return;
+      }
+      if (processingRef.current) {
         return;
       }
 
@@ -345,12 +156,19 @@ export default function CheckoutScreen() {
       }
 
       try {
-        setProcessing(
-          true
-        );
+        processingRef.current = true;
+        setProcessing(true);
 
         const paymentData =
           await requestPaymentIntent();
+
+        const displayedPricing = serverPricing || { subtotal, tax, shipping, discount, total: finalTotal };
+        setServerPricing(paymentData.pricing);
+        if (pricingChanged(displayedPricing, paymentData.pricing)) {
+          Alert.alert("Importe actualizado", "El backend actualizó el resumen. Revísalo y vuelve a pulsar Pagar para confirmar el importe antes de abrir Stripe.");
+          return;
+        }
+        if (auth.currentUser?.uid !== user?.uid) throw new CheckoutError("SESSION", "Tu sesión cambió. Inicia sesión de nuevo.");
 
         const initResult =
           await initPaymentSheet(
@@ -379,10 +197,7 @@ export default function CheckoutScreen() {
         if (
           initResult.error
         ) {
-          throw new Error(
-            initResult.error
-              .message
-          );
+          throw new CheckoutError("STRIPE", "Stripe no pudo preparar el pago. El carrito se conserva.");
         }
 
         const paymentResult =
@@ -404,10 +219,7 @@ export default function CheckoutScreen() {
             return;
           }
 
-          throw new Error(
-            paymentResult.error
-              .message
-          );
+          throw new CheckoutError("STRIPE", "Stripe no pudo completar el pago. Revisa tus órdenes antes de reintentar.");
         }
 
         /*
@@ -418,12 +230,10 @@ export default function CheckoutScreen() {
          * oficial de la orden.
          */
 
-        await clearCart();
+        completedRef.current = true;
+        try { await clearCart(); } catch { Alert.alert("Carrito pendiente", "El pago terminó en el dispositivo. El carrito no pudo limpiarse; revisa el historial antes de pagar otra vez."); }
 
-        const trackingId =
-          paymentData.mongoOrdenId ||
-          paymentData.ordenId ||
-          paymentData.orderId;
+        const trackingId = paymentData.ordenId;
 
         if (
           !isMongoObjectId(
@@ -436,8 +246,8 @@ export default function CheckoutScreen() {
         }
 
         Alert.alert(
-          "Pago aprobado",
-          "Tu pago fue confirmado correctamente.",
+          "Pago recibido / verificando",
+          "Stripe completó el flujo en el dispositivo. Verifica el estado final de la orden en el seguimiento.",
           [
             {
               text:
@@ -462,20 +272,13 @@ export default function CheckoutScreen() {
       } catch (
         err: any
       ) {
-        console.log(
-          "CHECKOUT PAYMENT ERROR:",
-          err
-        );
-
         Alert.alert(
           "No se pudo completar el pago",
-          err?.message ||
-            "Intenta nuevamente."
+          err instanceof CheckoutError ? err.message : "No se pudo completar el proceso. El carrito se conserva; revisa tus órdenes antes de reintentar."
         );
       } finally {
-        setProcessing(
-          false
-        );
+        processingRef.current = false;
+        setProcessing(false);
       }
     };
 
@@ -563,6 +366,19 @@ export default function CheckoutScreen() {
           y paga de forma segura
           con Stripe.
         </Text>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Dirección de entrega</Text>
+          {([['fullName', 'Nombre completo'], ['phone', 'Teléfono'], ['street', 'Dirección'], ['city', 'Ciudad'], ['state', 'Provincia / estado'], ['zip', 'Código postal']] as const).map(([field, label]) => (
+            <View key={field} style={{ marginBottom: 12 }}>
+              <Text>{label}</Text>
+              <TextInput accessibilityLabel={label} value={shippingAddress[field]} editable={!processing}
+                onChangeText={value => setShippingAddress(previous => ({ ...previous, [field]: value }))}
+                keyboardType={field === 'phone' ? 'phone-pad' : 'default'}
+                style={{ borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, padding: 12 }} />
+            </View>
+          ))}
+        </View>
 
         <View
           style={
@@ -668,31 +484,31 @@ export default function CheckoutScreen() {
           <SummaryRow
             label="Subtotal"
             value={formatMoney(
-              subtotal
+              serverPricing?.subtotal ?? subtotal
             )}
           />
 
           <SummaryRow
             label="Impuestos"
             value={formatMoney(
-              tax
+              serverPricing?.tax ?? tax
             )}
           />
 
           <SummaryRow
             label="Descuento"
             value={`-${formatMoney(
-              discount
+              serverPricing?.discount ?? discount
             )}`}
           />
 
           <SummaryRow
             label="Envío"
             value={
-              shipping === 0
+              (serverPricing?.shipping ?? shipping) === 0
                 ? "Gratis"
                 : formatMoney(
-                    shipping
+                    serverPricing?.shipping ?? shipping
                   )
             }
           />
@@ -722,7 +538,7 @@ export default function CheckoutScreen() {
               }
             >
               {formatMoney(
-                finalTotal
+                serverPricing?.total ?? finalTotal
               )}
             </Text>
           </View>

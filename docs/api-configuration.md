@@ -41,9 +41,9 @@ or paths derived from `FRONTEND_URL`. Connect onboarding uses only
 no longer accepted. Placeholder hosts and unsafe production URLs are rejected
 before these URLs are used. Local ignored env files were not modified.
 
-## Known checkout integration gap
+## Checkout integration
 
-The active `app/checkout.tsx` predates the hardened mobile API: it omits Firebase
-Authorization and shippingAddress. The alternate `screens/CheckoutScreen.tsx`
-already implements that contract. API unification does not fix this UI contract;
-the active flow still needs a deliberate checkout migration in a subsequent phase.
+Phase 3 migrated the active `app/checkout.tsx` route to Firebase Bearer authentication,
+validated shippingAddress, backend totals and explicit confirmation when prices change.
+See `checkout-phase3.md` for request/response, retry and inventory limitations.
+`./screens/CheckoutScreen.tsx` remains a duplicate with no current route import.

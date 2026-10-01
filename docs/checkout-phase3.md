@@ -1,0 +1,71 @@
+# Phase 3: active mobile checkout
+
+## Route and contract
+
+`app/(tabs)/cart.tsx` pushes `/checkout`; Expo Router resolves `app/checkout.tsx`.
+No route/import consumes `screens/CheckoutScreen.tsx`; it remains a candidate for
+later removal, not a replacement of the active UI. Its response checks were updated
+because paymentIntentId is no longer exposed.
+
+POST `/api/stripe/payment-sheet` uses `Authorization: Bearer <Firebase ID token>`.
+Body: `{ items: [{ producto, cantidad }], couponCode, shippingAddress }`.
+Address fields: `fullName`, `phone`, `street`, `city`, `state`, `zip`.
+No monetary fields, identity, email, order references, metadata or paid state are sent.
+The active Firebase user refreshes the token immediately before the HTTP request.
+The backend verifies token revocation and derives UID/email only from that identity.
+
+Response: `{ ok, data: { clientSecret, ordenId, pricing }, clientSecret, ordenId, pricing }`.
+Root aliases preserve the inactive checkout's compatibility. `pricing` includes
+subtotal, tax, shipping, discount and total. Only the required PaymentSheet client
+credential is exposed; no PaymentIntent/customer IDs or ephemeral credentials.
+
+Mongo products supply prices, availability and currency. Backend policy computes
+shipping/tax and validates coupons. Existing BIENVENIDO10, ENVIOFREE and VIP20 are
+backend static policy, not a database coupon system. No new coupon source was added.
+The UI/cart estimates (including locally stored coupons) are not authoritative.
+When any component of the server breakdown differs, the summary updates and the
+first attempt stops before init/present PaymentSheet. A second button press is
+explicit confirmation and reuses the same prepared order/payment in this mount.
+
+## Order/payment lifecycle
+
+The backend validates items/address before creating a pending Mongo order.
+Address mapping: fullName->nombre, phone->telefono, street->direccion,
+city->ciudad, state->provincia, zip->codigoPostal; email comes from the token.
+The current UI does not collect a country; the schema keeps its existing default.
+Order ID and verified UID go into server-generated Stripe metadata. The PaymentIntent
+ID is stored in Mongo, with Stripe idempotency `mobile_pi_<Mongo order ID>`.
+The signed webhook resolves that metadata and controls financial state.
+
+Cancellation/init/card errors retain the cart and reuse the prepared intent when
+input/identity are unchanged. A synchronous guard prevents double button presses.
+Network/invalid-response/5xx outcomes block another create attempt in this mount
+because the server may already have created an order/intent. The user must inspect
+history before retrying. This is not durable backend idempotency: remounts, other
+devices, input edits and lost responses can still create duplicates. A persistent
+per-user request key with atomic claim/recovery is required before production.
+
+Only local PaymentSheet success clears the cart. It is presented as received/verifying,
+never as backend-paid. A completed guard prevents another charge in this mount even
+if cart cleanup fails. Tracking navigates using the same Mongo `ordenId` that the
+backend history maps from `_id`. No orders/payment state are written to Firestore.
+CartContext's existing Firestore cart/coupon storage is outside this phase.
+
+## Inventory blocker
+
+The mobile route only checks current stock. It does not reserve or definitively
+consume inventory. Concurrent paid orders can oversell and stock may remain unchanged.
+The alternate stripeController decrements stock inside a transaction but lacks an
+integrated cancellation/expiry/release lifecycle and permits a session-less fallback.
+Copying it into mobile would risk stranded/partial reservations. Production requires
+atomic multi-item reservation, Mongo transaction support, expiry/release and signed
+webhook reconciliation. No inventory changes were executed in this phase.
+
+## Verification boundaries
+
+All automated tests mock network, Firebase, Mongo and Stripe; no real/test external
+payment, worker, deployment or migration was run. Existing TypeScript failures remain.
+Before external tests: configure the frontend backend URL, matching Firebase project,
+backend Stripe/webhook credentials and endpoint; validate the app's existing Stripe
+publishable key/account pairing, mobile return scheme and actual device connectivity.
+Inventory and durable idempotency remain production blockers.
