@@ -74,7 +74,6 @@ const UsuarioSchema = new mongoose.Schema(
       required: true,
       lowercase: true,
       trim: true,
-      index: true,
       match: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
     },
 
@@ -305,7 +304,6 @@ UsuarioSchema.methods.removePushToken = function (token) {
 UsuarioSchema.index({ email: 1 }, { unique: true });
 UsuarioSchema.index({ rol: 1, activo: 1 });
 UsuarioSchema.index({ sellerStatus: 1, rol: 1 });
-UsuarioSchema.index({ stripeAccountId: 1 }, { sparse: true });
 UsuarioSchema.index({ createdAt: -1 });
 UsuarioSchema.index({ ultimoLoginAt: -1 });
 

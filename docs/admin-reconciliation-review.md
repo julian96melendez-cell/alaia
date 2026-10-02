@@ -1270,7 +1270,7 @@ rate/proxy configuration, other routes or the entire production startup/signal
 handler. /readyz uses its actual Mongoose-only handler. Native activation exists
 only in synthetic per-instance configuration; production remains default-off.
 
-#### Prepared A–F evidence (no real results recorded yet)
+#### Prepared A–F evidence (historical preparation before the recorded run)
 
 | Trial | Prepared observation | Evidence origin |
 | --- | --- | --- |
@@ -1377,3 +1377,76 @@ timeout enforcement, remote cancellation or performance is certified. The real
 runner is still unexecuted and the operational ledger has not been provisioned.
 
 Final audit verification: **30/30 runner tests and 356/356 complete local tests passed**, no skips. Web TypeScript, syntax and whitespace checks passed. Git remains on fix/production-hardening at the reference commit; seven new files and this document remain pending for review.
+
+#### Recorded Express + MongoDB integration (2026-10-02)
+
+This section supersedes the earlier preparation/audit statements that this runner
+had not yet executed. Those statements describe the local state at their respective
+checkpoints, not the present certification status. One authorized execution used
+`alaia_ab96febfbef06dfc2c2daabefae08bb9`. It must never be reused; no second execution
+was performed to review these results. Original evidence files were read locally
+and were not edited or copied into the repository.
+
+The final JSON and separately captured exit code report **status: passed, exit 0**.
+Run ID: `17760fd5-24a4-4b9d-affc-6ca7e097c4bb`.
+Recorded interval: `2026-10-02T20:32:37.638Z` to `2026-10-02T20:32:57.701Z`.
+The evidence files had private mode 0600 and no secrets were found in the reviewed
+content. This privacy review is not a guarantee for arbitrary future output.
+
+**Execution HEAD**, captured separately in head.txt:
+`e61eb4511c00020094104faf7655c170ac8db075`.
+**Implementation reference**, the runner's hard-coded referenceCommit:
+`199f067d0ffe4a2a74009e48c2d427a0b7c9ff51`.
+These identify different things; referenceCommit does not identify the exact code
+executed. Their difference is documented, not repaired by changing original JSON.
+Timestamps and the capture procedure are consistent with the same execution but
+are not independent, unequivocal proof binding the four files together. Future
+capture should separately identify execution HEAD and implementation reference;
+a reviewed manifest binding runId, HEAD and file hashes would improve provenance.
+No manifest or runtime metadata change is implemented by this documentation update.
+
+| Trial | Confirmed JSON evidence | Boundary |
+| --- | --- | --- |
+| A startup_and_equivalence | passed; origin real_mongodb; getHead, readersEquivalent, restartSelection all true; http 127.0.0.1_ephemeral | Real MongoDB with independent test Express applications, not full production entry-point startup. |
+| B authentication_validation_privacy | passed; origin real_mongodb; jwtCookies, authorization, preauthParsingAndCors, strictValidation all true | Synthetic users/cookies and controlled HTTP requests; logging capture assertions complete in F. |
+| C mongoose_review_idempotency_cas | passed; origin real_mongodb; postProvider isolated_mongoose; replayedAuditNotDuplicated, staleVersionRejected, concurrentCasOneWinner all true | Administrative case/audit writes only; no financial resolution. |
+| D snapshot_and_financial_invariants | passed; real_mongodb.snapshotTransactionCompleted, concurrentCaseAuditSnapshotObserved, completeFinancialFixturesUnchanged all true | Top-level origin local_injection: schedulingBarrier after_case_cursor_read coordinates the concurrent real MongoDB commit. |
+| E administrative_hooks_rollback | passed; real_mongodb.httpPostRollback and auditModelOverridePreserved true | Top-level origin local_injection: audit_failure_after_transactional_case_write deliberately triggers the rollback. |
+| F shutdown_and_privacy | passed; real_mongodb.localNativeDrainObserved, loggingCaptured, commandOptionsObserved, snapshotCommandSubmitted, nativeWriteCommandsAbsent, nativePoolCheckedOutZero all true; readyz mongoose_only | Top-level origin local_injection: timeoutHttp, capacityRetainedUntilCleanup, initialFailureNoHttp, queryFailureNoFallbackSameClient all true. The faults and scheduling waits are local, not real network/server failures. |
+
+Consumption and retention fields are explicit: consumptionAttempted, claimAttempted,
+markerAcknowledged, markerVerified, syntheticDataRetained and doNotReuseDatabase
+are all true. The local persistent ledger was subsequently read without mutation:
+it contained six valid unique names including this consumed base, with no mutex
+remaining. The marker acknowledgment and verification are runner evidence from
+this execution; no remote reread was performed during documentation review.
+
+Cleanup reports local_work_settled, interrupted false, failedStage null. The recorded
+invariants cover the synthetic orders/events/products/payouts/counter fixtures,
+not independently audited production data or every possible financial scenario.
+No native write commands were observed; administrative POST remains in isolated
+Mongoose. The production reader remains default-off; fixture activation does not
+change production configuration.
+
+**Not verified:** remoteTermination, serverTimeoutEnforcement and performance remain
+not_verified. F additionally lists forcedShutdown and realNetworkLoss. Observed
+options and snapshot commands do not prove server enforcement of time budgets.
+A locally instrumented HTTP timeout does not prove remote cancellation. There is
+no certification of production-volume performance, the complete production server,
+all services' drainage, or behavior outside the exercised scenarios.
+
+The original stderr contained exactly two Mongoose duplicate-index warnings for
+Usuario.email and Usuario.stripeAccountId, with no other unexpected messages.
+They are retained as historical evidence. The subsequent local correction removes
+only email's nonunique field index declaration (preserving the explicit unique
+index), and the explicit duplicate Stripe declaration (preserving its field sparse
+index). A fresh-process disconnected regression captures actual stderr and checks
+one effective declaration of each index. No init, syncIndexes, index creation or
+remote index migration is performed. Production connection configuration does not
+explicitly disable autoIndex; actual remote index state and any future startup
+index behavior require a separate review and are not certified by this fix.
+
+Local verification of this follow-up: the new disconnected index regression passed;
+**357/357 complete local tests passed**, none skipped. Web TypeScript, changed-file
+JavaScript syntax and whitespace checks passed. No real runner or external service
+was executed, original evidence files were unchanged, and no commit was created.
