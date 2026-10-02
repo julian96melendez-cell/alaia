@@ -707,7 +707,7 @@ checks passed. The installed driver and both dependency manifests agree on 7.0.0
 comparison to HEAD confirms the lockfile adds only the root direct dependency,
 without replacing any resolved package. The same six files remain pending.
 
-### Isolated native-reader integration runner (prepared, not executed)
+### Isolated native-reader integration runner (local preparation history)
 
 `backend-multi/scripts/mongo-native-reconciliation-reader-integration.js` is an
 independent opt-in runner. Import is inert; it mounts no Express routes and does
@@ -805,8 +805,8 @@ Do not rerun after failure, missing output or interruption. Redact diagnostics,
 rotate the test password in Atlas after review, and unset all temporary URI,
 password, hostname, database and confirmation variables in Terminal.
 
-Current evidence: this runner is **prepared locally and has never connected or
-executed A–F on MongoDB**. Local safety tests validate rejection before connection,
+Evidence at the local preparation checkpoint (before the real execution recorded
+below): this runner had **never connected or executed A–F on MongoDB**. Local safety tests validate rejection before connection,
 privilege/identity/emptiness guards before writes, marker claim reuse protection,
 redaction, and awaited cursor/client cleanup using doubles. Server behavior and
 performance remain uncertified; the prototype remains unrouted and disabled.
@@ -835,14 +835,16 @@ and `markerAcknowledged`; a failed/unacknowledged claim is not advertised as a
 confirmed durable marker. Retention flags express the no-deletion policy, not proof
 that every fixture was inserted. A consumed/ambiguous attempt must never be reused.
 
-Proposed fresh name: `alaia_2754d1782faf11ea3681d2eeed70bc47`. It was generated locally
-and has not been checked, created or used in Atlas. Its actual emptiness must still
-be verified by the runner before writes. Do not create it through Atlas Data
-Explorer: Create Database would create a collection, which this runner rejects.
-The database name is initially only the scope of the test user's role; the runner
-will create its marker and fixture collections after a separate execution approval.
+At the preparation checkpoint, the proposed fresh name was
+`alaia_2754d1782faf11ea3681d2eeed70bc47`, generated locally and not yet checked,
+created or used in Atlas. This is historical preparation only; the execution
+record below permanently supersedes its fresh-candidate status. At that point,
+its emptiness still required preflight verification; no manual collection was to
+be created through Atlas Data Explorer. The name initially scoped only the test
+user role; marker and fixture creation required separate execution approval.
 
-After approval, prepare the Atlas form as follows and stop before saving:
+Historical preparation procedure for that run (do not repeat for this consumed
+database); any future run requires a different fresh name and separate approvals:
 
 1. In the intended project, open Security → Database Access and Edit the existing
    `alaia_integration_test`. Do not edit another user.
@@ -864,5 +866,97 @@ Verification: **17/17 runner safety tests and 271/271 complete local tests passe
 web TypeScript, syntax and tracked/new-file whitespace checks passed. The same three
 pending files remain on `fix/production-hardening`, HEAD `9dc2211`. No Atlas/Stripe
 connection, external configuration, collection/index creation or commit occurred.
-Remote termination, server timeout enforcement, performance and actual snapshot
-results remain uncertified pending the separately authorized real trial.
+At that checkpoint, remote termination, server timeout enforcement, performance
+and actual snapshot results were uncertified pending the separately authorized
+real trial. The execution evidence below supersedes only the tested snapshot
+result; the other certification limits remain.
+
+
+### Confirmed single native-reader execution from `5c42b81`
+
+Reference commit: `5c42b81d9c062f757616ab3b26b7951d85c55da5`, branch
+`fix/production-hardening`. The branch, clean working tree and runner blob matching
+that commit were verified locally before execution. The operator executed the
+runner once after correcting configuration in the original Terminal session;
+the earlier configuration failure occurred before connection and attempted no
+claim. No run was repeated to obtain this evidence.
+
+Execution date: **2026-10-02 (America/Chicago)**, based on local capture-file
+modification times: `resultado.log` at 06:44:30.531188 -05:00 and `exit-code.txt`
+at 06:44:30.543038 -05:00. The complete JSON was read from
+`/private/tmp/alaia-native-result.8c2FnC/resultado.log`; the adjacent
+`exit-code.txt` records **0**. The log contains exactly one JSON object and no
+additional lines. Both files have mode 0600 and timestamps approximately 12 ms
+apart, consistent with the authorized wrapper capturing output and then the
+immediate exit status. Content inspection found no URI, credential, personal
+record or sensitive document. No such data is copied into this document.
+
+The common capture directory, wrapper procedure, matching database and adjacent
+timestamps support that these files belong to the same execution. Neither file
+contains a run identifier, signed provenance, executed commit hash or an embedded
+execution timestamp; this is local operator/capture evidence, not independent
+server attestation. The date and commit reference have the provenance stated above.
+
+Database: **`alaia_2754d1782faf11ea3681d2eeed70bc47`**. The final JSON includes all
+six expected `passed` entries, with the following exact evidence fields:
+
+| Trial / exact `passed` entry | Recorded JSON evidence | Demonstrated scope |
+| --- | --- | --- |
+| `A equivalence and privacy` | `evidence.equivalence = "native_vs_fixture_mongoose_repository"` | Listing/detail DTO equivalence, tested filters/pages and privacy assertions against the fixture-only Mongoose repository. |
+| `B snapshot during synthetic administrative commit` | `evidence.snapshot = "case_source_audits_before_and_after_committed_writer"` | The detail retains coherent case/source/audits before a concurrent synthetic writer commit, and a fresh detail sees the committed state. |
+| `C effective driver limits and cursor session cleanup` | `evidence.driver.observedReadCommands = 20`; `evidence.driver.wireCommandCapMS = 2000`; `evidence.driver.serverTimeoutEnforcement = "not_certified"` | Positive bounded read-command limits were observed; option forwarding, same-client snapshot/session use and awaited local cursor/session/pool cleanup assertions passed. This does not certify server enforcement. |
+| `D HTTP timeout with retained local operation` | `evidence.timeout = "injected_local_wait_not_server_cancellation"` | Instrumented local waiting yields the generic HTTP timeout while retaining the operation slot until work and cleanup settle; a subsequent real read succeeds. |
+| `E concurrent saturation disconnect and pool recovery` | `evidence.concurrency = "two_retained_slots_generic_saturation_then_real_query_recovery"` | Two retained slots cause generic saturation; HTTP disconnect does not prematurely free a slot; after awaited work, a real query recovers on the same reader/client. |
+| `F financial immutability and local shutdown` | `evidence.financialState = "unchanged_except_declared_order_updatedAt_metadata"` | Before/after fixture fingerprints and the separately asserted metadata change pass; financial, inventory, fulfillment, payout, event and counter fixture state is unchanged. Local reader shutdown is awaited. |
+
+Successful exit and inclusion in `passed` mean each trial's coded assertions
+completed; the compact evidence fields are summaries, not individual command traces
+or a count of every assertion. The order `updatedAt` modification in B is intentional
+synthetic metadata; this run is not described as making no writes at all.
+
+Retention evidence is explicit: `claimAttempted: true`,
+`markerAcknowledged: true`, `syntheticDataRetained: true` and
+`doNotReuseDatabase: true`. Execution reached the trials after the runner's identity,
+exclusive-permission and empty-collection preflight checks and the majority-acknowledged
+marker insert. The marker and synthetic data remain. This name is **permanently
+consumed: never reuse it, remove its marker or delete collections to bypass the
+empty-base guard**. The native runner now also permanently rejects this exact name
+in configuration validation before loading the driver, constructing a client or
+connecting, regardless of whether collections still exist. A local regression uses
+an empty-collection client double and proves that neither driver loading nor any
+client operation is reached. The inherited historical denylist remains unchanged;
+retained collections provide an additional runtime guard for all consumed bases.
+
+The final result explicitly retains `remoteTermination: "not_verified"` and
+`performance: "not_certified"`. Server enforcement of command timeouts remains
+`"not_certified"`. D/E use controlled local fault injection, not evidence that
+MongoDB canceled a remote operation. Local settlement, resource counters and
+endSession do not attest remote termination. Network partitions, failover,
+selection/acquisition failures under real load, production-volume performance,
+remote cleanup and behavior outside the enumerated fixture scenarios remain
+unverified. Financial comparisons are before/after assertions on fixtures, not an
+independent audit of transient changes or other databases. No other database was
+queried to establish isolation; that boundary relies on validated permissions and
+fixed namespaces.
+
+The native reader remains **disabled by default and unmounted in Express**.
+Only the isolated runner enabled its private instance. This evidence does not
+authorize activation, replace the mounted Mongoose reader, enable financial
+resolution, or certify deployed HTTP/authentication behavior. Documentation review
+performed no Atlas/Stripe connection, runner execution, index operation, permission
+change, route change or financial mutation.
+
+Documentation verification: **271/271 local tests passed**, including the 17
+runner safety regressions and 41 native-reader regressions. Web TypeScript
+(`--noEmit --incremental false`), syntax checks for the runner, safety tests and
+both native-reader modules, and `git diff --check` passed. The initial restricted
+run had 26 loopback-listening EPERM failures; the complete suite then passed with
+local loopback permission. No test was skipped and the real runner was not invoked.
+That documentation-only verification preceded the separately authorized
+permanent native-run denylist and regression checkpoint.
+
+Checkpoint validation: **18/18 runner safety tests and 272/272 complete local
+tests passed**. Web TypeScript, runner/test syntax and `git diff --check` passed.
+The only checkpoint changes are the execution record, the native runner's permanent
+consumed-name guard and its preconnection regression. Trials, pipelines, routes,
+indexes and financial logic are unchanged; private result files are not included.

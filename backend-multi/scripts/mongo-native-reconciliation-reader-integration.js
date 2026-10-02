@@ -4,12 +4,15 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { validateConfig: previousConfig, validatePrivileges } = require('./mongo-reconciliation-review-integration');
 const { hash, parseKey, sourceSnapshot } = require('../src/services/reconciliationContracts');
+// Permanent native-run history; retained namespaces are an additional guard.
+const consumedDatabases = new Set(['alaia_2754d1782faf11ea3681d2eeed70bc47']);
 const diagnostics = new WeakMap(), attempted = new Set();
 const names = Object.freeze({ orders: 'native_orders', events: 'native_events', cases: 'native_cases', audits: 'native_audits' });
 const marker = 'alaia_native_reader_run';
 function validateConfig(env) {
   try {
     const config = previousConfig(env);
+    assert.ok(!consumedDatabases.has(config.db));
     assert.ok(!attempted.has(config.db));
     assert.ok(env.NODE_ENV === undefined || ['test', 'development'].includes(env.NODE_ENV));
     for (const key of ['DATABASE_URL', 'MONGO_URL', 'MONGODB_URL', 'STRIPE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'FIREBASE_CONFIG']) assert.ok(!env[key]);

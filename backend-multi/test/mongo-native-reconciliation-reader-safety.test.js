@@ -63,6 +63,24 @@ function fakeClient({ roles, collections = [], identity = database, hello, close
   }
   return { driver: { MongoClient }, calls, get client() { return client; } };
 }
+test('native integration runner: confirmed consumed database rejects before client construction even with no collections', async () => {
+  const consumed = 'alaia_2754d1782faf11ea3681d2eeed70bc47';
+  const input = env({ ALAIA_MONGO_TEST_DB: consumed, ALAIA_MONGO_TEST_CONFIRM: consumed,
+    ALAIA_MONGO_TEST_URI: env().ALAIA_MONGO_TEST_URI.replace(database, consumed) });
+  const fake = fakeClient({ collections: [], identity: consumed });
+  let loads = 0;
+  await assert.rejects(runner.main(input, { loadDriver() { loads++; return fake.driver; } }), error => {
+    const result = runner.formatFailure(error);
+    assert.equal(result.failedStage, 'configuration');
+    assert.equal(result.claimAttempted, false);
+    assert.equal(result.markerAcknowledged, false);
+    assert.deepEqual(result.passed, []);
+    return true;
+  });
+  assert.equal(loads, 0);
+  assert.deepEqual(fake.calls, []);
+  assert.equal(fake.client, undefined);
+});
 for (const [name, options] of [
   ['foreign identity', { identity: 'backendmulti' }],
   ['broad role', { roles: [{ role: 'readWriteAnyDatabase', db: 'admin' }] }],
