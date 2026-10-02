@@ -28,6 +28,7 @@ const sellerProductosRoutes = require("./src/routes/sellerProductosRoutes");
 const adminOrdenRoutes = require("./src/routes/adminOrdenRoutes");
 const adminPayoutRoutes = require("./src/routes/adminPayoutRoutes");
 const adminReconciliationRoutes = require("./src/routes/adminReconciliationRoutes");
+const { rejectAmbiguousReconciliationQuery } = require("./src/middleware/reconciliationQueryGuard");
 const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
 
 const app = express();
@@ -189,6 +190,9 @@ app.use((req, res, next) => {
     urlencodedParser(req, res, next);
   });
 });
+
+// Only reconciliation rejects ambiguous raw queries before global normalization.
+app.use("/api/ordenes/admin/reconciliation", rejectAmbiguousReconciliationQuery);
 
 app.use(
   mongoSanitize({

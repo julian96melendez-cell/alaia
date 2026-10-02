@@ -334,3 +334,101 @@ The three targeted order warnings no longer appear. The full suite still emits
 unrelated existing `email` and `stripeAccountId` duplicate-index warnings from the
 user schema; those declarations were outside this authorized correction and were
 left unchanged. No commit is created by this preparation.
+
+## Local HTTP end-to-end validation from `3a02b86`
+
+`backend-multi/test/reconciliation-http.test.js` sends real HTTP requests over
+`127.0.0.1` to an ephemeral port, then closes every server. It loads the actual
+reconciliation router, controller, service, contracts, auth middleware and
+`authService` token generation/verification. Users and administrative persistence
+are doubles in memory; signing keys are random, test-only values confined to the
+fixture environment. Nothing loads real `.env` files or connects to MongoDB,
+Stripe, Firebase, workers or a scheduler. No SDK/production startup is imported.
+
+The fixture reads `server.js` as text and evaluates only its existing CORS,
+the scoped raw-query guard, Mongo sanitization/HPP and production-mode global error-handler middleware
+registrations. Cookie parsing and JSON/form parsing use the real Express packages
+and the production 1 MB limit. A whitelist of module dependencies fails on any
+unexpected infrastructure import. This tests the transport-to-service boundary
+without running the complete production server. The existing generic order routers
+are replaced by a 404 sentinel; unknown reconciliation paths still traverse the
+real `proteger`/`soloAdmin` checks before that fallback.
+
+The 18 HTTP tests cover:
+
+- GET list/detail, POST review and unknown reconciliation paths reject missing
+  sessions and non-admin users. Real JWT verification covers malformed, expired,
+  refresh, missing-user, revoked, inactive, blocked, temporarily locked and
+  role-changed sessions, including invalid Bearer precedence over a valid cookie.
+- Actual CORS preflight is 204 with no data or repository access. Credentialed
+  reads emit the allowed origin and `Cache-Control: no-store`.
+- Cookie writes reject missing/null/untrusted/wrong-protocol/path origins, and
+  trusted Referer cannot replace Origin. Non-JSON/form content types are 415.
+  A separate fixture proves the route Origin guard works without global CORS.
+- Invalid source keys, absent cases, unknown query fields, nested operators,
+  pagination bounds and repeated page/limit/status parameters are rejected.
+  Review queries, financial/fulfillment fields, supplied actors, prose/sensitive
+  evidence, malformed versions, duplicates and invalid idempotency keys fail.
+- Malformed JSON/URI encoding and oversized bodies return sanitized 400/413
+  responses through the existing production-mode error handler. Unexpected
+  list/detail/review/audit failures return the controller's fixed 503 response.
+  Injected audit failure rolls back the administrative write in the repository
+  double. Sensitive fixture markers, raw URIs, private hashes and stacks never
+  appear in response bodies.
+- Exact retries replay the original audit after a subsequent review; changed
+  payloads with the same key return 409. Two simultaneous HTTP requests are held
+  at their initial audit reads: identical requests append once; different reviewers
+  using one version produce one 200 and one 409. Stale source hashes/versions cannot
+  append or overwrite a review.
+- Read DTOs are paginated/redacted and event cases remain independent. Closing a
+  review changes only case/audit data and leaves the operational block visible.
+  Full synthetic orders/events/products/counters/payout fixtures are compared
+  after every HTTP response and again on teardown: their business state is unchanged.
+  Payment/release/refund/payout/fulfillment action URLs have no handler in this router.
+
+**Localized query ambiguity protection:** `server.js` mounts
+`rejectAmbiguousReconciliationQuery` exclusively on
+`/api/ordenes/admin/reconciliation`, before Mongo sanitization and HPP. The guard
+reads raw `originalUrl` query names through `URLSearchParams`, including decoded
+percent aliases. It rejects every repeated name and bracket notation (these
+endpoints support scalar query parameters only), returning fixed HTTP 400
+`REVIEW_AMBIGUOUS_QUERY` without echoing names or values. This prevents repeated
+`kind`, page, limit or status, including mixed scalar/array syntax, from being
+collapsed into an accepted value. It does not alter the global query parser or HPP
+whitelist. Unknown single fields and invalid scalar values remain subject to the
+existing strict contracts.
+
+Previously HPP reduced `kind=order&kind=event` to `event`; the validator received
+a scalar while the original array remained in `req.queryPolluted.kind`.
+Whitelisted page/limit/status were restored as arrays and rejected by contracts.
+The new guard rejects ambiguity before either sanitizer can normalize it. As a
+transport syntax check it runs before route authentication: malformed queries can
+receive 400 without a session, disclose no case data and never reach persistence.
+Valid queries still require `proteger` and `soloAdmin`; write origin protection
+remains unchanged. Existing global CORS/parser rejection may precede the guard.
+Tests cover list/detail/write paths, encoded aliases, bracket syntax, case variants,
+trailing slashes, valid filters and non-reconciliation/near-prefix routes retaining
+their previous HPP behavior. This protects query parameters; it does not introduce
+a raw JSON duplicate-key detector or change header/body parsing on other APIs.
+
+**Integration boundaries still pending:** a real browser's automatic cookie,
+SameSite/Secure and CORS behavior; login/refresh/logout flows; deployed CORS/proxy
+configuration, Helmet, rate limits and request-correlation/logging middleware;
+interaction with actual generic order routers; and real MongoDB persistence,
+aggregations, CAS, transaction conflicts/retries and rollback. The in-memory
+transaction double serializes commits, so concurrent HTTP coverage is not evidence
+of MongoDB write-conflict handling. Error-response redaction is verified; production
+logging redaction is not certified by these tests. The new local HTTP tests do not
+certify the earlier Atlas A–F run: its final JSON remains pending and its consumed
+database stays permanently blocked.
+
+Run locally with `node --test backend-multi/test/reconciliation-http.test.js` or the
+full `node --test backend-multi/test/*.test.js` suite. The environment must permit
+loopback listening; restricted sandboxes may require explicit local-port approval.
+No test is skipped to turn a port-permission failure into a pass.
+
+HTTP delivery verification: **18/18 HTTP tests and 191/191 total local tests
+passed**. Web TypeScript, JavaScript syntax and tracked/new-file whitespace checks
+passed. The HTTP assertions also check that session JWTs and fixture signing keys
+never appear in response bodies or headers.
+No commit, push, merge or deploy is performed for this delivery.
