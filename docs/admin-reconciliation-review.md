@@ -586,3 +586,123 @@ Verification after this lifecycle review: **213/213 local tests passed**, includ
 **25 HTTP tests**. Web TypeScript, all pending JavaScript syntax checks and tracked/
 new-file whitespace checks passed. The same 11 pending files are preserved; HEAD
 remains `9b9bd42` on `fix/production-hardening`, with no commit or external action.
+
+### Native reader prototype (not routed or enabled)
+
+The independent `src/services/reconciliationNativeReader.js` prototype targets the
+installed MongoDB driver **7.0.0**, now declared as a direct, pinned dependency.
+`ALAIA_RECONCILIATION_NATIVE_READER_ENABLED` defaults to absent/`false`; only literal
+`true` permits construction. Even with `true`, no production route imports this
+module, no client connects automatically, and Mongoose remains the current reader.
+Connection requires an explicit `connect({ uri, database, collectionNames })` by a
+future bootstrap. There is no `MONGO_URI` fallback or dotenv loading. Do not enable
+or mount it before the isolated integration described below. POST, review writes,
+financial code, existing pipelines, indexes and HTTP contracts are unchanged.
+
+The prototype exposes only list/detail handlers suitable for GET/HEAD. Future
+mounting must retain existing authentication, `soloAdmin`, query guards and scoped
+logging. It imports the existing pure pipelines, validators and DTOs. List remains
+one aggregation outside transactions (`$unionWith`); its existing consistency
+limitations remain. Detail uses a manual, read-only transaction with snapshot read
+concern and primary preference, on a session created by this same independent
+client. Case, source and audit facet are sequential within that transaction.
+No models, automatic collection/index creation or financial writes are provided.
+
+Native configuration uses the prefix `ALAIA_RECONCILIATION_NATIVE_`:
+
+| Suffix | Default | Allowed range | Scope |
+| --- | ---: | --- | --- |
+| SERVER_SELECTION_TIMEOUT_MS | 1000 | 100–5000 | server selection |
+| CONNECT_TIMEOUT_MS | 2000 | 100–5000 | connection establishment |
+| WAIT_QUEUE_TIMEOUT_MS | 1000 | 100–5000 | legacy pool wait; CSOT takes precedence |
+| SOCKET_TIMEOUT_MS | 3000 | 100–10000 | socket inactivity, not total work duration |
+| CLEANUP_TIMEOUT_MS | 2000 | 100–5000 | each explicit cursor/abort/session cleanup |
+| MAX_POOL_SIZE | 6 | 2–20 | application connections per server per process |
+
+Existing bounded limits also apply: `ALAIA_RECONCILIATION_MONGO_MAX_TIME_MS`
+(default 2000, range 100–10000 ms), `ALAIA_RECONCILIATION_READ_TIMEOUT_MS`
+(default 8000, range 500–15000 ms) and `ALAIA_RECONCILIATION_MAX_CONCURRENT_READS`
+(default 4, range 1–16). The HTTP timeout also bounds subsequent detail work. Pool size must
+be at least concurrency plus one; this is headroom, not a reserved cleanup socket.
+The client has `minPoolSize: 0`, `maxConnecting: 2`, retries disabled and command
+monitoring/driver component logging disabled. Replica-set monitoring adds sockets;
+multiple servers/processes multiply resource cost. The independent client isolates
+pool settings from checkout, webhooks and administrative writes; it does not
+isolate server CPU or storage load.
+
+Each cursor operation receives both `maxTimeMS` and CSOT `timeoutMS`, set to the
+minimum of remaining monotonic work budget and command maximum. Driver 7 can
+replace wire `maxTimeMS` using CSOT, so a longer CSOT is deliberately never passed.
+Manual transactions avoid a shared `withTransaction` timeout context that would
+prevent these per-command overrides. No operation starts after the work budget
+expires or the HTTP request disconnects. Commit receives the remaining capped
+budget; cleanup receives its separately bounded budget. Selection and pool waits
+participate in CSOT; with CSOT enabled, `waitQueueTimeoutMS` is not an additional
+independent acquisition deadline. Explicit initial `connect()` is outside this
+per-operation CSOT and is completed before reads become ready. Driver/network/DNS
+behavior can still delay initial connection or shutdown.
+
+Cursor reads are awaited, then cursor close is explicitly awaited, followed by
+commit or sequential abort and `endSession`. No AbortSignal is passed: the installed
+driver's detached abort-listener cursor cleanup would undermine this ordering.
+Cleanup is never raced against an active operation. No timer or `Promise.race`
+releases concurrency. HTTP 504/disconnect stops further work, but capacity stays
+occupied until the local operation and all cleanup promises settle. Cleanup failure
+fails the reader closed (generic 503); saturation also returns generic 503. A stuck
+operation/cleanup can hold its slot indefinitely. Independent cleanup deadlines
+and driver internal cleanup may refresh budgets, so the HTTP budget is neither a
+strict total cleanup deadline nor proof of remote cancellation. `endSession` and
+driver rejection do not certify remote abort acknowledgement. A client shutdown
+awaits pending reads before closing; it too may remain blocked. Operational
+mitigation requires alerting on retained slots and fail-closed isolation/restart,
+not early permit release or unlimited replacement clients.
+
+Local tests use driver doubles and an isolated loopback HTTP server. They compare
+pipelines/projections/DTOs, simulate snapshot races, inspect actual driver option
+parsing and wire command construction without connecting, and exercise selection,
+acquisition, query, cursor/abort/session failures, delayed errors, disconnects,
+HTTP timeouts and shutdown races. GET/HEAD and absence of a native POST route are
+covered. These prove local ownership, option forwarding and awaited ordering;
+they do not certify a real MongoDB snapshot, server timeout enforcement or remote
+termination. Production routes remain unwired because these guarantees need real
+integration before activation.
+
+Next validation requires approval and a **new, empty** `alaia_` + 32 lowercase hex
+base, never an earlier test base, and a user with readWrite only on that base. A
+future guarded runner must validate URI/database/confirmation, effective privileges
+and emptiness before synthetic setup, leave a permanent no-reuse marker, and never
+read production. Compare native and current DTOs/aggregations; exercise concurrent
+case/source/audit commits, rollback and snapshot consistency; inspect actual wire
+options and server maxTimeMS behavior under pool contention and slow operations;
+measure cleanup/retained slots after disconnect, timeout and network interruption.
+Inspect transaction/server logs only with redacted approved tooling. Confirm no
+financial fixture mutations, repeated cleanup or cross-client sessions. This
+prototype adds no new real runner and performs none of these external experiments.
+
+Prototype checkpoint validation (local only): **246/246 tests passed**, including
+33 native-reader regressions and isolated HTTP GET/HEAD coverage. Web TypeScript,
+syntax and tracked/new-file whitespace checks passed. Existing duplicate-index
+warnings for Usuario email/stripeAccountId remain outside this change; no index
+operation was performed. Branch remains `fix/production-hardening`, HEAD `d25928d`.
+No prototype routing, external connection, deployment or commit was performed.
+
+
+Final local lifecycle review: leave `ALAIA_RECONCILIATION_NATIVE_READER_ENABLED`
+unset or exactly `false` to keep the prototype disabled. Missing connection or
+budget variables do not enable it. No router/bootstrap currently imports it, even
+when that flag is `true`; activation would require a separately reviewed mounting
+change after isolated real-server validation. There is no automatic reconnect or
+replacement-client retry. Repeated initialization is rejected; repeated shutdown
+awaits the same promise, including rejection or unresolved cleanup. A failed close
+leaves the reader unavailable and does not certify that sockets or remote work
+ended. Fresh-process import tests forbid driver/service loading, network connection
+and timer/microtask scheduling during import and default-disabled construction.
+Initialization failures at constructor, connect and database-handle acquisition,
+concurrent/repeated connect, and failed/blocked/repeated client close are covered.
+No native implementation or route change was needed during this final review.
+
+Final verification: **254/254 local tests passed**, including **41 native-reader
+regressions**. Web TypeScript, JavaScript syntax and tracked/new-file whitespace
+checks passed. The installed driver and both dependency manifests agree on 7.0.0;
+comparison to HEAD confirms the lockfile adds only the root direct dependency,
+without replacing any resolved package. The same six files remain pending.
