@@ -28,7 +28,10 @@ const sellerRoutes = require("./src/routes/sellerRoutes");
 const sellerProductosRoutes = require("./src/routes/sellerProductosRoutes");
 const adminOrdenRoutes = require("./src/routes/adminOrdenRoutes");
 const adminPayoutRoutes = require("./src/routes/adminPayoutRoutes");
-const adminReconciliationRoutes = require("./src/routes/adminReconciliationRoutes");
+const { createAdminReconciliationRouter } = require("./src/routes/adminReconciliationRoutes");
+const { createReconciliationReaderLifecycle } = require("./src/services/reconciliationReaderLifecycle");
+const reconciliationReader = createReconciliationReaderLifecycle();
+let selectedReconciliationRouter;
 const { rejectAmbiguousReconciliationQuery } = require("./src/middleware/reconciliationQueryGuard");
 const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
 
@@ -256,7 +259,10 @@ app.get("/readyz", createReadinessHandler(mongoose.connection));
 // ROUTES
 // ======================================================
 // Register before generic order parameters; reconciliation never performs financial actions.
-app.use("/api/ordenes/admin/reconciliation", adminReconciliationRoutes);
+app.use("/api/ordenes/admin/reconciliation", (req, res, next) => {
+  if (!selectedReconciliationRouter) return res.status(503).json({ ok: false, code: "REVIEW_UNAVAILABLE", financialActionsAllowed: false });
+  return selectedReconciliationRouter(req, res, next);
+});
 app.use("/api/ordenes", ordenRoutes);
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/stripe", stripeRoutes);
@@ -322,8 +328,11 @@ app.use((err, req, res, next) => {
 
 let server;
 let shuttingDown = false;
+let shutdownExitCode = 0;
 
 function gracefulShutdown(signal, exitCode = 0) {
+  // A later startup/cleanup failure must upgrade an already-started shutdown.
+  if (exitCode !== 0) shutdownExitCode = exitCode;
   if (shuttingDown) return;
   shuttingDown = true;
 
@@ -335,27 +344,46 @@ function gracefulShutdown(signal, exitCode = 0) {
     console.error("Error stopping workers:", err?.message || err);
   }
 
-  if (!server) process.exit(exitCode);
-
-  server.close((err) => {
-    if (err) {
-      console.error("Error closing HTTP server:", err);
-      process.exit(1);
+  let forced = false, settled = false, watchdog;
+  const readerClosed = reconciliationReader.close();
+  const httpClosed = server ? new Promise((resolve, reject) => {
+    server.close(err => err ? reject(err) : resolve());
+  }) : Promise.resolve();
+  Promise.allSettled([httpClosed, readerClosed]).then(results => {
+    if (forced || settled) return;
+    settled = true;
+    clearTimeout(watchdog);
+    if (results.some(result => result.status === "rejected")) {
+      console.error("Shutdown cleanup failed");
+      return process.exit(1);
     }
-
-    console.log("HTTP server closed");
-    process.exit(exitCode);
+    console.log("HTTP and reconciliation reader closed cleanly");
+    process.exit(shutdownExitCode);
   });
 
-  setTimeout(() => {
-    console.error("Forced shutdown after timeout");
+  watchdog = setTimeout(() => {
+    if (forced || settled) return;
+    forced = true;
+    console.error("Forced shutdown: local cleanup may remain pending; remote termination unverified");
     process.exit(1);
   }, 10000).unref();
 }
 
+process.on("SIGINT", () => gracefulShutdown("SIGINT", 0));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM", 0));
+
 (async () => {
   try {
     await conectarDB();
+    if (shuttingDown) return;
+    let readerConnection;
+    if (reconciliationReader.enabled) {
+      const models = { orders: require("./src/models/Orden"), events: require("./src/models/WebhookEvent"), cases: require("./src/models/ReconciliationCase"), audits: require("./src/models/ReconciliationAudit") };
+      readerConnection = { uri: process.env.MONGO_URI, database: mongoose.connection.name, collectionNames: Object.fromEntries(Object.entries(models).map(([key, model]) => [key, model.collection.name])) };
+    }
+    await reconciliationReader.initialize(readerConnection);
+    if (shuttingDown) return;
+    selectedReconciliationRouter = createAdminReconciliationRouter({ readHandlers: reconciliationReader.handlers() });
 
     // Optional workers are explicitly enabled, never prerequisites for HTTP readiness.
     if (process.env.API_WORKERS_ENABLED === "true") {
@@ -386,9 +414,6 @@ function gracefulShutdown(signal, exitCode = 0) {
       }
     });
 
-    process.on("SIGINT", () => gracefulShutdown("SIGINT", 0));
-    process.on("SIGTERM", () => gracefulShutdown("SIGTERM", 0));
-
     process.on("unhandledRejection", (reason) => {
       console.error("UNHANDLED REJECTION:", reason);
       gracefulShutdown("unhandledRejection", 1);
@@ -399,8 +424,8 @@ function gracefulShutdown(signal, exitCode = 0) {
       gracefulShutdown("uncaughtException", 1);
     });
   } catch (e) {
-    console.error("FATAL: startup failed", e?.message || e);
-    process.exit(1);
+    console.error("FATAL: startup failed");
+    gracefulShutdown("startup failure", 1);
   }
 })();
 

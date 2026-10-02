@@ -13,7 +13,7 @@ function safeError(error) {
   return fail('REVIEW_UNAVAILABLE', 503);
 }
 
-// Prototype only: neither server.js nor the production router imports this file.
+// Construction is opt-in; the lifecycle coordinator connects explicitly.
 // Enabling the flag permits construction, never connection or route replacement.
 function createNativeReconciliationReader({ env = process.env, driver } = {}) {
   const config = getNativeReaderConfig(env);
@@ -133,7 +133,9 @@ function createNativeReconciliationReader({ env = process.env, driver } = {}) {
           });
           await client.connect();
           if (closing) throw fail('REVIEW_UNAVAILABLE', 503);
-          db = client.db(database); collections = Object.freeze({ ...collectionNames }); phase = 'ready';
+          db = client.db(database);
+          if (db.databaseName !== database) throw fail('REVIEW_UNAVAILABLE', 503);
+          collections = Object.freeze({ ...collectionNames }); phase = 'ready';
         } catch (error) {
           phase = 'failed';
           try { await closeClient(); } catch { /* Fail closed; never log credentials or detach cleanup. */ }

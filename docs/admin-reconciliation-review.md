@@ -939,8 +939,10 @@ independent audit of transient changes or other databases. No other database was
 queried to establish isolation; that boundary relies on validated permissions and
 fixed namespaces.
 
-The native reader remains **disabled by default and unmounted in Express**.
-Only the isolated runner enabled its private instance. This evidence does not
+At the execution-evidence checkpoint, the native reader remained **disabled by
+default and unmounted in Express**. Only the isolated runner enabled its private
+instance. The later local integration section describes the new opt-in mounting,
+which remains disabled by default. This evidence does not
 authorize activation, replace the mounted Mongoose reader, enable financial
 resolution, or certify deployed HTTP/authentication behavior. Documentation review
 performed no Atlas/Stripe connection, runner execution, index operation, permission
@@ -960,3 +962,117 @@ tests passed**. Web TypeScript, runner/test syntax and `git diff --check` passed
 The only checkpoint changes are the execution record, the native runner's permanent
 consumed-name guard and its preconnection regression. Trials, pipelines, routes,
 indexes and financial logic are unchanged; private result files are not included.
+
+### Reversible native GET integration from `80819f1` (local preparation only)
+
+The administrative router has an injectable factory. Startup selects its list and
+case-detail GET handlers once; Express HEAD uses the same GET registrations.
+POST `/:caseKey/reviews` always retains the Mongoose review controller and the
+existing origin/content-type protection. Authentication/soloAdmin, raw-query
+ambiguity guard, logging redaction, strict validation, DTOs, cache headers and
+error contracts remain unchanged. No pipeline or financial operation is changed.
+
+`ALAIA_RECONCILIATION_NATIVE_READER_ENABLED` remains absent/false by default.
+Exactly true opts into the native reader; any other value fails configuration.
+No environment file is changed. The lifecycle module is inert on import and
+snapshots configuration once. It memoizes initialization and shutdown and owns
+at most one native reader/client; it cannot change readers in flight or restart
+a failed/closed reader. Disabled mode constructs no native client. Only explicit
+startup calls connect; handlers become available only after successful connection.
+
+Startup retains the relative order of existing services: primary Mongoose
+connection, optional workers, then HTTP. If explicitly enabled, native initialization
+is inserted after the primary connection and before optional workers/HTTP. It uses
+an independent client with the same configured URI, the connected Mongoose database
+name and exact collection names from existing models. Native database identity is
+checked before exposing handlers. This adds no index/collection provisioning and
+no client per request. Initial failure prevents workers/HTTP startup and triggers
+cleanup; no silent Mongoose GET fallback exists. Existing workers, checkout,
+webhooks and review writes retain their connections and behavior. The reader pool
+and driver limits are unchanged; separate credentials/least-privilege provisioning
+remain an external future decision, not performed here.
+
+Later connectivity errors return generic 503/504 using the selected reader. Driver
+topology recovery may restore that same client; cleanup failure marks it failed
+and no replacement client is created. There is one native read runtime, not a
+second wrapper runtime. Slots remain retained through all awaited operation,
+cursor, transaction and session cleanup, including after HTTP timeout/disconnect.
+
+SIGINT/SIGTERM handlers are registered before asynchronous initialization.
+Shutdown immediately closes native admission, stops HTTP acceptance and awaits
+HTTP closure plus reader draining/client closure. Failure of one closure does not
+bypass awaiting the other. The existing 10-second watchdog is retained and explicitly
+reports forced termination with possibly pending cleanup and unverified remote
+termination; it is not a clean shutdown or release of concurrency capacity.
+Existing Mongoose/worker shutdown limitations are not broadened into a claim of
+fully draining every production service. The whole server module remains the
+existing executable entry point with startup side effects; router/lifecycle/native
+module imports do not connect. Tests do not execute production startup imports.
+
+`/readyz` retains its existing Mongoose-only contract and does **not** certify native
+reader availability. Reversal requires setting the flag false/unset and restarting;
+there is no hot toggle and no data change or POST switch. Failed native startup
+therefore blocks the instance until corrected or reverted. Native health metrics,
+real network interruption/failover, production collection/data-shape compatibility,
+server timeout enforcement and deployment-level shutdown remain unverified.
+The earlier fixture A–F run does not certify this new Express/lifecycle integration;
+any future real validation needs a fresh isolated database and separate approval.
+
+Local tests exercise both router selections, initialization memoization, explicit
+failure without HTTP/fallback, closing during initialization, late cleanup errors,
+HTTP close failure with retained cleanup and watchdog behavior. Actual loopback
+HTTP mounts the factory with native driver doubles, checking auth ordering,
+GET/HEAD, validation, no-store, generic unavailability and POST remaining on its
+injected write controller. Existing HTTP regressions cover real auth/CSRF,
+idempotency/CAS/rollback and financial immutability in default Mongoose mode;
+existing native regressions cover saturation, disconnection, timeouts and late
+cleanup with retained slots. No Atlas/Stripe connection or runner execution is
+performed by this local implementation.
+
+Implementation verification: **284/284 local tests passed**, including 10 new
+router/lifecycle/server integration tests and two new native-reader regressions.
+Web TypeScript, syntax of all changed/new JavaScript files and whitespace checks
+passed. Initial native regressions failed because the old driver double omitted
+databaseName; the double now models identity and includes an explicit mismatch
+regression. No test was skipped. No commit or external activation is performed.
+
+### Final local lifecycle audit before checkpoint
+
+Two additional failure paths were corrected: a fatal startup error arriving after
+a signal now upgrades the pending shutdown exit code instead of retaining zero;
+a synchronous reader.close failure is converted to a generic, memoized rejected
+cleanup promise without retrying close. Clean/error completion clears the watchdog;
+terminal-state guards prevent a later timer from emitting another exit or a forced
+exit from later being described as clean. HTTP closure and reader closure still
+both settle before any normal shutdown outcome. Initial failure remains reported
+by startup; cleanup failure remains reported separately without raw driver errors.
+
+Executable startup regressions cover flag absent, false and true: disabled modes
+create no native reader and preserve primary connection → optional workers → HTTP;
+enabled mode waits for native connection before workers/HTTP. Signal regressions
+hold initialization pending, begin shutdown, and then complete or fail initialization:
+neither path opens HTTP afterward. Construction/import, fixed configuration,
+repeated initialization/close/signals, synchronous and late close failures,
+preinitialization shutdown, factory failures, concurrent HTTP-close errors and
+clean-versus-forced shutdown are covered locally. A combined native connect/close
+failure regression verifies both failures stay observable, one client is owned
+and close is not retried. No fallback or extra client is introduced.
+
+Default-disabled behavior preserves the selected Mongoose handlers, POST path,
+worker order and ordinary HTTP startup. Shutdown handling is intentionally hardened
+for early signals and late failures; it is not byte-for-byte identical to the old
+signal behavior. A signal-related initialization rejection can now yield a nonzero
+exit after cleanup rather than silently report success. The existing 10-second
+forced-process watchdog remains; pending local cleanup is never equated to remote
+cancellation. /readyz remains Mongoose-only. No claim is made that importing the
+existing executable server entry point is inert; the new lifecycle module and
+router/native modules create no connections at import. Checkout, webhook, financial
+code, indexes, pipelines, DTOs, route authentication and write protection are unchanged.
+
+Audit verification: **296/296 local tests passed**, including **21 lifecycle/router/
+server tests** and **44 native-reader tests**; web TypeScript, syntax of all six
+changed/new JavaScript files and tracked/new-file whitespace checks passed. No
+real integration runner, production startup or Atlas/Stripe connection was executed.
+The same seven pending files remain on fix/production-hardening at 80819f1;
+no commit, external flag change or deployment occurred. The real-environment,
+remote-operation and full-service shutdown limitations described above remain.

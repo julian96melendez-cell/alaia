@@ -57,7 +57,7 @@ function fakeDriver({ plan = {}, records = data(), realClient = false } = {}) {
     db(database) {
       if (plan.databaseError) throw plan.databaseError;
       events.push({ stage: 'database', database });
-      return { collection(name) {
+      return { databaseName: plan.foreignDatabase || database, collection(name) {
         assert.ok(Object.values(names).includes(name));
         return {
           find(filter, options) { return cursor('find', name, filter, options); },
@@ -447,4 +447,58 @@ test('native reader: blocked client close remains awaited without retries or adm
   assert.equal(h.clients.length, 1); assert.equal(h.reader.stats().phase, 'closing');
   gate.resolve(); await close; assert.equal(settled, true);
   assert.equal(h.events.filter(event => event.stage === 'client:close').length, 1);
+});
+
+
+test('native reader: connection identity mismatch fails before any read and closes its client', async t => {
+  const h = await fixture(t, { unconnected: true, plan: { foreignDatabase: 'different_fixture' } });
+  await assert.rejects(h.reader.connect(input), error => error.publicCode === 'REVIEW_UNAVAILABLE');
+  assert.equal(h.events.some(event => event.stage === 'cursor:create'), false);
+  assert.equal(h.events.filter(event => event.stage === 'client:close').length, 1);
+  await h.reader.close();
+});
+
+test('native reader: selected production router preserves GET/HEAD auth, errors and Mongoose-only POST', async t => {
+  const express = require('express'), http = require('node:http');
+  const { createAdminReconciliationRouter } = require('../src/routes/adminReconciliationRoutes');
+  const h = await fixture(t), app = express(); let posts = 0;
+  const previousOrigin = process.env.CORS_ALLOWED_ORIGINS;
+  process.env.CORS_ALLOWED_ORIGINS = 'https://fixture.invalid';
+  t.after(() => { if (previousOrigin === undefined) delete process.env.CORS_ALLOWED_ORIGINS; else process.env.CORS_ALLOWED_ORIGINS = previousOrigin; });
+  const auth = {
+    proteger(req, res, next) { if (!req.headers['x-fixture-role']) return res.status(401).json({ ok: false }); req.usuario = { _id: ACTOR, rol: req.headers['x-fixture-role'] }; next(); },
+    soloAdmin(req, res, next) { return req.usuario.rol === 'admin' ? next() : res.status(403).json({ ok: false }); }
+  };
+  const controller = { list: () => assert.fail('No Mongoose GET fallback'), detail: () => assert.fail('No Mongoose GET fallback'), review(req, res) { posts++; res.json({ ok: true, financialActionsAllowed: false }); } };
+  app.use('/reviews', createAdminReconciliationRouter({ readHandlers: h.reader.handlers, controller, auth }));
+  const server = http.createServer(app);
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const request = (method, route, role) => new Promise((resolve, reject) => {
+    const outgoing = http.request({ hostname: '127.0.0.1', port: server.address().port, method, path: route,
+      headers: { ...(role ? { 'x-fixture-role': role } : {}), origin: 'https://fixture.invalid', 'content-type': 'application/json' } }, response => {
+      let body = ''; response.on('data', chunk => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, body, headers: response.headers }));
+    }); outgoing.on('error', reject); outgoing.end();
+  });
+  assert.equal((await request('GET', '/reviews')).status, 401);
+  assert.equal((await request('GET', '/reviews', 'client')).status, 403);
+  const listed = await request('GET', '/reviews', 'admin'); assert.equal(listed.status, 200); assert.equal(listed.headers['cache-control'], 'no-store');
+  assert.equal((await request('GET', '/reviews?limit=9999', 'admin')).status, 400);
+  const head = await request('HEAD', '/reviews/' + KEY, 'admin'); assert.equal(head.status, 200); assert.equal(head.body, '');
+  const calls = h.events.filter(event => event.stage === 'cursor:create').length;
+  assert.equal((await request('POST', '/reviews/' + KEY + '/reviews', 'admin')).status, 200); assert.equal(posts, 1);
+  assert.equal(h.events.filter(event => event.stage === 'cursor:create').length, calls);
+  await h.reader.close(); const unavailable = await request('GET', '/reviews', 'admin');
+  assert.equal(unavailable.status, 503); assert.doesNotMatch(unavailable.body, /PRIVATE_|mongodb|stack/);
+  assert.deepEqual(h.records, h.original);
+});
+
+test('native reader: initialization and cleanup failures remain observable without retrying client close', async t => {
+  const h = await fixture(t, { unconnected: true, plan: { connect: Error('PRIVATE_CONNECT'), 'client:close': Error('PRIVATE_CLOSE') } });
+  await assert.rejects(h.reader.connect(input), error => error.publicCode === 'REVIEW_UNAVAILABLE' && !error.message.includes('PRIVATE'));
+  const closing = h.reader.close(); assert.equal(h.reader.close(), closing);
+  await assert.rejects(closing, error => error.publicCode === 'REVIEW_UNAVAILABLE' && !error.message.includes('PRIVATE'));
+  assert.equal(h.clients.length, 1); assert.equal(h.events.filter(event => event.stage === 'client:close').length, 1);
+  assert.equal(h.reader.stats().phase, 'failed'); assert.equal((await h.call()).statusCode, 503);
 });
