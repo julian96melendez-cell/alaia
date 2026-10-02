@@ -5,11 +5,39 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
+const { spawnSync } = require('node:child_process');
 const Orden = require('../src/models/Orden');
 const Counter = require('../src/models/Counter');
 const { withAuthorizedFinancialTransition, assertFulfillmentAllowed, assertStripeCorrelation } = require('../src/services/orderInvariants');
 const { preserveOmittedStock, updateProductWithReservationGuard } = require('../src/services/stockEditing');
 const A = 'aaaaaaaaaaaaaaaaaaaaaaaa';
+test('order index declarations remain effective once and emit no redundant-index warnings', () => {
+  // A fresh process observes compilation warnings, before module caching can hide them.
+  // No connection, model initialization or index command is invoked.
+  const result = spawnSync(process.execPath, ['-e', `
+    const mongoose = require('mongoose');
+    mongoose.set('autoCreate', false); mongoose.set('autoIndex', false);
+    const Orden = require('./src/models/Orden');
+    const keys = ['firestoreOrderId', 'mobileOrderRef', 'vendedorPayouts.stripeTransferId'];
+    const indexes = Orden.schema.indexes();
+    const definitions = keys.map(key => ({
+      key,
+      indexes: indexes.filter(([fields]) => JSON.stringify(fields) === JSON.stringify({ [key]: 1 })),
+      fieldIndex: key.startsWith('vendedorPayouts.')
+        ? Orden.schema.path('vendedorPayouts').schema.path('stripeTransferId').options.index
+        : Orden.schema.path(key).options.index,
+    }));
+    if (mongoose.connection.readyState !== 0) throw Error('Unexpected connection');
+    process.stdout.write(JSON.stringify(definitions));
+  `], { cwd: path.join(__dirname, '..'), encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0);
+  for (const definition of JSON.parse(result.stdout)) {
+    assert.equal(definition.fieldIndex, true, definition.key);
+    assert.deepEqual(definition.indexes, [[{ [definition.key]: 1 }, {}]], definition.key);
+  }
+  assert.doesNotMatch(result.stderr, /Duplicate schema index on \{"(?:firestoreOrderId|mobileOrderRef|vendedorPayouts\.stripeTransferId)":1\}/);
+});
 function order() {
   const doc = Orden.hydrate({ _id: A, estadoPago: 'fallido', estadoFulfillment: 'pendiente', total: 10, moneda: 'usd', items: [], historial: [], firebaseUserId: 'fixture-buyer', checkoutIntent: { keyHash: 'fixture-hash', stripeCorrelation: 'synthetic-correlation' }, inventoryReservation: { state: 'released', lines: [] } });
   return doc;

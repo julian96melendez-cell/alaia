@@ -27,6 +27,7 @@ const sellerRoutes = require("./src/routes/sellerRoutes");
 const sellerProductosRoutes = require("./src/routes/sellerProductosRoutes");
 const adminOrdenRoutes = require("./src/routes/adminOrdenRoutes");
 const adminPayoutRoutes = require("./src/routes/adminPayoutRoutes");
+const adminReconciliationRoutes = require("./src/routes/adminReconciliationRoutes");
 const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
 
 const app = express();
@@ -244,6 +245,8 @@ app.get("/readyz", createReadinessHandler(mongoose.connection));
 // ======================================================
 // ROUTES
 // ======================================================
+// Register before generic order parameters; reconciliation never performs financial actions.
+app.use("/api/ordenes/admin/reconciliation", adminReconciliationRoutes);
 app.use("/api/ordenes", ordenRoutes);
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/stripe", stripeRoutes);

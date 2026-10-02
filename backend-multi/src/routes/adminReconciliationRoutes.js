@@ -1,0 +1,10 @@
+"use strict";
+const router = require("express").Router();
+const { proteger, soloAdmin } = require("../middleware/auth");
+const { createAdminReconciliationController, requireReviewOrigin } = require("../controllers/adminReconciliationController");
+const controller = createAdminReconciliationController();
+router.use(proteger, soloAdmin);
+router.get("/", controller.list);
+router.get("/:caseKey", controller.detail);
+router.post("/:caseKey/reviews", requireReviewOrigin, controller.review);
+module.exports = router;

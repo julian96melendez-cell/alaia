@@ -330,3 +330,12 @@ legacy checkout/webhook/controller functions remain inspection-only candidates a
 must not be reactivated without migrating to this coordinator. Query writes left
 in webhook and payout paths are audit/history ledger effects, not financial-state
 updates. No production raw collection financial writer was found.
+
+## Administrative consultation and evidence delivery
+
+See [admin-reconciliation-review.md](admin-reconciliation-review.md) for the locally
+prepared administrative API, independent order/event cases, versioned append-only
+evidence, authorization/origin controls and deployment prerequisites. Closing a
+review does not change any payment, inventory, fulfillment or payout state and
+never clears operational reconciliation flags. No financial resolver, Stripe
+lookup, worker or scheduler is enabled by this delivery.

@@ -794,8 +794,6 @@ OrdenSchema.virtual("totalComisiones")
     this.comisionTotal = value;
   });
 OrdenSchema.index({ firebaseUserId: 1, createdAt: -1 });
-OrdenSchema.index({ firestoreOrderId: 1 });
-OrdenSchema.index({ mobileOrderRef: 1 });
 OrdenSchema.index({ source: 1, createdAt: -1 });
 OrdenSchema.virtual("totalNetoVendedores")
   .get(function () {
@@ -1449,7 +1447,6 @@ OrdenSchema.index({
   "vendedorPayouts.status": 1,
   createdAt: -1,
 });
-OrdenSchema.index({ "vendedorPayouts.stripeTransferId": 1 });
 
 OrdenSchema.index({ payoutPolicy: 1, payoutBlocked: 1, payoutEligibleAt: 1 });
 OrdenSchema.index({ payoutEligibleAt: 1, payoutReleasedAt: 1 });
