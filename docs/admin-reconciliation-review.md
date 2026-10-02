@@ -706,3 +706,163 @@ regressions**. Web TypeScript, JavaScript syntax and tracked/new-file whitespace
 checks passed. The installed driver and both dependency manifests agree on 7.0.0;
 comparison to HEAD confirms the lockfile adds only the root direct dependency,
 without replacing any resolved package. The same six files remain pending.
+
+### Isolated native-reader integration runner (prepared, not executed)
+
+`backend-multi/scripts/mongo-native-reconciliation-reader-integration.js` is an
+independent opt-in runner. Import is inert; it mounts no Express routes and does
+not change the production activation flag. Its native reader is constructed only
+inside the isolated trials with a private explicit configuration. No production
+model, order hook, Firebase, Stripe client, worker or scheduler is started.
+
+Required variables are exactly the established isolation inputs:
+
+- `ALAIA_MONGO_TEST_DB`: a new `alaia_` plus 32 lowercase hexadecimal characters.
+- `ALAIA_MONGO_TEST_CONFIRM`: exactly that same complete database name.
+- `ALAIA_MONGO_TEST_URI`: an explicit Atlas SRV URI with user
+  `alaia_integration_test`, a nonempty URL-encoded password and the exact database
+  path. Only the established safe URI options are accepted. No dotenv or production
+  URI fallback exists.
+
+The permanent previous-run denylist is reused from the administrative integration
+runner, including `alaia_faf7a4d2651ecd5fb67539a6eb5889ad` and all three earlier
+consumed names. An attempted claim is also blocked in this process. In a new
+process, even an empty collection/marker causes the empty-database check to fail.
+Record every new attempted database in the permanent historical denylist before a
+later checkpoint. Never remove the marker or collections to bypass these guards.
+Production/ambiguous NODE_ENV values, production URI aliases/service credentials,
+ambient reconciliation configuration and driver logging environment overrides are
+rejected before loading/constructing the driver. Permission checks occur after
+connection but before the first write: exactly one authenticated test user, exactly
+readWrite on the target database, no other database/cluster privilege resource.
+The runner inspects connectionStatus/hello metadata on admin; it does not query
+backendmulti or try a denied production read.
+
+Before writes, the setup client checks its exact database identity, effective
+privileges, replica-set primary/session/lookup capability and zero collections;
+the listCollections cursor is explicitly closed and awaited. It then creates
+`alaia_native_reader_run` and writes a majority-acknowledged unique `_id: single-use`
+marker. Namespace creation and that unique ID arbitrate concurrent claims; only a
+winner proceeds to fixtures. Partial claims are conservatively non-reusable.
+The marker/data remain after success, failure or interruption. There is no delete,
+drop, syncIndexes or explicit index-creation command. Creating an isolated
+collection implicitly creates its normal `_id` index, solely on future authorized
+execution; no existing Atlas index is touched.
+
+The runner uses three independent clients, sequentially cleaned up: setup/writer
+(native pool maximum 2), prototype reader (maximum 3, two concurrent reads) and
+fixture-only Mongoose comparator (maximum 2). These are per-server, per-process
+limits; monitoring sockets are additional. Mongoose uses empty fixture schemas
+with autoCreate/autoIndex/buffering disabled and the existing repository/service,
+not production models or hooks. Thus equivalence certifies repository/DTO reads on
+these fixtures, not every production schema, data shape or authorization route.
+All namespaces are fixed isolated `native_*` fixture collections.
+
+| Trial | Required assertions/evidence in the complete final JSON | Limits of certification |
+| --- | --- | --- |
+| A equivalence and privacy | Native/Mongoose listing and detail DTO equality, filter/page/empty-page cases; private sentinels absent | Synthetic fixtures only; no production-volume benchmark or HTTP authorization certification |
+| B snapshot | Read paused after case; a same-base synthetic transaction commits administrative case/audit and order updatedAt metadata; old detail has case/audits/source timestamp before commit, fresh detail has all after commit | Requires a real successful run; source metadata is intentionally changed, financial fields are unchanged |
+| C driver limits and cleanup | Observed native read commands have positive wire maxTimeMS ≤2000; captured CSOT equals requested cap; same-client sessions; snapshot command observed; no tracked cursors, sessions or checked-out connections after awaited work | Option forwarding/wire evidence only; does not measure server timeout enforcement or certify remote cursor destruction |
+| D HTTP timeout | Controlled wait before driver I/O yields generic 504; local slot retained until injected timeout settles and cleanup finishes; later real read succeeds | Explicit local fault injection, not a server-expensive query or proof of remote cancellation |
+| E saturation/disconnect/recovery | Two controlled waits retain both slots, third read gets generic 503; disconnected HTTP frees no slot; sequential cleanup settles; later real detail succeeds with same client | Local concurrency lifecycle and usable pool; does not reproduce a network partition, failover or global fleet load |
+| F immutability/shutdown | Full fixture fingerprints unchanged except explicitly asserted order updatedAt metadata; financial, stock, payout, event and counter fields unchanged; reader shutdown awaited | Other databases are protected by validated privileges/namespace configuration, not audited by reading them |
+
+Instrumentation stores only approved command scalars and local resource counters,
+not commands, filters, raw events, sessions identifiers, connection strings or
+sensitive documents in the output. Cursor proxies instrument caller-facing reads
+and explicit cleanup without replacing internal driver cursor-close behavior.
+Artificial waits are released in finally and their complete work is awaited.
+Barrier timer races coordinate fixtures only; they never release a read permit or
+detach cleanup. Neither local resource counters nor successful endSession proves
+that a remote operation stopped. The result always reports
+`remoteTermination: not_verified`, `performance: not_certified` and driver evidence
+`serverTimeoutEnforcement: not_certified`. Actual expensive-operation maxTimeMS,
+selection/acquisition timeouts, network interruptions and remote cleanup require a
+separately approved, controlled integration design, potentially server observability
+not available to this narrow readWrite user. Do not broaden its permissions merely
+to obtain those metrics.
+
+After explicit approval for a real run, use a new temporary Terminal session and
+unset production connection/service variables, ambient reconciliation flags and
+MongoDB logging overrides. Obtain only the Atlas SRV hostname. Enter the password
+with Terminal's hidden `read -s`, never in chat, files, history or a literal command.
+Set the nonsensitive database and exact confirmation variables. Construct the URI
+in memory with URL encoding; do not echo it or use printenv, shell tracing, saved
+.env files or diagnostic command logs. The direct runner command, once the three
+variables are configured in memory and execution is approved, is:
+
+```sh
+node backend-multi/scripts/mongo-native-reconciliation-reader-integration.js
+```
+
+It must be invoked from the repository root, only once. The runner does not
+configure Atlas or create permissions. Keep the **complete final JSON and exit
+status**, with `passed` containing exactly A–F, evidence for every row, retained-data
+and do-not-reuse flags, plus successful cleanup. A stage enters `passed` only after
+all its assertions complete; failures emit generic redacted JSON and nonzero exit.
+A prompt returning without this complete evidence is insufficient certification.
+Do not rerun after failure, missing output or interruption. Redact diagnostics,
+rotate the test password in Atlas after review, and unset all temporary URI,
+password, hostname, database and confirmation variables in Terminal.
+
+Current evidence: this runner is **prepared locally and has never connected or
+executed A–F on MongoDB**. Local safety tests validate rejection before connection,
+privilege/identity/emptiness guards before writes, marker claim reuse protection,
+redaction, and awaited cursor/client cleanup using doubles. Server behavior and
+performance remain uncertified; the prototype remains unrouted and disabled.
+
+
+Local preparation validation: **267/267 tests passed**, including 13 new runner
+safety regressions; web TypeScript, both JavaScript syntax checks and tracked/new
+file whitespace checks passed. HEAD remains `9dc2211` on
+`fix/production-hardening`. Only this runner, its tests and this document changed.
+No real run, connection, collection/index creation, permission change or commit
+occurred. Runner shutdown and the Mongoose comparator's retries/cleanup have no
+certified hard end-to-end deadline: an unresolved driver/cleanup promise may keep
+the process pending. Preserve that behavior rather than race cleanup, create
+replacement clients, or claim that a returning HTTP response cancels remote work.
+
+### Final security review and proposed Atlas preparation (no external action)
+
+The review adds a snapshot-session-acquisition failure regression: writer session
+creation is inside the protected block, and a nested finally awaits the pending
+reader before abort/endSession cleanup even if the reader rejects. New CLI tests
+confirm exit code 1 and exclusively redacted failed JSON for missing configuration
+and a partial claim failure. Marker tests confirm the majority-acknowledged marker
+precedes seeding, survives a failed seed, and blocks a newly loaded runner process
+through the nonempty-collection guard. Failure evidence includes `claimAttempted`
+and `markerAcknowledged`; a failed/unacknowledged claim is not advertised as a
+confirmed durable marker. Retention flags express the no-deletion policy, not proof
+that every fixture was inserted. A consumed/ambiguous attempt must never be reused.
+
+Proposed fresh name: `alaia_2754d1782faf11ea3681d2eeed70bc47`. It was generated locally
+and has not been checked, created or used in Atlas. Its actual emptiness must still
+be verified by the runner before writes. Do not create it through Atlas Data
+Explorer: Create Database would create a collection, which this runner rejects.
+The database name is initially only the scope of the test user's role; the runner
+will create its marker and fixture collections after a separate execution approval.
+
+After approval, prepare the Atlas form as follows and stop before saving:
+
+1. In the intended project, open Security → Database Access and Edit the existing
+   `alaia_integration_test`. Do not edit another user.
+2. Remove the previous test-database role. In Specific Privileges/roles, leave
+   exactly `readWrite`, database `alaia_2754d1782faf11ea3681d2eeed70bc47`, collection
+   blank (whole database). No built-in general role or additional privilege.
+3. Preserve password, authentication method, cluster restrictions and network
+   access rules. Confirm there is no backendmulti role or privilege.
+4. Present the complete proposed role configuration for approval before Update
+   User. No base, collection, index or data is created by preparing this form.
+5. Only after explicit saving approval, Update User, wait until Atlas applies the
+   change and verify the single role. Stop before the runner.
+6. Prepare the three temporary Terminal variables and hidden password entry as
+   above. Keep NODE_ENV unset/test/development and remove conflicting production
+   variables; never echo the URI. Request separate authorization for the one real
+   runner invocation. No manual production probes or broader monitoring roles.
+
+Verification: **17/17 runner safety tests and 271/271 complete local tests passed**;
+web TypeScript, syntax and tracked/new-file whitespace checks passed. The same three
+pending files remain on `fix/production-hardening`, HEAD `9dc2211`. No Atlas/Stripe
+connection, external configuration, collection/index creation or commit occurred.
+Remote termination, server timeout enforcement, performance and actual snapshot
+results remain uncertified pending the separately authorized real trial.
