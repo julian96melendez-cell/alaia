@@ -1450,3 +1450,39 @@ Local verification of this follow-up: the new disconnected index regression pass
 **357/357 complete local tests passed**, none skipped. Web TypeScript, changed-file
 JavaScript syntax and whitespace checks passed. No real runner or external service
 was executed, original evidence files were unchanged, and no commit was created.
+
+#### Local preparation: disable automatic Mongoose index/collection provisioning
+
+**NOT AUTHORIZED FOR PRODUCTION.** This local change must not be deployed until a
+separately authorized read-only inspection verifies critical remote indexes and
+required collections. Disabling autoIndex does not repair a missing unique index.
+Email uniqueness, Counter.key uniqueness and WebhookEvent(provider,eventId)
+uniqueness must be checked explicitly; absent/incompatible indexes require a
+separate reviewed migration, never automatic syncIndexes during application boot.
+
+The shared connection in src/config/db.js now passes autoIndex:false and
+autoCreate:false explicitly, preserving its server-selection timeout. This applies
+to API, worker and expiration callers regardless of NODE_ENV. The direct utilities
+reset-admin-password.js, resetPassword.js and scripts/crearAdminTemporal.js set
+both Mongoose options before importing Usuario and pass both options to connect.
+No model index declaration, hook, worker selection or financial operation changed.
+The earlier audit's automatic-default behavior describes the previous checkpoint.
+
+The guarantee concerns automatic Mongoose provisioning, not all ways MongoDB can
+create a collection: an explicitly authorized ordinary insert may still create an
+absent collection implicitly. Transactions requiring pre-existing namespaces can
+fail if provisioning was previously relied on. Verify required collections before
+production use; no collection or index provisioning is performed by this change.
+Schemas can override connection defaults, and explicit index APIs bypass automatic
+policy. The current model review found no enabling schema override; reconciliation
+schemas retain their explicit false overrides. Future overrides and provisioning
+APIs require review. Readiness remains a connection indicator, not index readiness.
+
+The disconnected regression evaluates actual operational source with controlled
+Mongoose, dotenv and model dependencies. No real dotenv configuration, credentials,
+MongoDB driver or service is loaded. It checks absent/development/test/production
+NODE_ENV, exact connection options, protected settings before model import, cleanup
+following a simulated partial connection failure, and absence of explicit index or
+collection operations in the four changed operational files. The isolated runners
+and helpers remain unchanged and retain their own false options; their existing
+local safety/runtime regressions continue to apply. No real runner is executed.
