@@ -432,3 +432,157 @@ passed**. Web TypeScript, JavaScript syntax and tracked/new-file whitespace chec
 passed. The HTTP assertions also check that session JWTs and fixture signing keys
 never appear in response bodies or headers.
 No commit, push, merge or deploy is performed for this delivery.
+
+
+## Local read privacy and availability preparation from `9b9bd42`
+
+This change does not alter aggregation stages, pagination, indexes, financial
+writes, admin authorization or write-origin protection. List/detail (including
+Express' HEAD handling for GET routes) share one admission runtime for the mounted
+administrative router in each API process. Review POSTs do not consume read slots.
+The runtime starts after authentication/authorization; malformed transport input
+can still be rejected earlier without database work.
+
+Morgan skips its ordinary format exclusively for the reconciliation path and its
+subpaths. A separate formatter emits only JSON `method`, normalized route template
+and HTTP `status` (null when no headers were sent). It never emits query strings,
+case/source identifiers, unmatched path contents, hostnames, IPs, request IDs,
+headers, user agents, referrers or body data. Case variants and absolute-form HTTP
+targets are classified using pathname parsing compatible with Express. Fixed
+routes are the list, `/:caseKey`, `/:caseKey/reviews` and `/:unmatched`. Normal
+logging for other APIs remains unchanged. Morgan is registered before body parsing
+and the ambiguity guard, so their early rejections get the same restricted format.
+Existing CORS rejections/preflights that finish before Morgan need not produce an
+access log. This guarantee covers Morgan access logs, not an external proxy or all
+other logging sources.
+
+Configuration is server-only, read at runtime initialization; no request can
+choose these limits and no `.env` file is changed by this preparation:
+
+| Variable | Default | Accepted range | Meaning |
+|---|---:|---:|---|
+| `ALAIA_RECONCILIATION_MONGO_MAX_TIME_MS` | 2000 | 100–10000 | Server execution cap per read command, also capped by the remaining shared budget. |
+| `ALAIA_RECONCILIATION_READ_TIMEOUT_MS` | 8000 | 500–15000 | Shared elapsed-time budget and HTTP deadline for an admitted read. |
+| `ALAIA_RECONCILIATION_MAX_CONCURRENT_READS` | 4 | 1–16 | Maximum admitted, unsettled read operations per API process. |
+
+Only positive decimal integers within the range are accepted; invalid settings
+fail configuration with a fixed message that does not echo the supplied value.
+List and audit aggregations always receive `maxTimeMS`. Detail case/source finds
+also receive it and remain sequential inside their existing snapshot transaction.
+The shared deadline uses a monotonic clock. The remaining budget is checked before
+later reads and transaction callback
+retries; a bounded `maxCommitTimeMS` is supplied for the read-only snapshot commit.
+Direct service list/detail callers receive a budget too, but admission and an
+HTTP deadline belong to the HTTP controller. The review write transaction is not
+changed to use this read budget.
+
+Saturation returns generic **503 `REVIEW_READ_BUSY`**, `Retry-After: 1` and no queue.
+Mongo `MaxTimeMSExpired`/code 50 and the local read deadline return generic **504
+`REVIEW_READ_TIMEOUT`**. Other storage failures keep the fixed 503 response.
+Responses contain no driver messages, queries, URI or documents. Late completion
+cannot write a second response; late rejection is awaited and handled.
+
+Two counters intentionally measure different lifetimes: active admitted HTTP
+requests and unsettled operations. Success/error releases the operation slot after
+the promise, including snapshot session cleanup, settles. HTTP timeout or client
+disconnection ends HTTP accounting and stops future detail reads, but **does not
+release the operation slot while database work is still awaited**. This is the
+safer fail-closed behavior: even if a driver promise stalls indefinitely, at most
+the configured number of admitted operations remain, and subsequent reads receive
+503 rather than multiplying unobserved work. Capacity is recovered when those
+operations actually settle, not merely when the client disappears.
+
+There is no explicit `killOp`, driver AbortSignal or guaranteed immediate database
+cancellation. `maxTimeMS` is a server command budget, not a bound on buffering,
+pool acquisition, network transit or all transaction/session cleanup and retry
+activity. A driver error can settle locally while remote termination is uncertain;
+the counter bounds application promises, **not provably all remote MongoDB
+operations**. The total deadline cannot preempt synchronous JavaScript work or a
+blocked event loop. Multiple processes/replicas each have their own limit; there
+is no distributed semaphore. Authentication lookups, POST reviews, workers and
+other APIs are outside this read admission limit.
+
+Before stronger cancellation claims, validate the installed driver/server behavior
+in a new isolated database. The next alternative is a dedicated read execution
+path/pool with compatible driver client-side operation/session timeouts and abort
+support, still retaining admission until termination is acknowledged and keeping
+server `maxTimeMS`. A shared deployment-level admission policy would be needed for
+a global limit. None of these alternatives is enabled by this local preparation.
+
+Local regressions cover confidential/malformed/repeated queries before auth,
+sensitive and unmatched paths, absolute-form and case-varied targets, unchanged
+Morgan output on other APIs, strict config bounds, command options and unchanged
+pipelines, shrinking detail budgets, cleanup, saturation, timeout, disconnection,
+late success/failure and admission recovery. HTTP tests compare business fixtures
+after responses; existing auth/CSRF/idempotency/CAS/rollback tests remain in place.
+Mongo timeout errors are injected doubles and execution options are inspected
+locally; this does not certify server interruption or real query performance.
+
+Local verification for this preparation: **204/204 tests passed**, including
+**24 HTTP tests**. Web TypeScript, syntax for all changed/new JavaScript files and
+tracked/new-file whitespace checks passed. Existing unrelated user-schema index
+warnings remain outside scope. No real connection, index operation, commit, push,
+merge or deployment was performed.
+
+
+### Additional pre-checkpoint lifecycle review
+
+The review found two lifecycle races and corrected them locally without changing
+HTTP contracts, pipelines or indexes:
+
+- A transport already aborted/closed/ended was transiently admitted before being
+  discarded. Admission now checks it before touching counters, even when capacity
+  is full; the controller avoids starting a read on an already disconnected
+  transport. Request `aborted` events also stop the budget and detach HTTP listeners.
+- A final query that completed after timeout/disconnection could let its snapshot
+  callback return normally and attempt commit. The service and repository now
+  re-check the budget after reads/callback completion. Rejection occurs **inside**
+  `withTransaction`, where the installed driver's error path awaits
+  `abortTransaction` before the repository's finally awaits `endSession`.
+
+No timeout handler starts `abortTransaction` or `endSession` in parallel with an
+outstanding query. A transaction may remain active after a 504 while that query
+is pending; its operation slot is held throughout. After the query settles, budget
+rejection prevents later source/audit reads and enters serialized cleanup. If
+commit was already underway before timeout, it is awaited; there is no claim that
+HTTP timeout can cancel an ongoing commit. `maxCommitTimeMS` is a per-commit server
+budget computed at transaction entry, not a total transaction/driver retry deadline.
+The driver may retry commit independently of the callback's budget checks.
+
+The local tests invoke the installed MongoDB driver's real `withTransaction` and
+`endSession` implementations with fake sessions/commit/abort commands; no client
+connects and no server command is sent. They verify callback failure/timeout,
+commit failure, transient retries, session acquisition after disconnect, cleanup
+failure, and retention of capacity during delayed abort and session cleanup.
+They also verify admission before disconnect, repeated/reordered abort/finish/close
+notifications, non-negative counters, no duplicate release or response, and the
+unchanged write-transaction options. HTTP detail timeout coverage verifies that
+later source/audit reads are not started. These tests certify the local ordering,
+not the remote server's termination or the transport reliability of real aborts.
+
+`endSession` releases client-side resources. Its installed-driver implementation
+aborts an active transaction when needed and suppresses most abort errors; client
+session completion therefore does **not** prove the remote abort was acknowledged.
+A driver rejection/session cleanup completion releases the local operation slot
+but may leave uncertainty about remote execution. Generic 503/504 responses do not
+expose cleanup diagnostics. The per-process limit remains a limit on admitted,
+unsettled application operations, never a verified global/remote operation count.
+
+An operation can retain a slot indefinitely during Mongoose buffering, pool/network
+waits or unresolved query, abort or session-cleanup promises. HTTP timeout and
+`maxTimeMS` cannot make these client waits finite. The fail-closed retention is
+intentional: a timer-based release or detached cleanup would admit additional work
+without evidence that the first operation stopped. A compatible next mitigation
+requires an isolated read execution path with validated driver client-side timeouts
+covering acquisition, queries, transaction retries and abort/session cleanup;
+explicit abort support where compatible; no Mongoose buffering on that read path;
+and monitoring of admitted operations versus active HTTP requests. Retain permits
+until awaited cleanup settles, and separately track unknown remote outcomes.
+Validate these options against the installed Mongoose/driver and MongoDB versions
+in a fresh isolated database before enabling them. No shared connection setting,
+write timeout or production configuration was changed for this review.
+
+Verification after this lifecycle review: **213/213 local tests passed**, including
+**25 HTTP tests**. Web TypeScript, all pending JavaScript syntax checks and tracked/
+new-file whitespace checks passed. The same 11 pending files are preserved; HEAD
+remains `9b9bd42` on `fix/production-hardening`, with no commit or external action.

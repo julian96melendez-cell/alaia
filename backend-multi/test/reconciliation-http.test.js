@@ -13,6 +13,11 @@ const cors = require('cors');
 const mongoSanitize = require('express-mongo-sanitize');
 const hpp = require('hpp');
 const jwt = require('jsonwebtoken');
+const morgan = require('morgan');
+const { redactText } = require('../src/utils/safeLogging');
+const { isReconciliationRequest, reconciliationLogFormat } = require('../src/middleware/reconciliationLogging');
+const { createReconciliationReadRuntime } = require('../src/services/reconciliationReadRuntime');
+const { getReconciliationReadLimits } = require('../src/config/reconciliationReads');
 const { rejectAmbiguousReconciliationQuery } = require('../src/middleware/reconciliationQueryGuard');
 const { getAllowedOrigins, createOriginValidator } = require('../src/config/cors');
 const { createReconciliationReviewService } = require('../src/services/reconciliationReviewService');
@@ -39,7 +44,8 @@ function moduleWithDoubles(relative, replacements, env) {
   }, { filename });
   return module.exports;
 }
-async function fixture(t, { globalCors = true } = {}) {
+async function fixture(t, { globalCors = true, readEnv = {} } = {}) {
+  const reads = createReconciliationReadRuntime(getReconciliationReadLimits(readEnv)), logs = [];
   const env = { ACCESS_COOKIE_NAME: COOKIE, JWT_SECRET: crypto.randomBytes(32).toString('hex'), JWT_REFRESH_SECRET: crypto.randomBytes(32).toString('hex'), CORS_ALLOWED_ORIGINS: ORIGIN };
   const users = new Map([[ADMIN, { _id: ADMIN, rol: 'admin', activo: true, tokenVersion: 1, email: 'PRIVATE_AUTH_EMAIL', password: 'PRIVATE_AUTH_PASSWORD' }], [OTHER, { _id: OTHER, rol: 'admin', activo: true, tokenVersion: 1 }], [CLIENT, { _id: CLIENT, rol: 'usuario', activo: true, tokenVersion: 1 }], [SELLER, { _id: SELLER, rol: 'vendedor', activo: true, tokenVersion: 1 }]]);
   const business = {
@@ -54,8 +60,8 @@ async function fixture(t, { globalCors = true } = {}) {
   const state = { lock: Promise.resolve(), auditGate: null, fault: null, repositoryCalls: 0 };
   const fault = stage => { if (state.fault === stage) throw Error('PRIVATE_PASSWORD PRIVATE_DRIVER_ERROR mongodb+srv://PRIVATE_URI PRIVATE_ADDRESS'); };
   const repo = {
-    getCase: async id => { state.repositoryCalls++; fault('detail'); return copy(cases.get(id)); },
-    getSource: async reference => copy((reference.kind === 'order' ? business.orders : business.events).find(row => row._id === reference.id)),
+    getCase: async id => { state.repositoryCalls++; fault('detail'); if (state.detailWait) await state.detailWait; return copy(cases.get(id)); },
+    getSource: async reference => { state.repositoryCalls++; return copy((reference.kind === 'order' ? business.orders : business.events).find(row => row._id === reference.id)); },
     getAudit: async (id, session) => {
       state.repositoryCalls++; fault('review'); const value = copy(audits.get(id)), gate = state.auditGate;
       if (!session && gate && gate.remaining > 0) {
@@ -75,6 +81,7 @@ async function fixture(t, { globalCors = true } = {}) {
       const saved = { ...copy(record), createdAt: new Date() }; audits.set(record._id, saved); return saved;
     },
     listAudits: async (id, options) => {
+      state.repositoryCalls++;
       const rows = [...audits.values()].filter(row => row.caseId === id).sort((a, b) => b.resultVersion - a.resultVersion);
       return { items: copy(rows.slice((options.page - 1) * options.limit, options.page * options.limit)), total: rows.length };
     },
@@ -87,6 +94,8 @@ async function fixture(t, { globalCors = true } = {}) {
     },
     list: async options => {
       state.repositoryCalls++; fault('list');
+      if (state.listWait) await state.listWait;
+      if (state.mongoTimeout) throw Object.assign(Error('PRIVATE_DRIVER_ERROR'), { code: 50 });
       const keys = new Set([...business.orders.filter(row => row.inventoryReservation.needsReconciliation || row.inventoryReservation.state === 'reconciliation_required').map(row => `order:${row._id}`), ...business.events.filter(row => row.provider === 'stripe' && ['failed', 'skipped'].includes(row.status)).map(row => `event:${row._id}`), ...[...cases.values()].filter(row => row.status !== 'closed').map(row => row.caseKey)]);
       const items = [];
       for (const key of [...keys].sort()) {
@@ -109,6 +118,7 @@ async function fixture(t, { globalCors = true } = {}) {
   const auth = moduleWithDoubles('src/middleware/auth.js', { '../models/Usuario': Usuario, '../services/authService': authService }, env);
   const controller = moduleWithDoubles('src/controllers/adminReconciliationController.js', {
     '../services/reconciliationReviewService': { getReconciliationReviewService: () => service },
+    '../services/reconciliationReadRuntime': { createReconciliationReadRuntime: () => reads },
     '../config/cors': { getAllowedOrigins: () => getAllowedOrigins(env) },
   }, env);
   const router = moduleWithDoubles('src/routes/adminReconciliationRoutes.js', { '../middleware/auth': auth, '../controllers/adminReconciliationController': controller }, env);
@@ -119,6 +129,10 @@ async function fixture(t, { globalCors = true } = {}) {
     assert.ok(start > 0 && end > start);
     vm.runInNewContext(serverSource.slice(start, end), { app, cors, createOriginValidator, ALLOWED_ORIGINS: getAllowedOrigins(env) });
   }
+  const loggingStart = serverSource.indexOf('morgan.token("reqId"');
+  const loggingEnd = serverSource.indexOf('const limiterBaseConfig', loggingStart);
+  assert.ok(loggingStart > 0 && loggingEnd > loggingStart);
+  vm.runInNewContext(serverSource.slice(loggingStart, loggingEnd), { app, morgan, isProd: true, redactText, isReconciliationRequest, reconciliationLogFormat, process: { stdout: { write: line => logs.push(line) } } });
   app.use(cookieParser());
   app.use(express.json({ limit: '1mb' })); app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   const normalizeStart = serverSource.indexOf('app.use("/api/ordenes/admin/reconciliation", rejectAmbiguousReconciliationQuery);');
@@ -181,7 +195,14 @@ async function fixture(t, { globalCors = true } = {}) {
     const timer = setTimeout(() => reject(Error('Concurrent requests did not reach barrier')), 4000);
     state.auditGate = { remaining: 2, wait, release, timer };
   }
-  return { request, input, token, env, users, business, cases, audits, state, concurrentReads };
+  async function disconnect() {
+    await new Promise(resolve => {
+      const req = http.request({ hostname: '127.0.0.1', port: server.address().port, method: 'GET', path: BASE, headers: { origin: ORIGIN, cookie: `${COOKIE}=${token(ADMIN)}` }, agent: false });
+      req.on('error', () => resolve()); req.end();
+      const poll = setInterval(() => { if (reads.stats().operations > 0) { clearInterval(poll); req.destroy(); } }, 2);
+    });
+  }
+  return { request, input, token, env, users, business, cases, audits, state, concurrentReads, reads, logs, disconnect };
 }
 
 test('HTTP reconciliation: every read/write and unknown path rejects missing sessions and non-admin users', async t => {
@@ -338,4 +359,87 @@ test('HTTP reconciliation: scalar filters still work and other routes retain exi
   for (const path of [BASE.toUpperCase(), BASE + '/']) {
     assert.equal((await h.request('GET', '', { path: path + '?kind=order&kind=event' })).status, 400);
   }
+});
+
+const waitUntil = async predicate => {
+  for (let i = 0; i < 200; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
+  assert.fail('Local state did not settle');
+};
+const readEnv = { ALAIA_RECONCILIATION_MAX_CONCURRENT_READS: '1', ALAIA_RECONCILIATION_READ_TIMEOUT_MS: '500' };
+test('HTTP reconciliation: Morgan logs only fixed routes, methods and status even before auth rejection', async t => {
+  const h = await fixture(t);
+  await h.request('GET', '?email=PRIVATE_EMAIL&kind=order&kind=event', { session: null });
+  await h.request('GET', '/PRIVATE_ADDRESS?unknown=PRIVATE_PASSWORD', { session: null });
+  await h.request('POST', `/${KEY}/reviews?unknown=PRIVATE_PASSWORD`, { body: {} });
+  await h.request('GET', '/PRIVATE_ADDRESS/PRIVATE_PASSWORD/action?email=PRIVATE_EMAIL');
+  await h.request('GET', '', { path: 'http://local.invalid' + BASE + '?email=PRIVATE_EMAIL&kind=order&kind=event', session: null });
+  await h.request('GET', '', { path: BASE.toUpperCase() + '/PRIVATE_ADDRESS?email=PRIVATE_EMAIL', session: null });
+  assert.equal(h.logs.length, 6);
+  for (const line of h.logs) {
+    assert.doesNotMatch(line, /PRIVATE_|email|unknown|cookie|reqId|user-agent|\?|aaaaaaaa/);
+    const row = JSON.parse(line); assert.deepEqual(Object.keys(row), ['method', 'route', 'status']);
+    assert.ok([BASE, BASE + '/:caseKey', BASE + '/:caseKey/reviews', BASE + '/:unmatched'].includes(row.route));
+  }
+  const other = await h.request('GET', '', { path: '/http-fixture/query?kind=order' }); assert.equal(other.status, 200);
+  assert.match(h.logs.at(-1), /GET \/http-fixture\/query\?kind=order HTTP\/1\.1/);
+  assert.doesNotMatch(h.logs.at(-1), /"route":/);
+});
+test('HTTP reconciliation: saturation rejects generically and success/error release operation capacity', async t => {
+  const h = await fixture(t, { readEnv }); const body = await h.input(); let release;
+  h.state.listWait = new Promise(resolve => { release = resolve; });
+  const pending = h.request('GET'); await waitUntil(() => h.reads.stats().operations === 1);
+  assert.equal((await h.request('GET', '', { session: null })).status, 401);
+  assert.equal((await h.request('GET', '', { session: h.token(CLIENT) })).status, 403);
+  assert.equal((await h.request('POST', `/${KEY}/reviews`, { body })).status, 200);
+  const busy = await h.request('GET', `/${KEY}`); assert.equal(busy.status, 503);
+  assert.deepEqual(busy.body, { ok: false, code: 'REVIEW_READ_BUSY', financialActionsAllowed: false }); assert.equal(busy.headers['retry-after'], '1');
+  h.state.listWait = null; release(); assert.equal((await pending).status, 200);
+  assert.deepEqual(h.reads.stats(), { operations: 0, activeHTTP: 0 });
+  h.state.fault = 'list'; assert.equal((await h.request('GET')).status, 503); assert.equal(h.reads.stats().operations, 0);
+  h.state.fault = null; assert.equal((await h.request('GET')).status, 200);
+});
+test('HTTP reconciliation: Mongo maxTimeMS failures return sanitized 504 and release capacity', async t => {
+  const h = await fixture(t, { readEnv }); h.state.mongoTimeout = true;
+  const response = await h.request('GET'); assert.equal(response.status, 504);
+  assert.deepEqual(response.body, { ok: false, code: 'REVIEW_READ_TIMEOUT', financialActionsAllowed: false });
+  assert.equal(h.reads.stats().operations, 0); h.state.mongoTimeout = false;
+  assert.equal((await h.request('GET')).status, 200);
+});
+test('HTTP reconciliation: HTTP deadline frees HTTP count but holds operation capacity until late settlement', async t => {
+  const h = await fixture(t, { readEnv }); let release;
+  h.state.listWait = new Promise(resolve => { release = resolve; });
+  const response = await h.request('GET'); assert.equal(response.status, 504);
+  assert.deepEqual(response.body, { ok: false, code: 'REVIEW_READ_TIMEOUT', financialActionsAllowed: false });
+  assert.deepEqual(h.reads.stats(), { operations: 1, activeHTTP: 0 });
+  assert.equal((await h.request('GET')).status, 503);
+  h.state.listWait = null; release(); await waitUntil(() => h.reads.stats().operations === 0);
+  assert.equal((await h.request('GET')).status, 200);
+});
+test('HTTP reconciliation: disconnection frees HTTP count but retains operation slot until database promise settles', async t => {
+  const h = await fixture(t, { readEnv }); let release;
+  h.state.listWait = new Promise(resolve => { release = resolve; });
+  await h.disconnect(); await waitUntil(() => h.reads.stats().activeHTTP === 0);
+  assert.equal(h.reads.stats().operations, 1); assert.equal((await h.request('GET')).status, 503);
+  h.state.listWait = null; release(); await waitUntil(() => h.reads.stats().operations === 0);
+  assert.equal((await h.request('GET')).status, 200);
+});
+
+test('HTTP reconciliation: malformed JSON with sensitive query is logged only as a fixed route', async t => {
+  const h = await fixture(t);
+  const response = await h.request('POST', `/${KEY}/reviews?email=PRIVATE_EMAIL`, { raw: '{"private":"PRIVATE_PASSWORD",', session: null });
+  assert.equal(response.status, 400); assert.equal(h.logs.length, 1);
+  assert.deepEqual(JSON.parse(h.logs[0]), { method: 'POST', route: BASE + '/:caseKey/reviews', status: 400 });
+  assert.doesNotMatch(h.logs[0], /PRIVATE_|aaaaaaaa|email|\?/);
+});
+
+test('HTTP reconciliation: detail deadline rejects generically and stops subsequent snapshot reads', async t => {
+  const h = await fixture(t, { readEnv }); let release;
+  h.state.detailWait = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  const response = await h.request('GET', `/${KEY}`);
+  assert.equal(response.status, 504); assert.deepEqual(response.body, { ok: false, code: 'REVIEW_READ_TIMEOUT', financialActionsAllowed: false });
+  assert.deepEqual(h.reads.stats(), { operations: 1, activeHTTP: 0 });
+  assert.equal(h.state.repositoryCalls, 1);
+  h.state.detailWait = null; release(); await waitUntil(() => h.reads.stats().operations === 0);
+  assert.equal(h.state.repositoryCalls, 1); // No source/audit read after deadline.
+  assert.equal((await h.request('GET', `/${KEY}`)).status, 200);
 });

@@ -1,5 +1,6 @@
 "use strict";
 const { parseKey, caseDTO, fail } = require("./reconciliationContracts");
+const { getReconciliationReadLimits } = require("../config/reconciliationReads");
 const pendingOrders = { $or: [{ "inventoryReservation.needsReconciliation": true }, { "inventoryReservation.state": "reconciliation_required" }] };
 function pendingEvents(now = new Date()) {
   return { provider: "stripe", $or: [{ status: { $in: ["failed", "skipped"] } }, { status: "received", updatedAt: { $lte: new Date(now.getTime() - 300000) } }] };
@@ -33,20 +34,40 @@ function runtime() {
 }
 function createMongoRepository(dependencies) {
   const { mongoose, Orden, WebhookEvent, Case, Audit } = dependencies || runtime();
+  const limits = getReconciliationReadLimits();
+  const maxTimeMS = budget => budget ? budget.maxTimeMS() : limits.mongoMaxTimeMS;
   const repo = {
-    transaction: async fn => {
+    transaction: async (fn, budget) => {
       const session = await mongoose.startSession();
-      try { let result; await session.withTransaction(async () => { result = await fn(session); }, { readConcern: { level: "snapshot" }, writeConcern: { w: "majority" }, readPreference: "primary" }); return result; }
+      try {
+        const options = { readConcern: { level: "snapshot" }, writeConcern: { w: "majority" }, readPreference: "primary" };
+        if (budget) options.maxCommitTimeMS = maxTimeMS(budget);
+        let result;
+        await session.withTransaction(async () => {
+          budget?.maxTimeMS();
+          result = await fn(session);
+          // Late completion must reject inside withTransaction so the driver
+          // awaits abort before endSession. Never abort beside an active query.
+          budget?.maxTimeMS();
+        }, options);
+        return result;
+      }
       finally { await session.endSession(); }
     },
-    getCase: (id, session) => Case.findById(id).session(session || null).lean(),
+    getCase: (id, session, budget) => {
+      const query = Case.findById(id).session(session || null);
+      if (budget) query.maxTimeMS(maxTimeMS(budget));
+      return query.lean();
+    },
     getAudit: (id, session) => Audit.findById(id).select("+requestHash +operationHash").session(session || null).lean(),
-    getSource: (reference, session) => {
+    getSource: (reference, session, budget) => {
       const model = reference.kind === "order" ? Orden : WebhookEvent;
       const projection = reference.kind === "order"
         ? "createdAt updatedAt inventoryReservation.state inventoryReservation.needsReconciliation checkoutIntent.keyHash estadoPago estadoFulfillment payoutBlocked total moneda"
         : "createdAt updatedAt provider status eventId";
-      return model.findById(reference.id).select(projection).session(session || null).lean();
+      const query = model.findById(reference.id).select(projection).session(session || null);
+      if (budget) query.maxTimeMS(maxTimeMS(budget));
+      return query.lean();
     },
     writeCase: async (record, expectedVersion, session) => {
       if (expectedVersion === 0) { await Case.create([record], { session }); return; }
@@ -56,19 +77,19 @@ function createMongoRepository(dependencies) {
     createAudit: async (record, session) => {
       const [audit] = await Audit.create([record], { session }); return audit.toObject();
     },
-    listAudits: async (id, options, session) => {
-      const [result] = await Audit.aggregate(auditPipeline(new mongoose.Types.ObjectId(id), options)).session(session || null);
+    listAudits: async (id, options, session, budget) => {
+      const [result] = await Audit.aggregate(auditPipeline(new mongoose.Types.ObjectId(id), options)).option({ maxTimeMS: maxTimeMS(budget) }).session(session || null);
       return { items: result?.items || [], total: result?.total?.[0]?.count || 0 };
     },
-    list: async options => {
+    list: async (options, budget) => {
       // $unionWith is deliberately outside transactions. All response data is
       // produced by this command; this queue is observational, not a snapshot.
-      const [result] = await Orden.aggregate(listPipeline(options, { orders: Orden.collection.name, events: WebhookEvent.collection.name, cases: Case.collection.name }, new Date()));
+      const [result] = await Orden.aggregate(listPipeline(options, { orders: Orden.collection.name, events: WebhookEvent.collection.name, cases: Case.collection.name }, new Date())).option({ maxTimeMS: maxTimeMS(budget) });
       const items = (result?.items || []).map(row => caseDTO(parseKey(row._id), row.record, row.source));
       return { items, total: result?.total?.[0]?.count || 0, readConsistency: "single_aggregation" };
     },
   };
-  repo.readSnapshot = fn => repo.transaction(fn);
+  repo.readSnapshot = (fn, budget) => repo.transaction(fn, budget);
   return repo;
 }
 module.exports = { createMongoRepository, listPipeline, auditPipeline, pendingEvents, pendingOrders };

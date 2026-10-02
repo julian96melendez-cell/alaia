@@ -271,7 +271,7 @@ test("review repository: audit items and count share a single facet and the deta
     assert.equal(pipeline.at(-1).$facet.items[0].$skip, 2);
     assert.deepEqual(pipeline.at(-1).$facet.total, [{ $count: "count" }]);
     assert.equal(pipeline[1].$project.requestHash, undefined);
-    return { session: async actual => { assert.equal(actual, session); return [{ items: [{ resultVersion: 1 }], total: [{ count: 3 }] }]; } };
+    return { option(options) { assert.equal(options.maxTimeMS, 2000); return this; }, session: async actual => { assert.equal(actual, session); return [{ items: [{ resultVersion: 1 }], total: [{ count: 3 }] }]; } };
   } };
   const repo = createMongoRepository({ mongoose, Audit, Orden: {}, WebhookEvent: {}, Case: {} });
   assert.deepEqual(await repo.listAudits(ID, { page: 2, limit: 2 }, session), { items: [{ resultVersion: 1 }], total: 3 });
@@ -279,11 +279,11 @@ test("review repository: audit items and count share a single facet and the deta
 });
 test("review list: source DTOs come from the aggregation even when sources change after it", async () => {
   let commands = 0;
-  const Orden = { collection: { name: "orders" }, aggregate: async pipeline => {
-    commands++; assert.ok(pipeline.some(stage => stage.$lookup?.from === "orders"));
+  const Orden = { collection: { name: "orders" }, aggregate: pipeline => ({ option: async options => {
+    assert.equal(options.maxTimeMS, 2000); commands++; assert.ok(pipeline.some(stage => stage.$lookup?.from === "orders"));
     assert.ok(pipeline.some(stage => stage.$lookup?.from === "events"));
     return [{ items: [{ _id: KEY, source: copy(source) }], total: [{ count: 1 }] }];
-  }, findById: () => { throw Error("Inconsistent follow-up read"); } };
+  } }), findById: () => { throw Error("Inconsistent follow-up read"); } };
   const repo = createMongoRepository({ mongoose: { startSession: () => { throw Error("union transaction forbidden"); } }, Orden, WebhookEvent: { collection: { name: "events" } }, Case: { collection: { name: "cases" } }, Audit: {} });
   const result = await repo.list({ page: 1, limit: 25 });
   assert.equal(commands, 1); assert.equal(result.readConsistency, "single_aggregation");

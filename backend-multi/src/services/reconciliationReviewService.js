@@ -1,5 +1,7 @@
 "use strict";
 const { hash, fail, parseKey, pagination, validateReview, sourceSnapshot, caseDTO, auditDTO } = require("./reconciliationContracts");
+const { createReadBudget } = require("./reconciliationReadRuntime");
+const { getReconciliationReadLimits } = require("../config/reconciliationReads");
 function createReconciliationReviewService(repo) {
   const replay = (audit, requestHash, operationHash) => {
     if (audit.operationHash !== operationHash) throw fail("REVIEW_REFERENCE_CONFLICT", 409);
@@ -7,22 +9,27 @@ function createReconciliationReviewService(repo) {
     return { review: auditDTO(audit), replayed: true, financialActionsAllowed: false };
   };
   return {
-    async list(query) {
+    async list(query, budget = createReadBudget(getReconciliationReadLimits())) {
       const options = pagination(query, true);
-      const result = await repo.list(options);
+      const result = await repo.list(options, budget);
+      budget?.maxTimeMS();
       return { ...result, page: options.page, limit: options.limit, financialActionsAllowed: false };
     },
-    async detail(key, query) {
+    async detail(key, query, budget = createReadBudget(getReconciliationReadLimits())) {
       const reference = parseKey(key), options = pagination(query);
       return repo.readSnapshot(async session => {
-        const record = await repo.getCase(reference.caseId, session);
-        const source = await repo.getSource(reference, session);
+        budget?.maxTimeMS();
+        const record = await repo.getCase(reference.caseId, session, budget);
+        budget?.maxTimeMS();
+        const source = await repo.getSource(reference, session, budget);
         if (record && (record.caseKey !== key || record.sourceKind !== reference.kind || String(record.sourceId) !== reference.id)) throw fail("REVIEW_REFERENCE_CONFLICT", 409);
         const dto = caseDTO(reference, record, source);
         if (!record && !dto.source.operationalPending) throw fail("REVIEW_NOT_FOUND", 404);
-        const audits = await repo.listAudits(reference.caseId, options, session);
+        budget?.maxTimeMS();
+        const audits = await repo.listAudits(reference.caseId, options, session, budget);
+        budget?.maxTimeMS();
         return { ...dto, audits: audits.items.map(auditDTO), auditTotal: audits.total, page: options.page, limit: options.limit, readConsistency: "snapshot" };
-      });
+      }, budget);
     },
     async review(key, body, idempotencyKey, actorId) {
       const reference = parseKey(key), input = validateReview(body, idempotencyKey);

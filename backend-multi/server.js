@@ -14,6 +14,7 @@ const rateLimit = require("express-rate-limit");
 const mongoSanitize = require("express-mongo-sanitize");
 const hpp = require("hpp");
 const cookieParser = require("cookie-parser");
+const { isReconciliationRequest, reconciliationLogFormat } = require("./src/middleware/reconciliationLogging");
 
 const conectarDB = require("./src/config/db");
 const mongoose = require("mongoose");
@@ -134,9 +135,14 @@ app.use(
     isProd
       ? ':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" reqId=:reqId'
       : "dev",
-    { stream: { write: (line) => process.stdout.write(redactText(line)) } }
+    { skip: isReconciliationRequest, stream: { write: (line) => process.stdout.write(redactText(line)) } }
   )
 );
+
+app.use(morgan(reconciliationLogFormat, {
+  skip: (req) => !isReconciliationRequest(req),
+  stream: { write: (line) => process.stdout.write(line) },
+}));
 
 const limiterBaseConfig = {
   standardHeaders: true,
