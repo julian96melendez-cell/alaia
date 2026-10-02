@@ -1172,3 +1172,208 @@ tests passed** (including the parent teardown test and its two mode subtests), w
 no skips. Web TypeScript, JavaScript syntax and tracked/new-file whitespace checks
 passed. The same 11 files remain pending at c8570c8341cc3487712df8343a2b1381d6597f3e;
 no real configuration, external connection, runner execution or commit occurred.
+
+
+### Independent Express + MongoDB integration runner (prepared locally only)
+
+`backend-multi/scripts/mongo-express-native-reconciliation-integration.js` is an
+independent opt-in runner prepared from reference commit
+199f067d0ffe4a2a74009e48c2d427a0b7c9ff51. It has NOT been run against MongoDB.
+The production reader flag, server, routes, models and financial code are unchanged.
+Importing the runner does not load MongoDB/Mongoose/Express or connect to services.
+
+#### Explicit configuration and durable single-use admission
+
+Required variables are ALAIA_MONGO_TEST_URI, ALAIA_MONGO_TEST_DB,
+ALAIA_MONGO_TEST_CONFIRM (exactly equal to the database) and
+ALAIA_MONGO_TEST_LEDGER_PATH (absolute canonical path ending in
+consumed-databases.json, outside the repository). The URI must have the exact
+/database path, Atlas SRV hostname, alaia_integration_test credentials and the
+existing native runner's strict option contract. No dotenv or MONGO_URI fallback
+is used. Production/service credentials, ambient reconciliation flags, MongoDB
+logging options and NODE_OPTIONS/NODE_DEBUG/DEBUG are rejected. A Node preload
+could act before validation; use a clean Terminal process without preloads.
+
+Proposed persistent ledger location on this Mac:
+/Users/eduardomelendez/Library/Application Support/Alaia/integration/consumed-databases.json.
+No ledger is created at that location by this implementation. Provisioning is a
+separate, reviewed step before execution: dedicated directory owned by the current
+user with mode 0700, regular single-link file owned by that user with mode 0600,
+canonical path without symlink components. Initial content must be exactly an
+object with version: 1 and consumed: an array containing ALL names exported as
+historical by scripts/reconciliation-integration/consumptionLedger.js. Never
+initialize an empty replacement after prior attempts. The five historical names
+are also rejected by code even if all remote collections were removed.
+
+A sibling .lock directory is acquired atomically before any client is constructed
+and held through cleanup. A missing/corrupt/insecure/locked ledger fails closed.
+The full consumed record is written and fsynced, its containing directory is
+fsynced, and the record is reread before any database write. A zero-length write,
+failed sync or ambiguous update never grants write admission. A crash during an
+in-place update may leave corruption or a stale lock; both block subsequent runs.
+No automatic stale-lock recovery exists. Verify the owner process is gone and
+review/recover the complete consumption history before manually unlocking.
+
+Back up the ledger persistently after each attempt; it contains names, not
+credentials. A lost ledger must block execution until history is reconstructed
+from trustworthy backups/checkpoints. A user able to erase/replace both this ledger
+and the remote marker can defeat historical protection; this is not tamper-proof
+storage. Unix owner/mode checks do not certify every filesystem ACL or privileged
+actor. Future consumption should also be recorded in the permanent code history
+at a separately approved checkpoint. Older runners do not automatically import
+this new ledger; do not use them to circumvent this runner's single-use decision.
+
+#### Read-only checks and allowed writes
+
+Before writing, the setup client and isolated Mongoose client check exact database
+identity, authenticated user, one readWrite role exclusively on the chosen base,
+effective privileges, primary/session/version compatibility and zero collections,
+including empty collections. A real snapshot read transaction against the absent
+marker namespace is attempted and aborted/endSession awaited. If the deployment
+rejects that read-only capability probe, execution stops; topology metadata alone
+is insufficient. Each native reader connection also verifies identity/privileges.
+Only hello/connectionStatus metadata is requested through admin; backendmulti is
+never queried. Newly introduced connection identity discrepancies fail closed.
+
+After durable consumption, the runner creates alaia_express_native_run and inserts
+its single-use marker with majority acknowledgment, then checks the stored runId.
+Only then may fixtures be seeded in express_users, express_orders, express_events,
+express_cases, express_audits, express_counters, express_products and express_payouts.
+Marker/fixture failures never permit retry or automatic deletion. The only indexes
+are MongoDB's implicit _id indexes. autoCreate/autoIndex/buffering are disabled;
+no createIndexes/syncIndexes/ensureIndexes, data deletion or permission changes run.
+
+The caller-facing database fence denies other databases/collections, direct
+commands, destructive APIs, explicit index APIs, aggregation output/foreign sources
+and source financial updates. It is a defense for this trusted code, not a server
+privilege boundary or a proof about arbitrary driver internals. Exclusive Atlas
+privileges remain mandatory. The current pipeline sources are unchanged.
+
+#### Real components and deliberate exclusions
+
+An isolated module loader evaluates actual model sources with one private Mongoose
+instance, preserving schema hooks, Counter closure binding, financial query guards
+and model-level bulkWrite overrides. Usuario uses synthetic users/passwords and
+bcrypt; authService generates fresh in-memory JWT keys. ReconciliationCase and
+ReconciliationAudit document creation/validation run through actual POST/service
+code. Orders are inserted directly as synthetic source fixtures: checkout save
+hooks and financial lifecycle creation are deliberately NOT exercised. No business
+source is updated during trials; fingerprints compare full source fixture records.
+
+The independent HTTP assembly uses real Express/cookie parsers, auth/soloAdmin,
+controller, router, query guard, sanitization/HPP, service/repository and reader
+lifecycle. CORS, Morgan and global-error middleware fragments are extracted from
+server.js with explicit correspondence checks; server.js itself is not imported or
+executed. HTTP binds only 127.0.0.1:0. The assembly has no production workers,
+scheduler, Stripe or Firebase imports. It does not reproduce Helmet, production
+rate/proxy configuration, other routes or the entire production startup/signal
+handler. /readyz uses its actual Mongoose-only handler. Native activation exists
+only in synthetic per-instance configuration; production remains default-off.
+
+#### Prepared A–F evidence (no real results recorded yet)
+
+| Trial | Prepared observation | Evidence origin |
+| --- | --- | --- |
+| A | Disabled/enabled startup, real GET/HEAD/no-store, DTO equivalence and fixed selection via independent restart | real_mongodb |
+| B | JWT cookie authentication backed by MongoDB users, authorization, strict validation, preauth parser/CORS errors and captured logs | real_mongodb |
+| C | Mongoose-only POST, idempotent replay, stale version rejection, simultaneous reviewers with one CAS winner and actual audit counts | real_mongodb |
+| D | A held detail snapshot sees its prior case/audit count while a concurrent POST commits; subsequent detail sees both new versions; financial fixtures unchanged | real_mongodb outcome with local_injection scheduling barrier |
+| E | HTTP POST's case write rolls back when audit storage is deliberately made to fail; actual audit override is preserved | real_mongodb outcome with local_injection exception |
+| F | Native command options/snapshot submission, no native write commands, cursor/session/pool drain, privacy and readiness; gated timeout/saturation retains capacity, shutdown waits cleanup, injected init failure never opens HTTP | mixed: nested real_mongodb and local_injection evidence |
+
+Results include runId, referenceCommit, start/end timestamps, individual trial
+origin/status/evidence, consumptionAttempted, claimAttempted, markerAcknowledged,
+markerVerified, cleanup and explicit not_verified fields. syntheticDataRetained is
+true only after seeding completed, false before any seed attempt, null when a seed
+attempt failed and presence is uncertain. No fixture or marker is deleted.
+A cleanup failure yields failed status; CLI failures return nonzero. The 180-second
+watchdog emits redacted partial evidence and exits 1 with pending_or_unknown cleanup.
+It never releases a reader slot to recover capacity or creates a replacement reader.
+
+Server enforcement of timeouts, remote termination, actual network loss, forced
+OS-process shutdown, performance and complete production-service draining remain
+not_verified. A locally gated HTTP timeout is NOT evidence of Atlas cancellation.
+The slot stays occupied until pending work and sequential cleanup settle. A blocked
+cleanup may persist until the watchdog forces process exit; that leaves a stale
+ledger lock and requires review. Per-process native pool size is 6 (one active
+application at a time), Mongoose 3 and setup 2, plus driver monitoring connections;
+this is a low-volume fixture test, not a load test.
+
+#### Execution stages requiring separate approval
+
+1. Review this implementation and all local tests first; no real result is certified.
+2. Provision/recover the nonsecret persistent ledger and back it up. Generate a fresh
+   alaia_ + 32 lowercase hexadecimal name and separately approve Atlas permissions.
+3. Prepare explicit URI/database/confirmation/ledger variables in the same Terminal,
+   using hidden password input and no .env or credential files. Validate locally.
+4. Obtain separate approval for ONE real execution. Capture stdout JSON, stderr and
+   exit code in a private directory (0700, files 0600), without shell tracing; inspect
+   for secrets before sharing. Do not include these private outputs in Git.
+5. From the first consumption/write attempt, never repeat on the same base, even
+   after a timeout or an uncertain write. Preserve fixtures and marker for review.
+6. Review A–F individually; add the consumed name to permanent history at a separately
+   approved checkpoint. Rotate the test password/clear temporary variables separately.
+
+Local verification exercises configuration rejection before client construction,
+ledger failures/exclusive locking/durable reuse rejection, read-only preflight,
+uncertain marker writes and cleanup with clients DOUBLED in memory. Runtime tests
+exercise actual model hooks/overrides and real loopback HTTP with controlled MongoDB
+and user lookup doubles; shutdown/query faults and watchdog use local doubles.
+Those tests do not execute the full real A–F workflow or certify MongoDB behavior.
+
+
+Preparation verification: **22/22 new runner safety/runtime tests passed**;
+**348/348 complete local tests passed**, none skipped. Web TypeScript, JavaScript
+syntax and tracked/new-file whitespace checks passed. Existing Usuario schema
+warnings for duplicate email/stripeAccountId declarations remain local warnings;
+no index changes or synchronization were performed. A regression demonstrates
+that isolated Counter hooks bind to the same disconnected Mongoose instance and
+that the audit model-level override remains effective. Both native and Mongoose
+provider work is tracked/drained before a clean application shutdown; HTTP timeout
+alone never establishes local completion. The real runner remains unexecuted,
+the persistent operational ledger remains unprovisioned, and no Atlas permissions
+or production activation were changed. Next steps require review, ledger
+provisioning and separate authorization for external setup and real execution.
+
+
+#### Final local runner audit (2026-10-02)
+
+Reference remains 199f067d0ffe4a2a74009e48c2d427a0b7c9ff51. Configuration
+validation precedes ledger acquisition; acquisition and rereading precede client
+construction; read-only preflight precedes durable consumption; consumption
+precedes marker attempts and fixtures. The ledger pins directory/file descriptors
+and compares device/inode identities of directory, file and lock on each access.
+Replacement by a symlink or another regular file, modified content, partial write,
+failed sync or failed readback rejects admission. Two separate OS child processes
+prove occupied-lock rejection and later persisted-consumption rejection. The five
+historical namespaces are checked against previous runner sources.
+
+These are cooperative local-filesystem protections, not mandatory OS locks or
+tamper-proof storage. In-place interrupted writes may leave old valid content,
+corruption or a stale lock; no remote write is admitted until full write, fsync
+and exact readback succeed. A stale lock always requires manual review. Ordinary
+fsync does not certify power-loss durability on every device/filesystem; network
+filesystems, ACLs and hostile same-UID/privileged actors are not certified. Pinned
+descriptors and identity checks do not remove every possible pathname race.
+
+SIGINT/SIGTERM stop further admission, request application closure and await
+ongoing local work sequentially. A signal during final cleanup also prevents a
+success result. Signals cannot undo commands already sent or certify remote
+termination. Blocked operation/cleanup remains pending until settlement or the
+180-second watchdog exits nonzero with pending_or_unknown cleanup. The watchdog
+is explicitly a forced exit, not graceful closure or remote cancellation.
+
+Preflight now rejects ambiguous collection results, missing required privilege
+actions and incomplete primary/session/version metadata. Async connection errors
+are captured as fixed flags rather than arbitrary messages. Outgoing loopback
+HTTP requests are awaited alongside provider work before application closure.
+No production files, hooks, pipelines, indexes or financial behavior were changed.
+Only synthetic raw order fixtures bypass checkout hooks; real administrative
+hooks/overrides and the isolated Counter binding remain exercised locally.
+
+All verification here uses local filesystem/process tests, controlled clients and
+loopback HTTP. No Express+MongoDB real execution, production connectivity, server
+timeout enforcement, remote cancellation or performance is certified. The real
+runner is still unexecuted and the operational ledger has not been provisioned.
+
+Final audit verification: **30/30 runner tests and 356/356 complete local tests passed**, no skips. Web TypeScript, syntax and whitespace checks passed. Git remains on fix/production-hardening at the reference commit; seven new files and this document remain pending for review.
