@@ -1,6 +1,7 @@
 "use strict";
 
 const Usuario = require("../models/Usuario");
+const { isReconciliationRequest, reconciliationErrorLog } = require("./reconciliationLogging");
 const { verificarAccessToken } = require("../services/authService");
 
 const ACCESS_COOKIE_NAME =
@@ -140,10 +141,14 @@ async function proteger(req, res, next) {
 
     return next();
   } catch (err) {
-    console.error("❌ Auth middleware error:", {
-      reqId,
-      message: err?.message,
-    });
+    if (isReconciliationRequest(req)) {
+      console.error(reconciliationErrorLog(req, 401, { publicCode: "REVIEW_AUTH_ERROR" }));
+    } else {
+      console.error("❌ Auth middleware error:", {
+        reqId,
+        message: err?.message,
+      });
+    }
 
     return send401(res, "No autenticado", reqId);
   }

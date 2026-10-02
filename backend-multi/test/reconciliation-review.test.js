@@ -201,8 +201,8 @@ test("review models: automatic creation/indexing disabled; case identity and app
 
 test("review authentication: actual cookie middleware rejects revoked, inactive, locked and non-admin sessions",async()=>{
   const filename=path.join(__dirname,"../src/middleware/auth.js"),module={exports:{}};
-  let profile={_id:ACTOR,rol:"admin",activo:true,tokenVersion:1};
-  vm.runInNewContext(fs.readFileSync(filename,"utf8"),{module,exports:module.exports,require:name=>name==="../models/Usuario"?{findById:()=>({select:async()=>profile})}:{verificarAccessToken:token=>{if(token!=="fixture_session")throw Error("invalid");return{id:ACTOR,tokenVersion:1};}},process:{env:{}},console:{error(){}},Date});
+  let profile={_id:ACTOR,rol:"admin",activo:true,tokenVersion:1};const authLogs=[];
+  vm.runInNewContext(fs.readFileSync(filename,"utf8"),{module,exports:module.exports,require:name=>name==="./reconciliationLogging"?require("../src/middleware/reconciliationLogging"):name==="../models/Usuario"?{findById:()=>({select:async()=>profile})}:{verificarAccessToken:token=>{if(token!=="fixture_session")throw Error("invalid");return{id:ACTOR,tokenVersion:1};}},process:{env:{}},console:{error:(...args)=>authLogs.push(args)},Date});
   const {proteger,soloAdmin}=module.exports;
   async function check(cookies,expected) {
     const res=response();let allowed=false;

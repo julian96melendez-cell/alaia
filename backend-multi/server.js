@@ -14,7 +14,7 @@ const rateLimit = require("express-rate-limit");
 const mongoSanitize = require("express-mongo-sanitize");
 const hpp = require("hpp");
 const cookieParser = require("cookie-parser");
-const { isReconciliationRequest, reconciliationLogFormat } = require("./src/middleware/reconciliationLogging");
+const { isReconciliationRequest, reconciliationLogFormat, reconciliationErrorLog } = require("./src/middleware/reconciliationLogging");
 
 const conectarDB = require("./src/config/db");
 const mongoose = require("mongoose");
@@ -298,24 +298,33 @@ app.use((err, req, res, next) => {
       ? 403
       : 500;
 
-  console.error("GLOBAL ERROR:", {
-    reqId: req.reqId,
-    method: req.method,
-    path: req.originalUrl,
-    status,
-    code: err?.code,
-    message: err?.message,
-    stack: isProd ? undefined : err?.stack,
-  });
+  const reconciliationError = isReconciliationRequest(req);
+  if (reconciliationError) {
+    console.error(reconciliationErrorLog(req, res.headersSent ? res.statusCode : status, err));
+  } else {
+    console.error("GLOBAL ERROR:", {
+      reqId: req.reqId,
+      method: req.method,
+      path: req.originalUrl,
+      status,
+      code: err?.code,
+      message: err?.message,
+      stack: isProd ? undefined : err?.stack,
+    });
+  }
 
-  if (res.headersSent) return next(err);
+  if (res.headersSent) {
+    // Avoid Express' default finalhandler logging an arbitrary error/stack.
+    if (reconciliationError) return res.destroy();
+    return next(err);
+  }
 
   const message =
     status === 429
       ? "Too many requests"
       : status === 403 && err?.message?.includes?.("Origin no permitido por CORS")
       ? "Origen no permitido por CORS"
-      : isProd
+      : isProd || reconciliationError
       ? "Error interno del servidor"
       : err?.message || "Error interno";
 

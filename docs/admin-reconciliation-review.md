@@ -1076,3 +1076,99 @@ real integration runner, production startup or Atlas/Stripe connection was execu
 The same seven pending files remain on fix/production-hardening at 80819f1;
 no commit, external flag change or deployment occurred. The real-environment,
 remote-operation and full-service shutdown limitations described above remain.
+
+
+### Scoped logging privacy and full local Express validation (2026-10-02)
+
+Reference: c8570c8341cc3487712df8343a2b1381d6597f3e, branch
+fix/production-hardening. The native reader remains disabled by default; no real
+configuration or environment file was changed.
+
+The global error handler previously logged originalUrl and arbitrary error
+messages, including CORS/parser errors before authentication. The authentication
+catch also logged an arbitrary message. For reconciliation requests both now emit
+only method, a constant route template, HTTP status and an allowlisted error code.
+Morgan retains the same restricted metadata without an error code. Classification
+uses a nonthrowing lexical check of origin/absolute-form targets; it never turns
+an authority, case identifier or query into a logged route. Malformed authority,
+unknown method/code/type and unmatched subroutes cannot introduce arbitrary log
+values. A headers-sent reconciliation error destroys the response rather than
+handing arbitrary error details to Express' default logger. Scoped error responses
+are generic in development as well as production. Other APIs retain their previous
+logging and global-error response behavior; this is not a general privacy audit.
+
+The new harness evaluates every statement of server.js in a VM, capturing only
+its startup promise instead of importing/running the production entry point. It
+uses real Express, router, controller, authentication middleware, signed synthetic
+JWT cookies, validation, CORS, Morgan, parsing, security middleware and reader
+lifecycle. Synthetic environment values replace dotenv and host configuration.
+Primary Mongoose connectivity, user lookup, repositories and MongoDB driver are
+controlled doubles. Non-reconciliation routes are sentinels, not real services.
+A test guard rejects Stripe/Firebase/worker/scheduler imports, external DNS,
+non-fixture TCP connections and listeners other than 127.0.0.1:0. The negative
+regression deliberately attempts blocked actions and verifies denial before action.
+No Atlas/Stripe connection, real integration runner or production service starts.
+
+| Local matrix | Evidence and scope |
+| --- | --- |
+| Reader absent, false, true | Fixed selection; no native client in disabled modes; one client in enabled mode; primary/native initialization precedes HTTP. |
+| GET/HEAD and authorization | Actual loopback HTTP with test cookies; unauthenticated/nonadmin rejection, no-store, strict query/reference/pagination validation, native/Mongoose DTO equivalence. |
+| POST in both modes | Actual service with in-memory Mongoose-provider repository: origin protection, repeated-request idempotency, CAS conflict and rollback; no native write provider. |
+| Logging/error privacy | Actual Morgan output and console.error captured, including authentication errors, CORS, malformed JSON/URI/absolute authority, unsupported charset, oversized bodies and headers-sent errors. Sensitive URL/query/body/cookie/error sentinels are absent from all captured channels and responses. |
+| Startup/connectivity | Initial failures/invalid flag prevent listen and fallback; later driver error is generic, same-client recovery does not switch to Mongoose. |
+| Capacity/timeout/disconnect | HTTP timeout and client disconnect retain occupied slots through pending local work and sequential cursor/session cleanup; saturation stays generic in both modes. |
+| Shutdown/watchdog | Signals during initialization cannot open HTTP; active query/cleanup delays shutdown; forced exit is distinguished from clean completion and does not claim remote cancellation. |
+| Readiness/reversal | /readyz retains its Mongoose-only contract; changing configuration in a running fixture does not switch readers; a fresh fixture models restart reversal. |
+| Financial separation | Fixture financial/inventory/fulfillment state remains unchanged across tested HTTP operations. Other production routes are not executed or certified. |
+
+Verification: **52/52 targeted HTTP tests passed** (27 full-harness/security tests
+plus 25 existing HTTP regressions); **323/323 complete local tests passed**, none
+skipped. Web TypeScript, JavaScript syntax and tracked/new-file whitespace checks
+passed. The shared HTTP fixture was extracted into test-only helpers; the previous
+empty auth logging channel was replaced with captured output.
+
+These are local-double results, not infrastructure certification. The driver
+simulates query results and snapshot data; it does not execute MongoDB pipelines,
+server timeouts, real transactions, durable CAS or real pool recovery. Signal
+callbacks, process exit and watchdog firing are controlled, not OS-level process
+termination. Test cookies/CORS are not deployed-browser certification. No claim
+is made about remote cancellation, real performance or complete Mongoose/worker
+drain. Earlier isolated native A–F evidence does not certify this new HTTP harness.
+A later independent integration must use a fresh isolated database, minimum
+permissions and separate authorization; it must distinguish command submission,
+local cleanup and verifiable remote evidence. No existing consumed base is reused.
+
+
+### Final local harness isolation audit
+
+The four harness helpers remain under backend-multi/test only. A source inspection
+of server.js and src/**/*.js found no references to those helpers; production
+configuration and HTTP inputs cannot select them. The production diff still only
+changes scoped logging and its authentication/global-error paths. GET/HEAD security,
+POST Mongoose selection, pipelines, indexes and financial code are unchanged.
+The native option remains absent/false by default.
+
+Additional test-only hardening rejects dotenv imports, credential paths and reads
+outside backend-multi, all child-process creation APIs, and the DNS resolve family.
+Network access remains limited to registered ephemeral loopback fixture ports.
+All construction/evaluation failures in the server sandbox restore its guard,
+including failures before VM execution. A teardown regression runs both modes,
+waits for HTTP closure and confirms no additional fixture sockets/listeners remain;
+it checks restoration of intercepted module/network/filesystem/process APIs,
+console.error, signal listener counts and host environment names/selection flags.
+It does not read host credential values. No child process is created by the harness.
+
+These guards are scoped, in-process test defenses, not a security boundary for
+hostile JavaScript or arbitrary prebound APIs. They assume sequential fixtures in
+the test worker; concurrently executing unrelated code inside the same process
+would also see the intercepted APIs. Synthetic MongoDB results and controlled
+signals/watchdog still do not certify real aggregation, server timeout enforcement,
+remote termination, OS-level shutdown or performance. Existing scoped-log tests
+capture real Morgan and console.error channels, including errors before auth;
+non-reconciliation logging is deliberately preserved and not certified private.
+
+Final audit verification: **55/55 targeted HTTP tests passed** and **326/326 local
+tests passed** (including the parent teardown test and its two mode subtests), with
+no skips. Web TypeScript, JavaScript syntax and tracked/new-file whitespace checks
+passed. The same 11 files remain pending at c8570c8341cc3487712df8343a2b1381d6597f3e;
+no real configuration, external connection, runner execution or commit occurred.
