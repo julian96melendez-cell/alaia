@@ -1,10 +1,8 @@
 // screens/RegisterScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as ImagePicker from "expo-image-picker";
 import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
@@ -21,7 +19,7 @@ import {
     View,
 } from "react-native";
 
-import { auth, db, storage } from "../firebase/firebaseConfig";
+import { auth, db } from "../firebase/firebaseConfig";
 import CustomInput from "../frontend/components/CustomInput";
 import useTheme from "../hooks/useTheme";
 
@@ -54,15 +52,6 @@ const mapFirebaseError = (code?: string) => {
       return "Ocurrió un error al registrarte.";
   }
 };
-
-/** Sube una imagen local (URI) a Firebase Storage y devuelve su URL pública */
-async function uploadImageToStorage(localUri: string, uid: string) {
-  const res = await fetch(localUri);
-  const buffer = await res.arrayBuffer();
-  const fileRef = ref(storage, `users/${uid}.jpg`);
-  await uploadBytes(fileRef, buffer, { contentType: "image/jpeg" });
-  return await getDownloadURL(fileRef);
-}
 
 /* ───────────────────────── subcomponentes ───────────────────────── */
 function PasswordMeter({
@@ -118,7 +107,7 @@ export default function RegisterScreen({ navigation }: any) {
   const [acceptTerms, setAcceptTerms] = useState(false);
 
   const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const uploading = false;
   const [secure, setSecure] = useState(true);
 
   // Animación de entrada
@@ -189,56 +178,18 @@ export default function RegisterScreen({ navigation }: any) {
 
   const clearDraft = () => AsyncStorage.removeItem(DRAFT_KEY).catch(() => {});
 
-  /* ─────────────── Image picking (Cámara / Galería) ─────────────── */
-  const askMediaPermission = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    return status === "granted";
-  };
-  const askCameraPermission = async () => {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    return status === "granted";
-  };
-
-  const pickFromLibrary = async () => {
-    const ok = await askMediaPermission();
-    if (!ok) {
-      Alert.alert("Permiso denegado", "Necesitas permitir acceso a la galería.");
-      return;
-    }
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.9,
-    });
-    if (!res.canceled) setPhotoURL(res.assets[0].uri);
-  };
-
-  const takePhoto = async () => {
-    const ok = await askCameraPermission();
-    if (!ok) {
-      Alert.alert("Permiso denegado", "Necesitas permitir acceso a la cámara.");
-      return;
-    }
-    const res = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.9,
-    });
-    if (!res.canceled) setPhotoURL(res.assets[0].uri);
-  };
-
   const choosePhoto = () => {
-    Alert.alert("Foto de perfil", "Selecciona una opción", [
-      { text: "Cámara", onPress: takePhoto },
-      { text: "Galería", onPress: pickFromLibrary },
-      { text: "Cancelar", style: "cancel" },
-    ]);
+    Alert.alert("Función temporalmente no disponible", "La gestión de fotos está deshabilitada.");
   };
 
-  // Registrar, subir foto, guardar perfil y redirigir
+  // Registrar sin subidas, guardar perfil y redirigir
   const handleRegister = async () => {
     if (!canSubmit || loading || uploading) return;
+    if (photoURL && !/^https:\/\//i.test(photoURL)) {
+      Alert.alert("Función temporalmente no disponible", "No se puede subir la foto del borrador.");
+      return;
+    }
+
 
     setLoading(true);
     try {
@@ -248,16 +199,8 @@ export default function RegisterScreen({ navigation }: any) {
         password
       );
 
-      // 1) Subir foto si existe
-      let finalPhotoURL = photoURL;
-      if (photoURL) {
-        setUploading(true);
-        try {
-          finalPhotoURL = await uploadImageToStorage(photoURL, cred.user.uid);
-        } finally {
-          setUploading(false);
-        }
-      }
+      // Preserve an existing remote photo URL; never upload a local draft.
+      const finalPhotoURL = photoURL;
 
       const fallbackAvatar =
         "https://cdn-icons-png.flaticon.com/512/147/147144.png";

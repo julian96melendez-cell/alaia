@@ -2,7 +2,6 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth, initializeAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
 
 // Import especial para React Native.
 // En algunas versiones Firebase no lo tipa bien, por eso usamos require.
@@ -31,6 +30,6 @@ try {
 
 export const auth = firebaseAuth;
 export const db = getFirestore(app);
-export const storage = getStorage(app);
+// Storage is intentionally unavailable until its published rules are independently verified.
 
 export default app;

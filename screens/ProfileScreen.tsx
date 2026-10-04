@@ -1,6 +1,5 @@
 // screens/ProfileScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
-import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import React, {
   useCallback,
@@ -24,16 +23,8 @@ import {
 } from "react-native";
 
 import { updateProfile } from "firebase/auth";
-import {
-  deleteObject,
-  getDownloadURL,
-  ref as storageRef,
-  uploadBytesResumable,
-  UploadTask,
-} from "firebase/storage";
-
 import { useAuth } from "../context/AuthContext";
-import { auth, storage } from "../firebase/firebaseConfig";
+import { auth } from "../firebase/firebaseConfig";
 import useTheme from "../hooks/useTheme";
 
 type RowButtonProps = {
@@ -90,9 +81,8 @@ export default function ProfileScreen() {
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [localPhoto, setLocalPhoto] = useState<string | undefined>(undefined);
 
-  const [uploadPct, setUploadPct] = useState(0);
-  const [uploading, setUploading] = useState(false);
-  const uploadTaskRef = useRef<UploadTask | null>(null);
+  const uploadPct = 0;
+  const uploading = false;
 
   const initials = useMemo(() => {
     const name = user?.displayName || user?.email || "Usuario";
@@ -117,98 +107,9 @@ export default function ProfileScreen() {
     setDisplayName(user?.displayName || "");
   }, [user?.displayName]);
 
-  const requestGalleryPermissions = useCallback(async () => {
-    const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-
-    if (!granted) {
-      Alert.alert(
-        "Permiso denegado",
-        "Necesitas permitir acceso a la galería para cambiar tu foto."
-      );
-      return false;
-    }
-
-    return true;
-  }, []);
-
   const pickNewPhoto = useCallback(async () => {
-    const ok = await requestGalleryPermissions();
-    if (!ok) return;
-
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.9,
-    });
-
-    if (!res.canceled) {
-      setLocalPhoto(res.assets[0]?.uri);
-      setEditOpen(true);
-    }
-  }, [requestGalleryPermissions]);
-
-  const uploadAvatarToStorage = useCallback(
-    async (uri: string, uid: string): Promise<string> => {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-
-      const ref = storageRef(storage, `users/${uid}/avatar.jpg`);
-
-      return new Promise<string>((resolve, reject) => {
-        const task = uploadBytesResumable(ref, blob, {
-          cacheControl: "public,max-age=31536000,immutable",
-          contentType: blob.type || "image/jpeg",
-        });
-
-        uploadTaskRef.current = task;
-        setUploading(true);
-        setUploadPct(0);
-
-        task.on(
-          "state_changed",
-          (snap) => {
-            if (snap.totalBytes > 0) {
-              setUploadPct(
-                Math.round((snap.bytesTransferred / snap.totalBytes) * 100)
-              );
-            }
-          },
-          (err) => {
-            setUploading(false);
-            setUploadPct(0);
-            uploadTaskRef.current = null;
-            reject(err);
-          },
-          async () => {
-            try {
-              const url = await getDownloadURL(ref);
-              setUploading(false);
-              setUploadPct(100);
-              uploadTaskRef.current = null;
-              resolve(url);
-            } catch (e) {
-              setUploading(false);
-              setUploadPct(0);
-              uploadTaskRef.current = null;
-              reject(e);
-            }
-          }
-        );
-      });
-    },
-    []
-  );
-
-  const cancelUpload = useCallback(() => {
-    try {
-      uploadTaskRef.current?.cancel();
-    } catch {}
+    Alert.alert("Función temporalmente no disponible", "La gestión de fotos está deshabilitada.");
   }, []);
-
-  useEffect(() => {
-    return () => cancelUpload();
-  }, [cancelUpload]);
 
   const onSaveProfile = useCallback(async () => {
     const name = displayName.trim();
@@ -219,28 +120,17 @@ export default function ProfileScreen() {
     }
 
     try {
-      let newPhotoURL: string | undefined;
-
       if (localPhoto && user?.uid) {
-        try {
-          newPhotoURL = await uploadAvatarToStorage(localPhoto, user.uid);
-        } catch (e: any) {
-          if (e?.code === "storage/canceled") {
-            Alert.alert("Cancelado", "Se canceló la subida de imagen.");
-            return;
-          }
-
-          Alert.alert("Error al subir imagen", "Intenta nuevamente.");
-          return;
-        }
+        Alert.alert("Función temporalmente no disponible", "No se puede subir una foto.");
+        return;
       }
 
       if (updateUserProfile) {
-        await updateUserProfile(name, newPhotoURL ?? undefined);
+        await updateUserProfile(name);
       } else if (auth.currentUser) {
         await updateProfile(auth.currentUser, {
           displayName: name,
-          photoURL: newPhotoURL ?? auth.currentUser.photoURL ?? undefined,
+          photoURL: auth.currentUser.photoURL ?? undefined,
         });
       }
 
@@ -258,43 +148,12 @@ export default function ProfileScreen() {
     displayName,
     localPhoto,
     updateUserProfile,
-    uploadAvatarToStorage,
     user?.uid,
   ]);
 
   const onRemovePhoto = useCallback(() => {
-    if (!user?.uid) {
-      setLocalPhoto(undefined);
-      return;
-    }
-
-    Alert.alert("Quitar foto", "¿Deseas eliminar tu foto de perfil?", [
-      { text: "Cancelar", style: "cancel" },
-      {
-        text: "Eliminar",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            try {
-              const ref = storageRef(storage, `users/${user.uid}/avatar.jpg`);
-              await deleteObject(ref);
-            } catch {}
-
-            if (updateUserProfile) {
-              await updateUserProfile(user.displayName || "", "");
-            } else if (auth.currentUser) {
-              await updateProfile(auth.currentUser, { photoURL: "" });
-            }
-
-            setLocalPhoto(undefined);
-            Alert.alert("Listo", "Se quitó tu foto de perfil.");
-          } catch {
-            Alert.alert("Error", "No se pudo quitar la foto.");
-          }
-        },
-      },
-    ]);
-  }, [updateUserProfile, user?.displayName, user?.uid]);
+    Alert.alert("Función temporalmente no disponible", "La gestión de fotos está deshabilitada.");
+  }, []);
 
   const onLogout = useCallback(() => {
     Alert.alert("Cerrar sesión", "¿Deseas cerrar sesión ahora?", [
@@ -610,7 +469,7 @@ export default function ProfileScreen() {
             <View style={styles.modalActions}>
               {uploading ? (
                 <TouchableOpacity
-                  onPress={cancelUpload}
+                  onPress={pickNewPhoto}
                   style={[styles.cancelBtn, { borderColor: "#ef4444" }]}
                   activeOpacity={0.85}
                   accessibilityRole="button"
