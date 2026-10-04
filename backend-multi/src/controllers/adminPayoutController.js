@@ -543,7 +543,8 @@ exports.adminReintentarPayout = async (req, res) => {
       return bad(res, "La orden no tiene payouts de vendedor");
     }
 
-    if (orden.payoutBlocked) {
+    if (orden.payoutBlocked || orden.inventoryReservation?.needsReconciliation === true ||
+        orden.inventoryReservation?.state === "reconciliation_required" || orden.hasPayoutUncertainty()) {
       return bad(res, "La orden tiene payouts bloqueados", {
         payoutBlockedReason: orden.payoutBlockedReason || "",
       });

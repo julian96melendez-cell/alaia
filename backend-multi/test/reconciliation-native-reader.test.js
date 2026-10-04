@@ -147,9 +147,8 @@ test('native reader: exact list/audit pipelines, filters, DTOs and source projec
   assert.deepEqual(auditCall.filterOrPipeline, auditPipeline(new ObjectId(CASE), { page: 2, limit: 5 }));
   const finds = h.events.filter(event => event.stage === 'cursor:create' && event.kind === 'find');
   assert.equal(String(finds[0].filterOrPipeline._id), CASE); assert.equal(String(finds[1].filterOrPipeline._id), ID);
-  const sourceText = fs.readFileSync(path.join(__dirname, '../src/services/reconciliationRepository.js'), 'utf8');
-  const orderFields = sourceText.match(/\? "(createdAt updatedAt inventoryReservation[^\"]+)"/)[1];
-  assert.deepEqual(finds[1].options.projection, Object.fromEntries(orderFields.split(' ').map(key => [key, 1])));
+  const { orderSourceProjection } = require('../src/services/reconciliationRepository');
+  assert.deepEqual(finds[1].options.projection, orderSourceProjection);
   const collection = kind => ({ collection: { name: names[kind] }, aggregate: () => ({ option() { return this; }, session: async () => [{ items: copy(h.records.audits), total: [{ count: h.records.audits.length }] }] }) });
   const repo = createMongoRepository({ mongoose: { Types: { ObjectId }, startSession: async () => ({ withTransaction: async fn => fn(), endSession: async () => {} }) }, Orden: collection('orders'), WebhookEvent: collection('events'), Case: collection('cases'), Audit: collection('audits') });
   repo.getCase = async () => copy(h.records.cases); repo.getSource = async () => copy(h.records.orders);
@@ -501,4 +500,32 @@ test('native reader: initialization and cleanup failures remain observable witho
   await assert.rejects(closing, error => error.publicCode === 'REVIEW_UNAVAILABLE' && !error.message.includes('PRIVATE'));
   assert.equal(h.clients.length, 1); assert.equal(h.events.filter(event => event.stage === 'client:close').length, 1);
   assert.equal(h.reader.stats().phase, 'failed'); assert.equal((await h.call()).statusCode, 503);
+});
+
+test('native/Mongoose readers preserve payout discovery DTO and projected fields without flags', async t => {
+  const records = data(), vendor = 'eeeeeeeeeeeeeeeeeeeeeeee';
+  const obligation = `payout_obligation_${ID}_${vendor}`;
+  records.orders.inventoryReservation = { state: 'consumed', needsReconciliation: false };
+  records.orders.payoutBlocked = false;
+  records.orders.historial = [{ estado: obligation, fecha: new Date('2026-10-04'),
+    meta: { amount: 1500, currency: 'usd', destination: 'acct_fixture', password: 'PRIVATE_PASSWORD' }, raw: 'PRIVATE_HISTORY' }];
+  records.cases = null; records.audits = [];
+  const h = await fixture(t, { records });
+  const transportDetail = transport({}); transportDetail.req.params = { caseKey: KEY };
+  await h.reader.handlers.detail(transportDetail.req, transportDetail.res);
+  assert.equal(transportDetail.res.statusCode, 200);
+  const dto = transportDetail.res.body.data;
+  assert.equal(dto.source.pendingPayouts[0].obligationId, obligation);
+  assert.equal(dto.source.operationalPending, true);
+  assert.doesNotMatch(JSON.stringify(dto), /PRIVATE_|historial|password/);
+  const { orderSourceProjection } = require('../src/services/reconciliationRepository');
+  const find = h.events.find(e => e.stage === 'cursor:create' && e.name === names.orders && e.kind === 'find');
+  assert.deepEqual(find.options.projection, orderSourceProjection);
+  const nativeList = await h.call('list');
+  const aggregate = { option() { return Promise.resolve([{ items: [{ _id: KEY, source: records.orders }], total: [{ count: 1 }] }]); } };
+  const mongo = createMongoRepository({ mongoose: {}, Orden: { collection: { name: names.orders }, aggregate: () => aggregate },
+    WebhookEvent: { collection: { name: names.events } }, Case: { collection: { name: names.cases } }, Audit: {} });
+  const mongooseList = await mongo.list({ page: 1, limit: 25 });
+  assert.deepEqual(nativeList.body.data.items, mongooseList.items);
+  assert.deepEqual(nativeList.body.data.coverage, mongooseList.coverage);
 });

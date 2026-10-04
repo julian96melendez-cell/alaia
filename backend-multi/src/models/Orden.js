@@ -1087,9 +1087,21 @@ OrdenSchema.methods.getBreakdownPorVendedor = function () {
   return out;
 };
 
+// A durable claim without an acknowledged local confirmation is never retryable.
+OrdenSchema.methods.hasPayoutUncertainty = function () {
+  const history = this.historial || [];
+  const confirmed = new Set(history.map(h => h.estado));
+  return history.some(h => String(h.estado).startsWith("payout_obligation_") &&
+    !String(h.estado).endsWith("_confirmed") && !confirmed.has(`${h.estado}_confirmed`)) ||
+    (this.vendedorPayouts || []).some(p => p.status === "procesando" ||
+      p.meta?.outcome === "uncertain" ||
+      (p.status !== "pagado" && (p.processingAt || p.stripeTransferId)));
+};
+
 OrdenSchema.methods.isPayoutEligible = function () {
   if (this.payoutPolicy !== "escrow_delivered_hold") return false;
-  if (this.payoutBlocked) return false;
+  if (this.payoutBlocked || this.inventoryReservation?.needsReconciliation === true ||
+      this.inventoryReservation?.state === "reconciliation_required" || this.hasPayoutUncertainty()) return false;
   if (this.estadoPago !== "pagado") return false;
   if (this.estadoFulfillment !== "entregado") return false;
 
@@ -1412,6 +1424,8 @@ OrdenSchema.statics.findPayoutEligible = function ({ limit = 50, skip = 0 } = {}
   return this.find({
     payoutPolicy: "escrow_delivered_hold",
     payoutBlocked: false,
+    "inventoryReservation.needsReconciliation": { $ne: true },
+    "inventoryReservation.state": { $ne: "reconciliation_required" },
     estadoPago: "pagado",
     estadoFulfillment: "entregado",
     payoutEligibleAt: { $ne: null, $lte: new Date() },

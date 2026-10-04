@@ -202,7 +202,7 @@ test("review models: automatic creation/indexing disabled; case identity and app
 test("review authentication: actual cookie middleware rejects revoked, inactive, locked and non-admin sessions",async()=>{
   const filename=path.join(__dirname,"../src/middleware/auth.js"),module={exports:{}};
   let profile={_id:ACTOR,rol:"admin",activo:true,tokenVersion:1};const authLogs=[];
-  vm.runInNewContext(fs.readFileSync(filename,"utf8"),{module,exports:module.exports,require:name=>name==="./reconciliationLogging"?require("../src/middleware/reconciliationLogging"):name==="../models/Usuario"?{findById:()=>({select:async()=>profile})}:{verificarAccessToken:token=>{if(token!=="fixture_session")throw Error("invalid");return{id:ACTOR,tokenVersion:1};}},process:{env:{}},console:{error:(...args)=>authLogs.push(args)},Date});
+  vm.runInNewContext(fs.readFileSync(filename,"utf8"),{module,exports:module.exports,require:name=>name==="./cookieWriteOrigin"?require("../src/middleware/cookieWriteOrigin"):name==="./reconciliationLogging"?require("../src/middleware/reconciliationLogging"):name==="../models/Usuario"?{findById:()=>({select:async()=>profile})}:{verificarAccessToken:token=>{if(token!=="fixture_session")throw Error("invalid");return{id:ACTOR,tokenVersion:1};}},process:{env:{}},console:{error:(...args)=>authLogs.push(args)},Date});
   const {proteger,soloAdmin}=module.exports;
   async function check(cookies,expected) {
     const res=response();let allowed=false;
@@ -295,4 +295,88 @@ test("review detail: snapshot transaction is explicit, sequential and always clo
   const repo = createMongoRepository({ mongoose: { startSession: async () => session }, Orden: {}, WebhookEvent: {}, Case: {}, Audit: {} });
   await assert.rejects(repo.readSnapshot(async actual => { assert.equal(actual, session); throw Error("fixture failure"); }), /fixture failure/);
   assert.equal(closed, 1); assert.deepEqual(options.readConcern, { level: "snapshot" }); assert.equal(options.readPreference, "primary");
+});
+
+const { sourceSnapshot, pendingPayoutClaims } = require('../src/services/reconciliationContracts');
+const { pendingPayoutExpression, orderSourceProjection, queueCoverage } = require('../src/services/reconciliationRepository');
+const payoutKey = vendor => `payout_obligation_${ID}_${vendor}`;
+function payoutSource(entries = []) {
+  return { ...copy(source), payoutBlocked: false, inventoryReservation: { state: 'consumed', needsReconciliation: false },
+    historial: entries, estadoPago: 'pagado', estadoFulfillment: 'entregado' };
+}
+function payoutClaim(vendor = ACTOR) { return { estado: payoutKey(vendor), fecha: new Date('2026-10-04'),
+  meta: { amount: 1250, currency: 'usd', destination: 'acct_fixture', password: 'private-password' }, raw: 'private-history' }; }
+// Restricted synthetic expression evaluator, not a MongoDB integration certification.
+function expression(value, doc, vars = {}) {
+  if (typeof value === 'string') {
+    if (value.startsWith('$$')) { const [name, ...parts] = value.slice(2).split('.'); return parts.reduce((o, k) => o?.[k], vars[name]); }
+    if (value.startsWith('$')) return value.slice(1).split('.').reduce((o, k) => o?.[k], doc);
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(v => expression(v, doc, vars));
+  if (!value || typeof value !== 'object') return value;
+  const [op, args] = Object.entries(value)[0], evalOne = v => expression(v, doc, vars);
+  if (op === '$cond') { const [condition, yes, no] = args; return evalOne(condition) ? evalOne(yes) : evalOne(no); }
+  if (op === '$isArray') return Array.isArray(evalOne(args));
+  if (op === '$filter' || op === '$map') return evalOne(args.input)[op === '$filter' ? 'filter' : 'map'](item => expression(args.cond || args.in, doc, { ...vars, [args.as]: item }));
+  if (op === '$convert') return evalOne(args.input) == null ? args.onNull : String(evalOne(args.input));
+  if (op === '$toString') return String(evalOne(args));
+  if (op === '$regexMatch') return new RegExp(evalOne(args.regex)).test(evalOne(args.input));
+  if (op === '$size') return evalOne(args).length;
+  const values = evalOne(args);
+  if (op === '$concat') return values.join('');
+  if (op === '$gt') return values[0] > values[1];
+  if (op === '$in') return values[1].includes(values[0]);
+  if (op === '$not') return !values[0];
+  if (op === '$and') return values.every(Boolean);
+  throw new Error('Unsupported synthetic expression');
+}
+for (const scenario of [
+  { name: 'claimed before Stripe', entries: [payoutClaim()], count: 1 },
+  { name: 'Stripe accepted but ID never saved', entries: [payoutClaim()], count: 1 },
+  { name: 'partial confirmations', entries: [payoutClaim(), payoutClaim(OTHER), { estado: `${payoutKey(ACTOR)}_confirmed` }], count: 1 },
+  { name: 'all confirmed', entries: [payoutClaim(), { estado: `${payoutKey(ACTOR)}_confirmed` }], count: 0 },
+  { name: 'wrong obligation confirmation', entries: [payoutClaim(), { estado: `${payoutKey(OTHER)}_confirmed` }], count: 1 },
+  { name: 'no claims', entries: [], count: 0 },
+  { name: 'foreign order claim', entries: [{ ...payoutClaim(), estado: `payout_obligation_${OTHER}_${ACTOR}` }], count: 0 },
+]) test(`payout discovery without flags: ${scenario.name}`, () => {
+  const data = payoutSource(scenario.entries), snapshot = sourceSnapshot('order', data);
+  assert.equal(expression(pendingPayoutExpression, data), scenario.count > 0);
+  assert.equal(snapshot.pendingPayouts.length, scenario.count);
+  assert.equal(snapshot.operationalPending, scenario.count > 0);
+  if (scenario.count) assert.equal(snapshot.payoutReviewLabel, 'Resultado de payout pendiente de verificar');
+  assert.doesNotMatch(JSON.stringify(snapshot), /private-|historial|password|raw/);
+});
+test('payout closing administrative review preserves claim, model payout block and financial source', async () => {
+  const data = payoutSource([payoutClaim()]), h = harness(new Map([[KEY, data]])), original = copy(data);
+  await h.service.review(KEY, await h.input(KEY, { status: 'closed', conclusion: 'no_operational_resolution' }), IDEM, ACTOR);
+  const detail = await h.service.detail(KEY, {});
+  assert.equal(detail.administrativeStatus, 'closed'); assert.equal(detail.source.operationalPending, true);
+  assert.deepEqual(h.sources.get(KEY), original);
+  assert.equal(require('../src/models/Orden').hydrate(original).isPayoutEligible(), false);
+  assert.equal(detail.audits[0].observedSource.pendingPayouts[0].obligationId, payoutKey(ACTOR));
+});
+test('payout source version changes when confirmation arrives; stale review cannot hide it', async () => {
+  const data = payoutSource([payoutClaim()]), h = harness(new Map([[KEY, data]])), input = await h.input();
+  data.historial.push({ estado: `${payoutKey(ACTOR)}_confirmed` });
+  await assert.rejects(h.service.review(KEY, input, IDEM, ACTOR)); assert.equal(h.audits.size, 0);
+});
+test('queue applies pending claim match before grouping, status filters and pagination; warns on limited window', () => {
+  const pipeline = listPipeline({ page: 2, limit: 1, status: 'closed', kind: 'order' }, { orders: 'orders', events: 'events', cases: 'cases' });
+  assert.deepEqual(pipeline[0].$match.$or[2].$expr, pendingPayoutExpression);
+  assert.equal(pipeline.at(-3).$match.sourceKind, 'order'); assert.equal(pipeline.at(-3).$match.administrativeStatus, 'closed');
+  assert.equal(pipeline.at(-1).$facet.items[0].$skip, 1);
+  assert.equal(pipeline.at(-1).$facet.total[0].$count, 'count');
+  assert.equal(queueCoverage({ limit: 1 }, 1001).paginationWindowExceeded, true);
+  assert.equal(queueCoverage({ limit: 100 }, 10100).paginationWindowExceeded, false);
+  assert.equal(queueCoverage({ limit: 100 }, 10101).paginationWindowExceeded, true);
+  assert.equal(orderSourceProjection['historial.meta.destination'], 1); assert.equal(orderSourceProjection.historial, undefined);
+});
+test('payout metadata is validated and audit DTO cannot reintroduce arbitrary fields', () => {
+  const claim = payoutClaim(); claim.meta.destination = 'private-secret'; claim.meta.currency = 'private'; claim.meta.amount = '1250';
+  const snapshot = sourceSnapshot('order', payoutSource([claim]));
+  assert.equal(snapshot.pendingPayouts[0].destination, null); assert.equal(snapshot.pendingPayouts[0].amountCents, null);
+  assert.equal(snapshot.pendingPayouts[0].currency, null);
+  const dto = auditDTO({ sourceSnapshot: { ...snapshot, raw: 'private-history' }, evidence: [] });
+  assert.doesNotMatch(JSON.stringify(dto), /private-|raw|historial/);
 });

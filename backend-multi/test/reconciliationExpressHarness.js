@@ -19,7 +19,8 @@ const { getReconciliationReadLimits } = require('../src/config/reconciliationRea
 const { rejectAmbiguousReconciliationQuery } = require('../src/middleware/reconciliationQueryGuard');
 const { getAllowedOrigins, createOriginValidator } = require('../src/config/cors');
 const { createReconciliationReviewService } = require('../src/services/reconciliationReviewService');
-const { parseKey, caseDTO, fail } = require('../src/services/reconciliationContracts');
+const { parseKey, caseDTO, fail, pendingPayoutClaims } = require('../src/services/reconciliationContracts');
+const { queueCoverage } = require('../src/services/reconciliationRepository');
 const BASE = '/api/ordenes/admin/reconciliation';
 const ORIGIN = 'https://admin.example.invalid';
 const COOKIE = 'alaia_access_token';
@@ -100,13 +101,13 @@ async function fixture(t, { globalCors = true, readEnv = {}, integrated = false,
       state.repositoryCalls++; fault('list');
       if (state.listWait) await state.listWait;
       if (state.mongoTimeout) throw Object.assign(Error('PRIVATE_DRIVER_ERROR'), { code: 50 });
-      const keys = new Set([...business.orders.filter(row => row.inventoryReservation.needsReconciliation || row.inventoryReservation.state === 'reconciliation_required').map(row => `order:${row._id}`), ...business.events.filter(row => row.provider === 'stripe' && ['failed', 'skipped'].includes(row.status)).map(row => `event:${row._id}`), ...[...cases.values()].filter(row => row.status !== 'closed').map(row => row.caseKey)]);
+      const keys = new Set([...business.orders.filter(row => row.inventoryReservation?.needsReconciliation || row.inventoryReservation?.state === 'reconciliation_required' || pendingPayoutClaims(row).length > 0).map(row => `order:${row._id}`), ...business.events.filter(row => row.provider === 'stripe' && ['failed', 'skipped'].includes(row.status)).map(row => `event:${row._id}`), ...[...cases.values()].filter(row => row.status !== 'closed').map(row => row.caseKey)]);
       const items = [];
       for (const key of [...keys].sort()) {
         const reference = parseKey(key), dto = caseDTO(reference, cases.get(reference.caseId), await repo.getSource(reference));
         if ((!options.kind || options.kind === dto.sourceKind) && (!options.status || options.status === dto.administrativeStatus)) items.push(dto);
       }
-      return { items: items.slice((options.page - 1) * options.limit, options.page * options.limit), total: items.length, readConsistency: 'single_aggregation' };
+      return { items: items.slice((options.page - 1) * options.limit, options.page * options.limit), total: items.length, readConsistency: 'single_aggregation', coverage: queueCoverage(options, items.length) };
     },
   };
   repo.readSnapshot = fn => repo.transaction(fn);
@@ -124,7 +125,8 @@ async function fixture(t, { globalCors = true, readEnv = {}, integrated = false,
     return user;
   } }) };
   const authService = moduleWithDoubles('src/services/authService.js', { '../models/Usuario': Usuario }, env);
-  const auth = moduleWithDoubles('src/middleware/auth.js', { '../models/Usuario': Usuario, '../services/authService': authService, './reconciliationLogging': require('../src/middleware/reconciliationLogging') }, env, capturedConsole);
+  const cookieOrigin = moduleWithDoubles('src/middleware/cookieWriteOrigin.js', { '../config/cors': require('../src/config/cors') }, env);
+  const auth = moduleWithDoubles('src/middleware/auth.js', { './cookieWriteOrigin': cookieOrigin, '../models/Usuario': Usuario, '../services/authService': authService, './reconciliationLogging': require('../src/middleware/reconciliationLogging') }, env, capturedConsole);
   const controller = moduleWithDoubles('src/controllers/adminReconciliationController.js', {
     '../services/reconciliationReviewService': { getReconciliationReviewService: () => mongooseService },
     '../services/reconciliationReadRuntime': { createReconciliationReadRuntime: () => reads },

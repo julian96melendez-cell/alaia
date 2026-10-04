@@ -36,15 +36,21 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
     checkOwner(order, uid, keyHash);
     return order;
   }
+  function canRelease(order) {
+    return order?.inventoryReservation?.state === "reserved" &&
+      order.inventoryReservation.needsReconciliation !== true &&
+      ["pendiente", "fallido"].includes(order.estadoPago) &&
+      !["completed", "terminal"].includes(order.checkoutIntent?.state);
+  }
   async function release(id, reason, proof, paymentIntentId) {
     return repo.transaction(async session => {
       const order = await repo.get(id, session);
-      if (!order || order.inventoryReservation?.state !== "reserved" || order.estadoPago === "pagado") return false;
+      if (!canRelease(order)) return false;
       if (proof === "never_attempted" && order.checkoutIntent.stripeAttemptStartedAt) return false;
       if (proof === "definitive_preparation_failure" && order.stripePaymentIntentId) return false;
       if (proof === "stripe_canceled" && (order.stripePaymentIntentId || order.stripeSessionId) !== paymentIntentId) throw error("Reserva pendiente de conciliación", 503);
       if (!["never_attempted", "stripe_canceled", "definitive_preparation_failure"].includes(proof)) throw error("Liberación sin prueba definitiva", 503);
-      const expected = { "inventoryReservation.state": "reserved", estadoPago: order.estadoPago };
+      const expected = { "inventoryReservation.state": "reserved", "inventoryReservation.needsReconciliation": { $ne: true }, estadoPago: order.estadoPago };
       for (const line of order.inventoryReservation.lines) await repo.restore(line.producto, line.cantidad, session);
       order.inventoryReservation.state = "released";
       order.inventoryReservation.releasedAt = now();
@@ -58,7 +64,7 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
   async function reconcile(id, reason) {
     await repo.transaction(async session => {
       const order = await repo.get(id, session);
-      if (!order || order.inventoryReservation.state !== "reserved") return;
+      if (!canRelease(order)) return;
       order.inventoryReservation.needsReconciliation = true;
       order.inventoryReservation.reconciliationReason = reason;
       await repo.saveExpected(order, session, { "inventoryReservation.state": "reserved", estadoPago: order.estadoPago });
@@ -96,7 +102,11 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
     });
   }
   async function cancelOrder(order, reason) {
-    if (order.inventoryReservation.state !== "reserved" || order.estadoPago === "pagado") return order;
+    // Batch selection/owner resolution can be stale. Re-read immediately before
+    // any external cancellation; release checks again within its transaction.
+    if (!order?._id) return order;
+    order = await repo.get(String(order._id));
+    if (!canRelease(order)) return order;
     if (!order.stripePaymentIntentId && !order.stripeSessionId) {
       if (!order.checkoutIntent.stripeAttemptStartedAt) await release(String(order._id), reason, "never_attempted");
       else await reconcile(String(order._id), "unknown_payment_intent_after_attempt");

@@ -1,7 +1,7 @@
 'use strict';
 const { getNativeReaderConfig } = require('../config/reconciliationNativeReader');
 const { createReadBudget, createReconciliationReadRuntime } = require('./reconciliationReadRuntime');
-const { listPipeline, auditPipeline } = require('./reconciliationRepository');
+const { listPipeline, auditPipeline, orderSourceFields, queueCoverage } = require('./reconciliationRepository');
 const { createReconciliationReviewService } = require('./reconciliationReviewService');
 const { createAdminReconciliationController } = require('../controllers/adminReconciliationController');
 const { parseKey, caseDTO, fail } = require('./reconciliationContracts');
@@ -88,7 +88,7 @@ function createNativeReconciliationReader({ env = process.env, driver } = {}) {
     getCase: (id, session, budget) => cursorRead('find', collections.cases, { _id: new ObjectId(id) }, budget, session),
     getSource: (reference, session, budget) => {
       const fields = reference.kind === 'order'
-        ? 'createdAt updatedAt inventoryReservation.state inventoryReservation.needsReconciliation checkoutIntent.keyHash estadoPago estadoFulfillment payoutBlocked total moneda'
+        ? orderSourceFields
         : 'createdAt updatedAt provider status eventId';
       const projection = Object.fromEntries(fields.split(' ').map(field => [field, 1]));
       return cursorRead('find', reference.kind === 'order' ? collections.orders : collections.events, { _id: new ObjectId(reference.id) }, budget, session, projection);
@@ -99,7 +99,8 @@ function createNativeReconciliationReader({ env = process.env, driver } = {}) {
     },
     list: (options, budget) => sessionRead(async session => {
       const [result] = await cursorRead('aggregate', collections.orders, listPipeline(options, collections, new Date()), budget, session);
-      return { items: (result?.items || []).map(row => caseDTO(parseKey(row._id), row.record, row.source)), total: result?.total?.[0]?.count || 0, readConsistency: 'single_aggregation' };
+      const total = result?.total?.[0]?.count || 0;
+      return { items: (result?.items || []).map(row => caseDTO(parseKey(row._id), row.record, row.source)), total, readConsistency: 'single_aggregation', coverage: queueCoverage(options, total) };
     }, budget, false),
   });
   const service = createReconciliationReviewService(repo);

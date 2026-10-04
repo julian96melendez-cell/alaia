@@ -13,6 +13,7 @@ const {
 } = require("../controllers/authController");
 
 const { proteger } = require("../middleware/auth");
+const { protectRefreshCookie } = require("../middleware/cookieWriteOrigin");
 
 function safeString(v) {
   if (v === null || v === undefined) return "";
@@ -80,7 +81,7 @@ const validarRefresh = [
 router.post("/registrar", validarRegistro, validateRequest, registrar);
 router.post("/login", validarLogin, validateRequest, login);
 router.get("/me", proteger, me);
-router.post("/refresh", validarRefresh, validateRequest, refreshToken);
+router.post("/refresh", protectRefreshCookie, validarRefresh, validateRequest, refreshToken);
 router.post("/logout", proteger, logout);
 
 module.exports = router;

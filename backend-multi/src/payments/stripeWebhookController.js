@@ -124,9 +124,12 @@ async function updateWebhookEventSafe(eventRow, update) {
     if (!eventRow?._id) return;
 
     await WebhookEvent.updateOne({ _id: eventRow._id }, update);
-  } catch (err) {
+  } catch {
     log("warn", "No se pudo actualizar WebhookEvent", {
-      err: err?.message || String(err),
+      code: "WEBHOOK_LEDGER_UNAVAILABLE",
+    });
+    throw Object.assign(new Error("Webhook ledger unavailable"), {
+      publicCode: "WEBHOOK_LEDGER_UNAVAILABLE",
     });
   }
 }
@@ -591,7 +594,7 @@ exports.procesarWebhookStripe = async (req, res) => {
   } catch (err) {
     log("warn", "Stripe signature invalid", {
       reqId,
-      err: err?.message || String(err),
+      code: "STRIPE_SIGNATURE_INVALID",
     });
 
     return res.status(400).send("Firma de webhook inválida");
@@ -1283,6 +1286,9 @@ exports.procesarWebhookStripe = async (req, res) => {
 
     return ok(res);
   } catch (err) {
+    if (err.publicCode === "WEBHOOK_LEDGER_UNAVAILABLE") {
+      return res.status(503).json({ ok: false, message: "Webhook pendiente; reintentar" });
+    }
     if (err.publicCode === "FINANCIAL_REVIEW_REQUIRED") {
       await updateWebhookEventSafe(eventRow, { $set: { status: "skipped", ordenId: null, summary: { ...summary, ordenId: null }, errorMessage: "FINANCIAL_REVIEW_REQUIRED: no order effects; manual review" } });
       return ok(res);

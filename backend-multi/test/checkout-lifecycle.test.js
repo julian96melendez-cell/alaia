@@ -225,3 +225,142 @@ test('4B: release/consume racing has one stock effect and paid state', async () 
   await h.lifecycle.release(order._id, 'duplicate', 'stripe_canceled', order.stripePaymentIntentId);
   assert.ok(h.counts().restoreCalls <= 1);
 });
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('expiry revalidates reconciliation flag added after selection before Stripe contact', async () => {
+  const h = harness({ [A]: 1 }); const result = await h.prepare(); h.advance();
+  const select = h.repo.expired;
+  h.repo.expired = async (...args) => {
+    const selected = await select(...args);
+    const order = await h.repo.get(result.order._id);
+    order.inventoryReservation.needsReconciliation = true;
+    order.inventoryReservation.reconciliationReason = 'review_after_selection';
+    await h.repo.save(order);
+    return selected;
+  };
+  let cancellations = 0;
+  h.stripe.cancel = async () => { cancellations++; throw Error('Must not contact Stripe'); };
+  assert.deepEqual(await h.lifecycle.expire(), { checked: 1, failed: 0 });
+  const order = await h.repo.get(result.order._id);
+  assert.equal(cancellations, 0); assert.equal(h.counts().restoreCalls, 0);
+  assert.equal(h.stocks[A], 0); assert.equal(order.inventoryReservation.state, 'reserved');
+  assert.equal(order.inventoryReservation.reconciliationReason, 'review_after_selection');
+});
+
+test('expiry retains stock when reconciliation is marked while Stripe cancellation is pending', async () => {
+  const h = harness({ [A]: 1 }); const result = await h.prepare(); h.advance();
+  const started = deferred(), resume = deferred(); let cancellations = 0;
+  h.stripe.cancel = async () => {
+    cancellations++; started.resolve(); await resume.promise;
+    return { status: 'canceled', paymentIntentId: result.order.stripePaymentIntentId };
+  };
+  const pending = h.lifecycle.expire(); await started.promise;
+  await h.repo.transaction(async session => {
+    const order = await h.repo.get(result.order._id, session);
+    order.inventoryReservation.needsReconciliation = true;
+    order.inventoryReservation.reconciliationReason = 'review_during_cancellation';
+    await h.repo.save(order, session);
+  });
+  resume.resolve();
+  assert.deepEqual(await pending, { checked: 1, failed: 0 });
+  const order = await h.repo.get(result.order._id);
+  assert.equal(cancellations, 1); assert.equal(h.counts().restoreCalls, 0);
+  assert.equal(h.stocks[A], 0); assert.equal(order.estadoPago, 'pendiente');
+  assert.equal(order.inventoryReservation.state, 'reserved');
+  assert.equal(order.inventoryReservation.reconciliationReason, 'review_during_cancellation');
+});
+
+for (const state of ['pagado', 'reembolsado', 'reembolsado_parcial', 'unknown']) {
+  test(`release refuses incompatible payment state ${state} before restoring stock`, async () => {
+    const h = harness({ [A]: 1 }); const result = await h.prepare();
+    const order = await h.repo.get(result.order._id); order.estadoPago = state; await h.repo.save(order);
+    const before = copy(order);
+    assert.equal(await h.lifecycle.release(order._id, 'expired', 'stripe_canceled', order.stripePaymentIntentId), false);
+    assert.deepEqual(await h.repo.get(order._id), before);
+    assert.equal(h.counts().restoreCalls, 0); assert.equal(h.stocks[A], 0);
+  });
+}
+
+for (const state of ['consumed', 'released', 'reconciliation_required']) {
+  test(`stale selected reservation now ${state} never contacts Stripe`, async () => {
+    const h = harness({ [A]: 1 }); const result = await h.prepare(); h.advance();
+    const selected = copy(await h.repo.get(result.order._id));
+    h.repo.expired = async () => [selected];
+    const current = await h.repo.get(result.order._id); current.inventoryReservation.state = state;
+    await h.repo.save(current);
+    h.stripe.cancel = async () => { throw Error('Must not contact Stripe'); };
+    assert.deepEqual(await h.lifecycle.expire(), { checked: 1, failed: 0 });
+    assert.deepEqual(await h.repo.get(current._id), current); assert.equal(h.counts().restoreCalls, 0);
+  });
+}
+
+for (const status of ['succeeded', 'processing', 'unknown']) {
+  test(`expiry retains reservation for Stripe status ${status}`, async () => {
+    const h = harness({ [A]: 1 }); const result = await h.prepare(); h.advance();
+    h.stripe.cancel = async () => ({ status, paymentIntentId: result.order.stripePaymentIntentId });
+    assert.deepEqual(await h.lifecycle.expire(), { checked: 1, failed: 0 });
+    const order = await h.repo.get(result.order._id);
+    assert.equal(order.inventoryReservation.state, 'reserved');
+    assert.equal(order.inventoryReservation.needsReconciliation, true);
+    assert.equal(h.stocks[A], 0); assert.equal(h.counts().restoreCalls, 0);
+  });
+}
+
+test('expiry Stripe network exception retains reservation and reports a partial failure', async () => {
+  const h = harness({ [A]: 1 }); const result = await h.prepare(); h.advance();
+  h.stripe.cancel = async () => { throw Error('Synthetic uncertain network outcome'); };
+  assert.deepEqual(await h.lifecycle.expire(), { checked: 1, failed: 1 });
+  const order = await h.repo.get(result.order._id);
+  assert.equal(order.inventoryReservation.state, 'reserved');
+  assert.equal(order.estadoPago, 'pendiente'); assert.equal(h.stocks[A], 0);
+  assert.equal(h.counts().restoreCalls, 0);
+});
+
+test('expiry cannot release stock when signed payment wins during Stripe cancellation', async () => {
+  const h = harness({ [A]: 1 }); const result = await h.prepare(); h.advance();
+  const started = deferred(), resume = deferred();
+  h.stripe.cancel = async () => {
+    started.resolve(); await resume.promise;
+    return {status:'canceled', paymentIntentId:result.order.stripePaymentIntentId};
+  };
+  const pending = h.lifecycle.expire(); await started.promise;
+  await h.lifecycle.settlePaid(result.order._id);
+  resume.resolve();
+  assert.deepEqual(await pending, {checked:1, failed:0});
+  const order = await h.repo.get(result.order._id);
+  assert.equal(order.estadoPago, 'pagado');assert.equal(order.inventoryReservation.state, 'consumed');
+  assert.equal(h.stocks[A], 0);assert.equal(h.counts().restoreCalls, 0);
+});
+
+test('uncertain Stripe result cannot overwrite a review added while cancellation was pending', async () => {
+  const h = harness({ [A]: 1 }); const result = await h.prepare(); h.advance();
+  const started = deferred(), resume = deferred();
+  h.stripe.cancel = async () => {
+    started.resolve(); await resume.promise;
+    return {status:'processing', paymentIntentId:result.order.stripePaymentIntentId};
+  };
+  const pending = h.lifecycle.expire(); await started.promise;
+  const order = await h.repo.get(result.order._id);
+  order.inventoryReservation.needsReconciliation = true;
+  order.inventoryReservation.reconciliationReason = 'retain_existing_review';
+  await h.repo.save(order);
+  resume.resolve();await pending;
+  assert.deepEqual(await h.repo.get(result.order._id), order);
+  assert.equal(h.stocks[A], 0);assert.equal(h.counts().restoreCalls, 0);
+});
+
+for (const state of ['completed', 'terminal']) {
+  test(`release retains reserved stock for incompatible checkout state ${state}`, async () => {
+    const h = harness({ [A]: 1 });const result = await h.prepare();
+    const order = await h.repo.get(result.order._id);order.checkoutIntent.state = state;
+    await h.repo.save(order);
+    assert.equal(await h.lifecycle.release(order._id, 'expired', 'stripe_canceled', order.stripePaymentIntentId), false);
+    assert.deepEqual(await h.repo.get(order._id), order);assert.equal(h.stocks[A], 0);
+    assert.equal(h.counts().restoreCalls, 0);
+  });
+}

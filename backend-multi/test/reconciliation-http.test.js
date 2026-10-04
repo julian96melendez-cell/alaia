@@ -59,14 +59,14 @@ test('HTTP reconciliation: CORS preflight grants no data or writes; permitted re
 test('HTTP reconciliation: cookie writes reject missing/null/hostile origins and form content types', async t => {
   const h = await fixture(t), body = await h.input();
   for (const origin of [null, 'null', 'https://hostile.example.invalid', `${ORIGIN}/path`, 'http://admin.example.invalid']) assert.equal((await h.request('POST', `/${KEY}/reviews`, { origin, body })).status, 403);
-  assert.equal((await h.request('POST', `/${KEY}/reviews`, { origin: null, headers: { referer: ORIGIN }, body })).body.code, 'REVIEW_ORIGIN_FORBIDDEN');
+  assert.equal((await h.request('POST', `/${KEY}/reviews`, { origin: null, headers: { referer: ORIGIN }, body })).body.code, 'COOKIE_WRITE_ORIGIN_FORBIDDEN');
   for (const contentType of [null, 'text/plain', 'application/x-www-form-urlencoded']) assert.equal((await h.request('POST', `/${KEY}/reviews`, { contentType, raw: contentType === 'application/x-www-form-urlencoded' ? 'status=closed' : JSON.stringify(body) })).status, 415);
   assert.equal(h.audits.size, 0);
 });
 test('HTTP reconciliation: route origin guard is effective independently of global CORS', async t => {
   const h = await fixture(t, { globalCors: false });
   const result = await h.request('POST', `/${KEY}/reviews`, { origin: 'https://hostile.example.invalid', body: await h.input() });
-  assert.equal(result.status, 403); assert.equal(result.body.code, 'REVIEW_ORIGIN_FORBIDDEN');
+  assert.equal(result.status, 403); assert.equal(result.body.code, 'COOKIE_WRITE_ORIGIN_FORBIDDEN');
   assert.equal(h.cases.size, 0);
 });
 test('HTTP reconciliation: strict parameters, query operators, unknown fields and pagination bounds reject requests', async t => {
@@ -270,4 +270,51 @@ test('HTTP reconciliation: detail deadline rejects generically and stops subsequ
   h.state.detailWait = null; release(); await waitUntil(() => h.reads.stats().operations === 0);
   assert.equal(h.state.repositoryCalls, 1); // No source/audit read after deadline.
   assert.equal((await h.request('GET', `/${KEY}`)).status, 200);
+});
+
+test('HTTP payout discovery: no flags, admin-only DTO, closing review preserves the live claim and payout barrier', async t => {
+  const h = await fixture(t);
+  const { sourceSnapshot } = require('../src/services/reconciliationContracts');
+  const { queueCoverage } = require('../src/services/reconciliationRepository');
+  const row = copy(h.business.orders.find(order => String(order._id) === ID));
+  const obligation = `payout_obligation_${ID}_${SELLER}`;
+  row.inventoryReservation = { state: 'consumed', needsReconciliation: false };
+  row.payoutBlocked = false;
+  row.historial = [{ estado: obligation, fecha: new Date('2026-10-04'),
+    meta: { amount: 1500, currency: 'usd', destination: 'acct_fixture', password: 'PRIVATE_PAYOUT_SECRET' },
+    note: 'PRIVATE_FULL_HISTORY' }];
+  const before = copy({ business: h.business, row });
+  h.repo.getSource = async reference => reference.key === KEY ? copy(row) : null;
+  // Controlled repository selection; actual aggregation is covered structurally,
+  // not represented as MongoDB execution by this loopback HTTP test.
+  h.repo.list = async options => {
+    const reference = parseKey(KEY), record = h.cases.get(reference.caseId);
+    const dto = caseDTO(reference, record, row);
+    const selected = sourceSnapshot('order', row).operationalPending &&
+      (!options.kind || options.kind === 'order') && (!options.status || options.status === dto.administrativeStatus);
+    const items = selected ? [dto] : [];
+    return { items: items.slice((options.page - 1) * options.limit, options.page * options.limit),
+      total: items.length, coverage: queueCoverage(options, items.length) };
+  };
+  for (const session of [null, h.token(CLIENT), h.token(SELLER)]) {
+    const result = await h.request('GET', `/${KEY}`, { session });
+    assert.ok([401, 403].includes(result.status)); assert.ok(!result.text.includes(obligation));
+  }
+  const initial = await h.request('GET', '?kind=order&page=1&limit=1');
+  assert.equal(initial.body.data.total, 1);
+  assert.equal(initial.body.data.items[0].source.pendingPayouts[0].obligationId, obligation);
+  assert.equal(initial.body.data.items[0].source.payoutReviewLabel, 'Resultado de payout pendiente de verificar');
+  const input = await h.input({ status: 'closed', conclusion: 'no_operational_resolution' });
+  const closed = await h.request('POST', `/${KEY}/reviews`, { body: input }); assert.equal(closed.status, 200);
+  const listed = await h.request('GET', '?kind=order&status=closed');
+  assert.equal(listed.body.data.total, 1); assert.equal(listed.body.data.items[0].source.operationalPending, true);
+  assert.equal((await h.request('GET')).body.data.total, 1);
+  const filtered = await h.request('GET', '?kind=order&status=open');
+  assert.equal(filtered.body.data.total, 0); assert.equal(filtered.body.data.coverage.administrativeStatus, 'open');
+  const secondPage = await h.request('GET', '?kind=order&page=2&limit=1');
+  assert.equal(secondPage.body.data.total, 1); assert.equal(secondPage.body.data.items.length, 0);
+  assert.deepEqual({ business: h.business, row }, before);
+  assert.equal(require('../src/models/Orden').hydrate(row).isPayoutEligible(), false);
+  for (const result of [initial, closed, listed, filtered, secondPage]) assert.doesNotMatch(result.text, /PRIVATE_|historial|password/);
+  assert.doesNotMatch(JSON.stringify([h.logs, h.errorLogs]), /PRIVATE_PAYOUT_SECRET|PRIVATE_FULL_HISTORY/);
 });

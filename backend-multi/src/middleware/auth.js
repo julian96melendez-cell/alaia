@@ -3,6 +3,7 @@
 const Usuario = require("../models/Usuario");
 const { isReconciliationRequest, reconciliationErrorLog } = require("./reconciliationLogging");
 const { verificarAccessToken } = require("../services/authService");
+const { allowCookieWrite } = require("./cookieWriteOrigin");
 
 const ACCESS_COOKIE_NAME =
   process.env.ACCESS_COOKIE_NAME || "alaia_access_token";
@@ -103,6 +104,8 @@ async function proteger(req, res, next) {
     if (!userId) {
       return send401(res, "Token inválido", reqId);
     }
+
+    if (!allowCookieWrite(req, res, !getTokenFromAuthorizationHeader(req))) return;
 
     const usuario = await Usuario.findById(userId).select(
       "+tokenVersion +lockedUntil -password"

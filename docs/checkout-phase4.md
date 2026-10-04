@@ -339,3 +339,274 @@ evidence, authorization/origin controls and deployment prerequisites. Closing a
 review does not change any payment, inventory, fulfillment or payout state and
 never clears operational reconciliation flags. No financial resolver, Stripe
 lookup, worker or scheduler is enabled by this delivery.
+
+## Local signed-webhook HTTP closure (2026-10-03)
+
+`test/stripe-webhook-http.test.js` assembles the real Stripe router, real webhook
+controller and real `stripeService` signature/summary functions with Express and
+HTTP bound only to `127.0.0.1` on an ephemeral port. The harness reproduces the
+production raw-before-JSON middleware order; it does **not** import `server.js`
+or certify the full production entry point. Unexpected imports fail explicitly.
+Stripe's real SDK verifies synthetic HMAC signatures locally; only its webhooks
+capability is exposed. MongoDB ledger/order reads are doubles, and financial,
+Firebase, mail, checkout and external Stripe API operations are forbidden doubles.
+No real credential is used, and no remote service is contacted.
+
+Coverage includes valid, invalid, altered-body, expired and missing signatures;
+unsupported content type; ledger creation failure; an in-progress duplicate;
+reclaiming a failed delivery; and failure of the final ledger update. Rejected
+signatures never reach event summarization, ledger persistence or order reads/
+mutations. The valid synthetic PaymentIntent has no verified order binding and is
+quarantined as `skipped`; this is **not** a real completed payment scenario.
+Captured controller/router logs and HTTP responses are checked for synthetic
+payload/signature/secret sentinels in rejection cases.
+
+The rejection log now uses fixed `STRIPE_SIGNATURE_INVALID` instead of arbitrary
+SDK error text. HTTP tests exposed an existing acknowledgement defect: a failed
+final ledger update was swallowed and returned HTTP 200. Ledger update failures
+now propagate as fixed `WEBHOOK_LEDGER_UNAVAILABLE`; the controller returns 503
+without acknowledging success. The fixture stays `received`, not `processed`.
+No new retry loop, scheduler, payment transition or worker is added. When such a
+failure occurs after a financial operation, that operation is not rolled back by
+this change; an eventual verified redelivery must use the existing idempotent
+financial coordinator. Fresh `received` events still follow the existing stale-
+claim policy, so immediate redelivery can continue receiving 503.
+
+Validation: **10/10 new HTTP tests and 106/106 combined relevant tests passed**
+(new HTTP, production hardening, cookie origin, checkout lifecycle/contract,
+Phase 4C financial guards and expiration runner). The final-ledger regression
+failed before the local correction, then passed. HTTP tests required local-socket
+permission because the default sandbox refused loopback; they remained isolated.
+
+Still required before production approval:
+
+- Verify the four real critical MongoDB indexes; all remain NOT VERIFIED.
+- Separately verify Stripe account/mode, deployed signed endpoint, configured event
+  subscriptions and endpoint secret. No production configuration was inspected here.
+- Separately authorize any real test-mode Stripe delivery/race validation; local
+  signatures and persistence doubles do not certify Stripe redelivery or Atlas.
+- Approve and configure supervised reservation expiration with non-overlapping runs,
+  nonzero-exit alerts and reconciliation handling. No scheduler was enabled.
+- Keep reconciliation-required orders blocked. Review payout worker activation and
+  operator procedures separately; no worker or payout was activated by these tests.
+
+Other arbitrary error logs outside signature verification and ledger-update
+failure handling are not certified as sanitized by this delivery. No deployment
+is authorized, and local tests alone do not close the operational blockers.
+
+## Expiration reconciliation race correction (local only, 2026-10-03)
+
+Batch selection is not a claim or lock. Before any cancellation through the Stripe
+adapter, `cancelOrder` re-reads the persisted order and requires a reserved inventory
+reservation, `needsReconciliation !== true`, payment state `pendiente` or `fallido`,
+and a checkout state other than `completed`/`terminal`. Missing, already consumed,
+released, paid/refunded, incompatible or flagged orders are left unchanged.
+
+`release` repeats those checks inside its transaction, before any stock increment.
+Its conditional save also requires `inventoryReservation.needsReconciliation` not
+to be true. Transaction conflicts or failed conditional saves roll back inventory
+restoration; the existing Stripe evidence checks remain required. A concurrent
+review does not authorize release, and an uncertain Stripe result does not replace
+a review reason that was already persisted. `succeeded`, `processing` and unknown
+statuses keep the reservation and request reconciliation where eligible; an adapter
+exception preserves stock and contributes a failed row to the batch result.
+
+These checks are not a distributed lock or an atomic MongoDB/Stripe operation.
+A change after the pre-cancellation read can still coincide with a Stripe request
+already starting or in flight. The transactional release guard preserves local
+stock in that case; this delivery does not claim to undo a remote cancellation.
+A verified payment that wins locally consumes the reservation. A verified payment
+arriving after a committed release still enters reconciliation and blocks payouts.
+
+Validation: **41/41 checkout lifecycle tests passed, including 17 new cases**;
+**89/89 combined relevant tests passed** (lifecycle, expiration CLI, checkout
+contract, Phase 4C financial guards and production hardening). The new tests first
+reproduced the stale-selection/release defects, then passed after the correction.
+Cases include review marking after selection and during a paused cancellation,
+payment winning during cancellation, immutable existing review evidence, blocked
+reservation/payment/checkout states, uncertain statuses and network exceptions.
+These are disconnected tests with a serializable in-memory repository and
+controlled Stripe doubles, not new certification against MongoDB or Stripe.
+
+Reservation duration, CLI, batch size and runner exit semantics are unchanged.
+**Automatic expiration remains NOT ACTIVATED.** Render scheduler configuration,
+non-overlap policy, execution deadlines, sanitized monitoring/alerts and operator
+ownership still require separate review, configuration and explicit authorization.
+The real critical indexes remain NOT VERIFIED. No job, worker or payout is started
+by this correction, and it does not authorize a production deployment.
+
+## Payout uncertainty correction — local only (2026-10-04)
+
+This correction does not activate payouts, workers or the expiry scheduler. No
+remote transfer, refund, database or configuration operation was performed.
+
+### Obligation identity and durable claim
+
+One existing order/vendor payout row represents one obligation. Its identity is
+`payout_obligation_<orderId>_<vendorId>`, independent of event/admin/scheduler
+`runId`. Stripe receives that identity as its idempotency key and metadata;
+amount, currency and destination are recorded in the claim. Administrative run
+information belongs to the local audit, not changing Stripe request parameters.
+This is not a mechanism to issue additional obligations for the same order/vendor.
+The individual transfer request disables Stripe SDK network retries; no new attempt
+is scheduled after an ambiguous response.
+
+Before Stripe, a conditional Mongoose update appends the claim to the existing
+order history, increments the existing `__v`, and requires majority
+acknowledgement. The predicate checks financial eligibility and exact history and
+payout row snapshots. Competing claims cannot both match those snapshots. Version
+increments also fence stale document saves through the model's existing
+optimistic concurrency. No schema field, enum, index or financial query bypass
+was added. Query updates only change history, version and Mongoose timestamps.
+
+An unresolved claim is an INCIERTO signal even when the payout row still says
+`pendiente` (e.g. interruption immediately after claiming). The service and admin
+retry endpoint reject it. Eligibility also rejects `payoutBlocked`,
+`needsReconciliation`, `reconciliation_required`, processing rows, uncertainty
+metadata and historical non-paid rows with a processing timestamp or Transfer ID.
+An unverified/missing order version fails closed. Historical attempt markers need
+manual review; this correction does not invent proof that a transfer failed.
+
+After the claim, conditional document saves retain payment, fulfillment and
+reconciliation predicates. A fresh pre-transfer read checks the row and captured
+amount/currency. A successful response is acknowledged locally only after the
+paid row/Transfer ID is saved and a majority-acknowledged `_confirmed` history
+entry is appended. Claim records are never removed or automatically reused.
+
+Any error after claiming is conservatively uncertain, including an apparently
+definitive Stripe rejection, malformed response, paid-save failure or failed
+confirmation acknowledgement. The service attempts to persist `payoutBlocked`,
+`needsReconciliation` (preserving an existing reason), existing `bloqueado` row
+states and `meta.outcome: uncertain`. A known Transfer ID is retained for review.
+Errors use fixed codes, not original Stripe/driver messages. If this persistence
+also fails, the durable unresolved claim remains the eligibility barrier; the
+administrative reconciliation queue may not show a new case until its flags can
+be persisted. The caller must retain an operational incident for that error.
+
+### Manual review before any resolution or retry
+
+1. Open an incident identifying the order/vendor obligation and failed stage.
+   Retain the claim, Transfer ID if known, captured amount/currency/destination,
+   and operator/approver evidence. Do not record credentials or full documents.
+2. With separately authorized read access to the correct Stripe account/mode,
+   verify an existing Transfer by its known ID or obligation metadata and transfer
+   group. Compare amount, currency, destination and any reversal with the local
+   obligation. Review the bound payment and refunds independently: an accepted
+   charge does not prove a vendor transfer, and a vendor transfer is not a bank
+   payout.
+3. If a matching transfer exists, reconcile its evidence/local recording; do not
+   create another transfer. If the outcome remains unknown, retain all blocks.
+   An empty search alone is not proof of nonexecution or permission to retry.
+4. If nonexecution is conclusively established, any resolution/retry still needs
+   a separate reviewed and authorized financial procedure. This delivery exposes
+   no resolver, automatic replay, refund or reversal. Clearing flags or closing
+   an administrative review does not retire the claim or authorize a transfer.
+5. Record the audited before/after decision and verify every remaining obligation
+   before clearing any order-level block. Never remove the claim to make a retry
+   work or generate a fresh run-based financial identity.
+
+### Local evidence and remaining limitations
+
+`payout-reconciliation.test.js` exercises the service/controller with isolated
+persistence and Stripe doubles, plus the real disconnected Mongoose model,
+query middleware and save hooks. Cases cover competing claims, changed run IDs,
+lost responses, successful transfer followed by failed save, failed uncertainty
+persistence, confirmation errors, reconciliation before/during Stripe, historical
+attempts, parameter changes, fixed error codes and version fencing. Tests count
+actual calls to the transfer double: uncertain outcomes never emit a second call.
+Payment/fulfillment and reservation state remain unchanged; reconciliation flags
+and payout/audit state intentionally change.
+
+These are local tests, not certification of MongoDB write durability, cross-process
+races in Atlas, Stripe execution or idempotency retention. The full history/row
+comparison has a growing payload/cost and fails closed if another writer changes
+it. Invalid seller configuration performs no transfer and leaves the row pending
+for account remediation. A permanently retained unresolved claim can require
+manual recovery even when no Stripe call happened; availability is sacrificed
+rather than automatically retrying an uncertain obligation.
+
+MongoDB and Stripe are not atomic. A new refund/reconciliation can occur after the
+last pre-transfer check or while Stripe is executing; this code cannot undo or
+cancel the accepted transfer. A later eligibility mismatch keeps the outcome
+blocked for review. The guarantee depends on retaining claim history and using
+this guarded service, not arbitrary direct database edits or other financial
+writers. Future audited resolution, real race/durability validation, operational
+supervision and verification of the four critical remote indexes remain launch
+prerequisites. No production activation is authorized by these local changes.
+
+Local verification: 33/33 payout tests, 143/143 combined relevant service/model
+tests (including those 33), and 10/10 webhook HTTP tests passed: 153 unique tests,
+zero failures. Web TypeScript (`--noEmit --incremental false`), syntax checks for
+the changed JavaScript files and `git diff --check` passed. HTTP used only a
+loopback listener and controlled dependencies. No real payout or database ran.
+
+## Discovering unconfirmed payout claims — local only (2026-10-04)
+
+The existing administrative reconciliation queue now selects an order when its
+history contains a valid `payout_obligation_<orderId>_<vendorId>` without the exact
+`<obligationId>_confirmed` entry, even if no reconciliation or payout block flag
+was persisted. The claim must bind to that same order. Confirming another vendor
+or order does not clear it. A confirmation represents the existing service's
+persisted acknowledgement; it is not a fresh verification against Stripe.
+
+The read DTO labels these cases **Resultado de payout pendiente de verificar**.
+Each pending obligation exposes only order/vendor IDs, obligation ID, claim date,
+amount in cents, currency and destination account ID. Missing/invalid metadata is
+shown as null, not invented or used to hide the claim. Full histories, arbitrary
+metadata, addresses, secrets and driver messages are excluded. Both readers use
+the same candidate expression, source projection, DTO and coverage metadata.
+Audit snapshots retain the same redacted evidence. A changed set of pending
+obligations changes the observed source version and requires a fresh review.
+
+Closing a review changes only administrative records. It neither removes the
+claim nor confirms a Transfer, clears financial/reservation blocks or authorizes
+another payout. An operationally pending order is still selected by the live
+source branch even if its administrative review is closed. A process interrupted
+before Stripe and one interrupted after Stripe accepted a transfer can leave the
+same claim: these reads deliberately do not classify either as failed.
+
+### Queue coverage and limits
+
+The queue is paginated by source case (one order, potentially several obligations),
+not by obligation. All valid unconfirmed obligations of a returned order appear
+in its source/detail; no per-order truncation is introduced. The live candidate
+match precedes grouping, status filtering, sorting and the items/total facet.
+The total counts the selected cases before page slicing. The list remains a
+single observational aggregation outside transactions, not a globally frozen
+snapshot. The detail and its audits retain their existing snapshot reads.
+
+For discovery, omit `status` and select `kind=order` or omit `kind`. An explicit
+`kind=event` or administrative status filter intentionally excludes other cases;
+`status=open` can exclude a still-operationally-pending order whose review is
+closed. Responses expose the selected filters in `coverage`, distinguish
+administrative closure from operational state, and report
+`paginationWindowExceeded` when the filtered total exceeds the accessible window
+for the chosen page size. Existing limits remain: page at most 1000, limit at most
+100 and offset at most 10000. With limit 100, the accessible window is 10100 cases;
+with limit 1, only 1000 pages/cases are accessible. Coverage does not count cases
+excluded by explicit filters. An empty later page is not evidence of no pending
+claims when total is nonzero.
+
+Complete enumeration of an arbitrarily large queue is therefore **not guaranteed**.
+If the window is exceeded, stop treating pagination as a complete inventory; a
+separately reviewed retrieval strategy would be needed. This delivery adds no
+index, cursor contract or unlimited query. History scans and regex/set membership
+have costs that remain unmeasured. Existing execution budgets can return a
+sanitized failure instead of results; no such failure certifies an empty queue.
+Malformed/nonconforming historical claim names are outside this new predicate.
+
+### Evidence and manual review
+
+Local tests use synthetic expression evaluation, controlled repositories and
+loopback HTTP to check absence of flags, exact/partial confirmations, before/after
+Stripe interruption representations, privacy, admin authorization, closing a
+review without changing financial sources, stale source versions, filtering and
+pagination. Native/Mongoose parity checks use driver/persistence doubles; they do
+not certify actual execution of the MongoDB expression, real concurrency,
+performance, or Stripe state. No remote connection is performed.
+
+Use the incident procedure above to check the correct Stripe account/mode,
+obligation metadata, transfer group, amount/currency/destination and any known
+Transfer ID. A search with no results in Stripe does **not**, by itself, prove that
+a transfer never happened or authorize replay. Uncertain cases remain blocked;
+this delivery implements no financial resolver or new transfer action.

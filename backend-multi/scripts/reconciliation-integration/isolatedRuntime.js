@@ -7,7 +7,7 @@ const allowed = new Set([
   'services/authService', 'services/orderInvariants', 'services/financialQueryGuard', 'services/reconciliationContracts',
   'services/reconciliationRepository', 'services/reconciliationReviewService', 'services/reconciliationReadRuntime',
   'services/reconciliationNativeReader', 'services/reconciliationReaderLifecycle',
-  'middleware/auth', 'middleware/reconciliationLogging', 'middleware/reconciliationQueryGuard',
+  'middleware/auth', 'middleware/cookieWriteOrigin', 'middleware/reconciliationLogging', 'middleware/reconciliationQueryGuard',
   'controllers/adminReconciliationController', 'routes/adminReconciliationRoutes',
   'config/reconciliationNativeReader', 'config/reconciliationReads', 'config/cors', 'config/readiness', 'utils/safeLogging',
 ]);

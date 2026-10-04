@@ -26,11 +26,6 @@ function safeStr(v, fallback = "") {
   return v === null || v === undefined ? fallback : String(v);
 }
 
-function safeNumber(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
 function normalizeCurrency(v) {
   const c = safeStr(v, "usd").trim().toLowerCase();
   return c || "usd";
@@ -40,54 +35,30 @@ function now() {
   return new Date();
 }
 
-function buildOrderLedgerKey({ mode, runId }) {
-  return `payouts_${mode}_${safeStr(runId || "default").slice(0, 80)}`.slice(0, 120);
-}
-
 function buildTransferGroup({ ordenId }) {
   return `order_${safeStr(ordenId)}`.slice(0, 120);
 }
 
-function isEligibleOrderForPayout(orden) {
-  if (!orden) return false;
-  if (typeof orden.isPayoutEligible === "function") {
-    return orden.isPayoutEligible();
-  }
-
-  // Fallback defensivo
-  if (orden.payoutBlocked === true) return false;
-  if (orden.estadoPago !== "pagado") return false;
-  if (orden.estadoFulfillment !== "entregado") return false;
-  if (!orden.payoutEligibleAt) return false;
-
-  return new Date(orden.payoutEligibleAt).getTime() <= Date.now();
+function eligibilityFilter() {
+  return {
+    payoutBlocked: { $ne: true },
+    "inventoryReservation.needsReconciliation": { $ne: true },
+    "inventoryReservation.state": { $ne: "reconciliation_required" },
+    estadoPago: "pagado", estadoFulfillment: "entregado",
+    payoutPolicy: "escrow_delivered_hold",
+    payoutEligibleAt: { $ne: null, $lte: new Date() },
+  };
 }
 
-function isRetryMode(mode) {
-  return mode === "scheduler";
+function isEligibleOrderForPayout(order) {
+  return !!order && order.payoutBlocked !== true &&
+    order.inventoryReservation?.needsReconciliation !== true &&
+    order.inventoryReservation?.state !== "reconciliation_required" &&
+    !order.hasPayoutUncertainty() && order.isPayoutEligible();
 }
 
-async function reserveGlobalLedger({ ordenId, orderLedgerKey, eventId, reason, mode, runId }) {
-  const reserve = await Orden.updateOne(
-    { _id: ordenId, "historial.estado": { $ne: orderLedgerKey } },
-    {
-      $push: {
-        historial: {
-          estado: orderLedgerKey,
-          fecha: new Date(),
-          source: "system",
-          meta: {
-            eventId: safeStr(eventId),
-            reason: safeStr(reason),
-            mode,
-            runId,
-          },
-        },
-      },
-    }
-  );
-
-  return !!reserve?.modifiedCount;
+function payoutError(code) {
+  return Object.assign(new Error(code), { publicCode: code });
 }
 
 async function getSellerUser(vendedorId) {
@@ -149,220 +120,112 @@ function canSellerReceivePayout(usuario) {
   return { ok: true };
 }
 
-exports.pagarVendedoresDeOrden = async ({
-  ordenId,
-  eventId = "",
-  reason = "",
-  mode = "webhook",
-  runId = "",
-} = {}) => {
+exports.pagarVendedoresDeOrden = async ({ ordenId, eventId = "", reason = "", mode = "webhook", runId = "" } = {}) => {
   mustStripe();
-
   if (!ordenId) return;
+  const initial = await Orden.findById(ordenId);
+  if (!isEligibleOrderForPayout(initial)) return;
+  const sellers = [...new Set((initial.vendedorPayouts || []).map(p => String(p.vendedor)))];
+  for (const vendedorId of sellers) {
+    // Reload for each obligation; never keep an old document across Stripe calls.
+    const order = await Orden.findById(ordenId);
+    if (!isEligibleOrderForPayout(order)) return;
+    const row = order.vendedorPayouts.find(p => String(p.vendedor) === vendedorId);
+    if (!row || !["pendiente", "fallido"].includes(row.status)) continue;
+    const amount = toCents(row.monto);
+    if (!Number.isSafeInteger(amount) || amount <= 0) continue;
+    const seller = await getSellerUser(vendedorId);
+    if (!canSellerReceivePayout(seller).ok) continue; // no external attempt
+    if (!Number.isSafeInteger(order.__v)) throw payoutError("PAYOUT_VERSION_UNVERIFIED");
+    const key = `payout_obligation_${order._id}_${vendedorId}`;
+    const currency = normalizeCurrency(order.moneda);
+    const destination = safeStr(seller.stripeAccountId);
+    // Existing nonfinancial history update guard is preserved. Exact snapshots
+    // serialize competing claims without bypassing financial query middleware.
+    let claim;
+    try { claim = await Orden.updateOne({
+      _id: order._id, __v: order.__v, ...eligibilityFilter(),
+      historial: order.historial.map(h => h.toObject()),
+      vendedorPayouts: order.vendedorPayouts.map(p => p.toObject()),
+      "historial.estado": { $ne: key },
+    }, { $inc: { __v: 1 }, $push: { historial: {
+      estado: key, fecha: now(), source: "system",
+      meta: { outcome: "uncertain", amount, currency, destination,
+        eventId: safeStr(eventId), runId: safeStr(runId), mode: safeStr(mode), reason: safeStr(reason) },
+    } } }, { writeConcern: { w: "majority" } });
+    } catch (_) { throw payoutError("PAYOUT_CLAIM_UNCERTAIN"); }
+    if (claim?.acknowledged !== true) throw payoutError("PAYOUT_CLAIM_UNCERTAIN");
+    if (claim.modifiedCount === 0) return;
+    if (claim.modifiedCount !== 1) throw payoutError("PAYOUT_CLAIM_UNCERTAIN");
 
-  const finalRunId =
-    safeStr(runId || eventId || "").trim() ||
-    (mode === "scheduler" ? "payout_release" : "event");
-
-  const finalMode = isRetryMode(mode) ? "scheduler" : "webhook";
-
-  const orderLedgerKey = buildOrderLedgerKey({
-    mode: finalMode,
-    runId: finalRunId,
-  });
-
-  // ======================================================
-  // 1) Reservar ledger global por orden + run
-  // ======================================================
-  const reserved = await reserveGlobalLedger({
-    ordenId,
-    orderLedgerKey,
-    eventId,
-    reason,
-    mode: finalMode,
-    runId: finalRunId,
-  });
-
-  if (!reserved) {
-    return;
-  }
-
-  // ======================================================
-  // 2) Cargar orden completa
-  // ======================================================
-  const orden = await Orden.findById(ordenId);
-  if (!orden) return;
-
-  if (orden.payoutBlocked === true) return;
-
-  // En webhook normal no intentamos pagar si la orden aún no es elegible.
-  // En scheduler/retry manual sí exigimos elegibilidad real igualmente.
-  if (!isEligibleOrderForPayout(orden)) {
-    return;
-  }
-
-  const moneda = normalizeCurrency(orden.moneda || "usd");
-  const transferGroup = buildTransferGroup({ ordenId });
-
-  const payouts = Array.isArray(orden.vendedorPayouts) ? orden.vendedorPayouts : [];
-  if (!payouts.length) return;
-
-  for (const payout of payouts) {
-    if (!payout?.vendedor) continue;
-
-    const vendedorId = String(payout.vendedor);
-    const payoutStatus = safeStr(payout.status, "pendiente");
-    const monto = round2(safeNumber(payout.monto, 0));
-    const amount = toCents(monto);
-
-    if (!["pendiente", "fallido"].includes(payoutStatus)) {
-      continue;
-    }
-
-    if (amount <= 0) {
-      continue;
-    }
-
-    const vendedor = await getSellerUser(vendedorId);
-    const sellerValidation = canSellerReceivePayout(vendedor);
-
-    if (!sellerValidation.ok) {
-      const blockReason = safeStr(sellerValidation.reason, "seller_not_eligible");
-
-      // Si es un problema estructural del seller, bloqueamos.
-      const mustBlock = [
-        "seller_role_invalid",
-        "seller_account_unavailable",
-        "seller_not_approved",
-        "missing_stripe_account",
-        "stripe_onboarding_incomplete",
-        "stripe_charges_disabled",
-        "stripe_payouts_disabled",
-      ].includes(blockReason);
-
-      if (mustBlock) {
-        orden.setVendedorPayoutStatus(vendedorId, "bloqueado", {
-          source: "system",
-          reason: blockReason,
-          mode: finalMode,
-          runId: finalRunId,
-        });
-
-        orden.pushHistorial("payout_vendor_blocked", {
-          vendedor: vendedorId,
-          reason: blockReason,
-          mode: finalMode,
-          runId: finalRunId,
-        });
-
-        await orden.save().catch(() => {});
-      } else {
-        orden.setVendedorPayoutStatus(vendedorId, "fallido", {
-          source: "system",
-          reason: blockReason,
-          mode: finalMode,
-          runId: finalRunId,
-        });
-
-        orden.pushHistorial("payout_vendor_failed_validation", {
-          vendedor: vendedorId,
-          reason: blockReason,
-          mode: finalMode,
-          runId: finalRunId,
-        });
-
-        await orden.save().catch(() => {});
-      }
-
-      continue;
-    }
-
+    // Any interruption after the claim leaves a permanent nonretryable signal.
+    let observedTransferId = "";
     try {
-      orden.setVendedorPayoutStatus(vendedorId, "procesando", {
-        source: "system",
-        mode: finalMode,
-        runId: finalRunId,
+      const current = await Orden.findById(ordenId);
+      if (!current) throw payoutError("PAYOUT_ORDER_UNAVAILABLE");
+      current.$where = { ...eligibilityFilter(), "historial.estado": key };
+      current.setVendedorPayoutStatus(vendedorId, "procesando", { source: "system" });
+      await current.save({ w: "majority" });
+      const ready = await Orden.findById(ordenId);
+      const readyRow = ready?.vendedorPayouts.find(p => String(p.vendedor) === vendedorId);
+      if (!ready || ready.payoutBlocked || ready.inventoryReservation?.needsReconciliation === true ||
+          ready.inventoryReservation?.state === "reconciliation_required" || ready.estadoPago !== "pagado" ||
+          ready.estadoFulfillment !== "entregado" || readyRow?.status !== "procesando" ||
+          toCents(readyRow.monto) !== amount || normalizeCurrency(ready.moneda) !== currency ||
+          toCents(current.vendedorPayouts.find(p => String(p.vendedor) === vendedorId)?.monto) !== amount) {
+        throw payoutError("PAYOUT_PRETRANSFER_CHANGED");
+      }
+      const transfer = await stripe.transfers.create({
+        amount, currency, destination, transfer_group: buildTransferGroup({ ordenId }),
+        // Financial request identity and parameters do not depend on administrative runs.
+        metadata: { ordenId: String(order._id), vendedor: vendedorId, obligation: key },
+      }, { idempotencyKey: key, maxNetworkRetries: 0 });
+      if (!transfer || typeof transfer.id !== "string" || !transfer.id.startsWith("tr_")) {
+        throw payoutError("PAYOUT_RESPONSE_UNCERTAIN");
+      }
+      observedTransferId = transfer.id;
+      current.setVendedorPayoutStatus(vendedorId, "pagado", {
+        source: "system", stripeTransferId: transfer.id,
+        stripeTransferGroup: buildTransferGroup({ ordenId }),
       });
-
-      await orden.save();
-
-      const idemKey = `transfer_${ordenId}_${vendedorId}_${finalRunId}`.slice(0, 255);
-
-      const transfer = await stripe.transfers.create(
-        {
-          amount,
-          currency: moneda,
-          destination: safeStr(vendedor.stripeAccountId),
-          transfer_group: transferGroup,
-          metadata: {
-            ordenId: safeStr(ordenId),
-            vendedor: vendedorId,
-            mode: finalMode,
-            runId: finalRunId,
-            reason: safeStr(reason),
-          },
-        },
-        { idempotencyKey: idemKey }
-      );
-
-      orden.setVendedorPayoutStatus(vendedorId, "pagado", {
-        source: "system",
-        stripeTransferId: transfer?.id || "",
-        stripeTransferGroup: transferGroup,
-        mode: finalMode,
-        runId: finalRunId,
-      });
-
-      orden.pushHistorial("payout_transfer_ok", {
-        vendedor: vendedorId,
-        stripeAccountId: safeStr(vendedor.stripeAccountId),
-        transferId: transfer?.id || "",
-        transferGroup,
-        amount,
-        currency: moneda,
-        mode: finalMode,
-        runId: finalRunId,
-      });
-
-      await orden.save();
-    } catch (err) {
-      orden.setVendedorPayoutStatus(vendedorId, "fallido", {
-        source: "system",
-        mode: finalMode,
-        runId: finalRunId,
-        error: safeStr(err?.message || err).slice(0, 800),
-      });
-
-      orden.pushHistorial("payout_transfer_error", {
-        vendedor: vendedorId,
-        amount,
-        currency: moneda,
-        mode: finalMode,
-        runId: finalRunId,
-        error: safeStr(err?.message || err).slice(0, 800),
-      });
-
-      await orden.save().catch(() => {});
+      await current.save({ w: "majority" });
+      const confirmation = await Orden.updateOne({
+        _id: order._id, __v: current.__v, "historial.estado": key,
+        vendedorPayouts: { $elemMatch: { vendedor: vendedorId, status: "pagado", stripeTransferId: transfer.id } },
+      }, { $inc: { __v: 1 }, $push: { historial: {
+        estado: `${key}_confirmed`, fecha: now(), source: "system",
+        meta: { transferId: transfer.id },
+      } } }, { writeConcern: { w: "majority" } });
+      if (confirmation?.acknowledged !== true || confirmation.modifiedCount !== 1) {
+        throw payoutError("PAYOUT_CONFIRMATION_UNCERTAIN");
+      }
+    } catch (_) {
+      // Never turn an ambiguous remote/persistence result into a retryable failure.
+      // If this save also fails, the earlier durable claim remains the blocking evidence.
+      try {
+        const uncertain = await Orden.findById(ordenId);
+        if (!uncertain) throw payoutError("PAYOUT_ORDER_UNAVAILABLE");
+        uncertain.blockPayouts("payout_outcome_uncertain", { obligation: key });
+        if (uncertain.inventoryReservation && !uncertain.inventoryReservation.needsReconciliation) {
+          uncertain.inventoryReservation.needsReconciliation = true;
+          uncertain.inventoryReservation.reconciliationReason = "payout_outcome_uncertain";
+        }
+        const payout = uncertain.vendedorPayouts.find(p => String(p.vendedor) === vendedorId);
+        if (payout) {
+          payout.meta = { ...(payout.meta || {}), outcome: "uncertain", obligation: key };
+          if (observedTransferId) payout.stripeTransferId = observedTransferId;
+        }
+        await uncertain.save({ w: "majority" });
+      } catch (_) { throw payoutError("PAYOUT_UNCERTAIN_PERSISTENCE"); }
+      throw payoutError("PAYOUT_OUTCOME_UNCERTAIN");
     }
   }
-
-  // ======================================================
-  // 3) Si todos quedaron pagados => marcar payoutReleasedAt
-  // ======================================================
-  if (
-    Array.isArray(orden.vendedorPayouts) &&
-    orden.vendedorPayouts.length > 0 &&
-    orden.vendedorPayouts.every((p) => p.status === "pagado")
-  ) {
-    orden.payoutReleasedAt = orden.payoutReleasedAt || new Date();
-
-    orden.pushHistorial("payouts_released", {
-      ordenId: String(orden._id),
-      mode: finalMode,
-      runId: finalRunId,
-      at: now().toISOString(),
-    });
-
-    await orden.save().catch(() => {});
+  const completed = await Orden.findById(ordenId);
+  if (completed && !completed.hasPayoutUncertainty() && completed.vendedorPayouts.length &&
+      completed.vendedorPayouts.every(p => p.status === "pagado")) {
+    completed.$where = eligibilityFilter();
+    completed.payoutReleasedAt = completed.payoutReleasedAt || now();
+    try { await completed.save({ w: "majority" }); }
+    catch (_) { throw payoutError("PAYOUT_RELEASE_PERSISTENCE"); }
   }
 };

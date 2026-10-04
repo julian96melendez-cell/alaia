@@ -43,11 +43,31 @@ function validateReview(body, key) {
 const iso = date => { const value = new Date(date); return date && Number.isFinite(value.getTime()) ? value.toISOString() : null; };
 const enumValue = (value, allowed) => allowed.includes(value) ? value : "unknown";
 const idValue = value => value && /^[a-f0-9]{24}$/.test(String(value)) ? String(value) : null;
+function pendingPayoutClaims(source) {
+  const orderId = idValue(source?._id);
+  if (!orderId || !Array.isArray(source.historial)) return [];
+  const names = new Set(source.historial.map(h => h?.estado));
+  const seen = new Set(), claims = [];
+  for (const entry of source.historial) {
+    const key = entry?.estado;
+    if (typeof key !== "string" || !new RegExp(`^payout_obligation_${orderId}_[a-f0-9]{24}$`).test(key) ||
+        names.has(`${key}_confirmed`) || seen.has(key)) continue;
+    seen.add(key);
+    claims.push({ orderId, vendorId: key.slice(-24), obligationId: key, claimedAt: iso(entry.fecha),
+      amountCents: Number.isSafeInteger(entry.meta?.amount) && entry.meta.amount > 0 ? entry.meta.amount : null,
+      currency: typeof entry.meta?.currency === "string" && /^[a-z]{3}$/.test(entry.meta.currency) ? entry.meta.currency : null,
+      destination: typeof entry.meta?.destination === "string" && /^acct_[A-Za-z0-9]{1,120}$/.test(entry.meta.destination) ? entry.meta.destination : null });
+  }
+  return claims.sort((a, b) => a.obligationId.localeCompare(b.obligationId));
+}
 function sourceSnapshot(kind, source) {
   if (!source) return { missing: true, operationalPending: false };
   const common = { missing: false, updatedAt: iso(source.updatedAt), createdAt: iso(source.createdAt) };
+  const pendingPayouts = kind === "order" ? pendingPayoutClaims(source) : [];
   if (kind === "order") return { ...common,
-    operationalPending: source.inventoryReservation?.needsReconciliation === true || source.inventoryReservation?.state === "reconciliation_required",
+    orderId: idValue(source._id), pendingPayouts,
+    payoutReviewLabel: pendingPayouts.length ? "Resultado de payout pendiente de verificar" : null,
+    operationalPending: pendingPayouts.length > 0 || source.inventoryReservation?.needsReconciliation === true || source.inventoryReservation?.state === "reconciliation_required",
     managed: !!source.checkoutIntent?.keyHash,
     paymentState: enumValue(source.estadoPago, ["pendiente", "pagado", "fallido", "reembolsado", "reembolsado_parcial"]),
     fulfillmentState: enumValue(source.estadoFulfillment, ["pendiente", "procesando", "enviado", "entregado", "cancelado"]),
@@ -74,6 +94,11 @@ function safeObservedSnapshot(snapshot) {
   if (!snapshot || snapshot.missing === true) return { missing: true, operationalPending: false };
   const kind = Object.hasOwn(snapshot, "paymentState") ? "order" : "event";
   const safe = sourceSnapshot(kind, {
+    _id: snapshot.orderId,
+    historial: Array.isArray(snapshot.pendingPayouts) ? snapshot.pendingPayouts.map(claim => ({
+      estado: claim.obligationId, fecha: claim.claimedAt,
+      meta: { amount: claim.amountCents, currency: claim.currency, destination: claim.destination },
+    })) : [],
     createdAt: snapshot.createdAt, updatedAt: snapshot.updatedAt,
     checkoutIntent: { keyHash: snapshot.managed === true ? "managed" : "" },
     inventoryReservation: { state: snapshot.reservationState, needsReconciliation: snapshot.needsReconciliation === true },
@@ -94,4 +119,4 @@ function auditDTO(audit) {
     status: enumValue(audit.status, statuses), conclusion: enumValue(audit.conclusion, conclusions), evidence,
     observedSource: safeObservedSnapshot(audit.sourceSnapshot), recordedAt: iso(audit.createdAt), financialActionsAllowed: false };
 }
-module.exports = { statuses, conclusions, hash, fail, parseKey, pagination, validateReview, sourceSnapshot, caseDTO, auditDTO };
+module.exports = { statuses, conclusions, hash, fail, parseKey, pagination, validateReview, sourceSnapshot, caseDTO, auditDTO, pendingPayoutClaims };
