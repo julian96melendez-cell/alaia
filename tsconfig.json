@@ -3,8 +3,6 @@
   "extends": "expo/tsconfig.base",
   "include": [
     "app/**/*.ts",
-    "app/**/*.tsx",
-    ".expo/types/**/*.ts",
-    "expo-env.d.ts"
+    "app/**/*.tsx"
   ]
 }
