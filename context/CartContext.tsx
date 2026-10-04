@@ -123,14 +123,10 @@ function normalizeItem(item: Partial<CartItem>, qty?: number): CartItem {
     color: item.color ?? null,
     size: item.size ?? null,
     category: item.category ?? null,
-    maxQty:
-      typeof item.maxQty === "number" && Number.isFinite(item.maxQty)
-        ? item.maxQty
-        : undefined,
-    stock:
-      typeof item.stock === "number" && Number.isFinite(item.stock)
-        ? item.stock
-        : undefined,
+    ...(typeof item.maxQty === "number" && Number.isFinite(item.maxQty)
+      ? { maxQty: item.maxQty } : {}),
+    ...(typeof item.stock === "number" && Number.isFinite(item.stock)
+      ? { stock: item.stock } : {}),
   };
 }
 

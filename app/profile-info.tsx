@@ -1,5 +1,5 @@
 import { updateProfile } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -76,8 +76,7 @@ export default function ProfileInfoScreen() {
           doc(db, "users", user.uid),
           {
             displayName: cleanName,
-            email: user.email || null,
-            updatedAt: new Date().toISOString(),
+            updatedAt: serverTimestamp(),
           },
           { merge: true }
         );

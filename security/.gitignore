@@ -1,0 +1,4 @@
+*-debug.log
+firebase-debug.*
+.firebase/
+firestore-tests/node_modules/

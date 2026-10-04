@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function nullableString(data, field) {
+      return !(field in data) || data[field] == null ||
+        (data[field] is string && data[field].size() <= 2048);
+    }
+    function profileCreate(uid) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'role', 'createdAt', 'updatedAt']) &&
+        d.keys().hasAll(['uid', 'displayName', 'email', 'role', 'createdAt', 'updatedAt']) &&
+        d.uid == uid && d.role == 'customer' &&
+        d.email == request.auth.token.email &&
+        d.displayName is string && d.displayName.size() > 0 && d.displayName.size() <= 100 &&
+        nullableString(d, 'photoURL') &&
+        d.createdAt == request.time && d.updatedAt == request.time;
+    }
+    function profileUpdate() {
+      let d = request.resource.data;
+      return d.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt']) &&
+        d.displayName is string && d.displayName.size() > 0 && d.displayName.size() <= 100 &&
+        nullableString(d, 'photoURL') && d.updatedAt == request.time;
+    }
+    function cartItem(id) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['id', 'name', 'price', 'quantity', 'image', 'category', 'color', 'size', 'maxQty', 'stock', 'createdAt', 'updatedAt']) &&
+        d.keys().hasAll(['id', 'name', 'price', 'quantity']) &&
+        d.id == id && d.name is string && d.name.size() <= 200 &&
+        d.price is number && d.price >= 0 &&
+        d.quantity is int && d.quantity > 0 && d.quantity <= 9999 &&
+        nullableString(d, 'image') && nullableString(d, 'category') &&
+        nullableString(d, 'color') && nullableString(d, 'size') &&
+        (!('maxQty' in d) || (d.maxQty is number && d.maxQty >= 0)) &&
+        (!('stock' in d) || (d.stock is number && d.stock >= 0)) &&
+        (!('createdAt' in d) || d.createdAt is timestamp) &&
+        (!('updatedAt' in d) || d.updatedAt == request.time);
+    }
+    function coupon() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['code', 'type', 'value', 'minSubtotal', 'appliesToCategory', 'appliesToProductIds', 'expiresAt', 'singleUse', 'updatedAt']) &&
+        d.keys().hasAll(['code', 'type', 'value', 'updatedAt']) &&
+        d.code is string && d.code.size() > 0 && d.code.size() <= 100 &&
+        d.type in ['percent', 'fixed'] && d.value is number && d.value >= 0 &&
+        (!('minSubtotal' in d) || (d.minSubtotal is number && d.minSubtotal >= 0)) &&
+        nullableString(d, 'appliesToCategory') &&
+        (!('appliesToProductIds' in d) || (d.appliesToProductIds is list && d.appliesToProductIds.size() <= 100)) &&
+        (!('expiresAt' in d) || d.expiresAt is number) &&
+        (!('singleUse' in d) || d.singleUse is bool) && d.updatedAt == request.time;
+    }
+    match /users/{uid} {
+      allow get: if owner(uid);
+      allow create: if owner(uid) && profileCreate(uid);
+      allow update: if owner(uid) && profileUpdate();
+      // No profile deletion or enumeration by clients.
+      match /cart/{id} {
+        allow read, delete: if owner(uid);
+        allow create, update: if owner(uid) && cartItem(id);
+      }
+    }
+    match /carts/{uid}/items/{id} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && cartItem(id);
+    }
+    match /carts/{uid}/meta/coupon {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && coupon();
+    }
+    // Financial caches, inventory, privilege stores and every other path:
+    // no client access, including clients with an admin claim.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
