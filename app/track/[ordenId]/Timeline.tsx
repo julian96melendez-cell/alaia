@@ -7,7 +7,13 @@ import {
     UIManager,
     View,
 } from "react-native";
-import type { TimelineItem } from "./TrackingClient";
+
+// Presentation contract: only supplied tracking events are rendered.
+type TimelineItem = {
+  type: string;
+  label: string;
+  at: string;
+};
 
 /**
  * ======================================================
@@ -24,16 +30,27 @@ if (
 }
 
 type Props = {
-  timeline: TimelineItem[];
+  timeline?: readonly TimelineItem[];
 };
 
-export default function Timeline({ timeline }: Props) {
+export default function Timeline({ timeline }: Props = {}) {
   useEffect(() => {
+    if (!timeline) return;
     // Animación suave tipo Amazon / Uber
     LayoutAnimation.configureNext(
       LayoutAnimation.Presets.easeInEaseOut
     );
   }, [timeline]);
+
+  // Expo Router can open this file directly without component props.
+  // Missing data is not evidence that the order has no tracking events.
+  if (!timeline) {
+    return (
+      <Text style={styles.empty}>
+        Seguimiento no disponible en esta pantalla. Abre el seguimiento desde tus órdenes.
+      </Text>
+    );
+  }
 
   if (!timeline.length) {
     return (
