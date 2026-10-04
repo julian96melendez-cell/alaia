@@ -50,6 +50,62 @@ function validateConfig(env) {
     return Object.freeze(config);
   } catch { throw Error('Invalid metadata inspection configuration'); }
 }
+// Fixed diagnostics only. No messages, stacks, endpoints or raw error objects.
+function diagnoseFailure(error, stage) {
+  if (stage === 'configuration') return { code: 'configuration_invalid', descriptors: [], traversalTruncated: false };
+  const seen = new Set(), found = new Set(), descriptors = new Set(), queue = [[error, 0]];
+  let selection = false, network = false, truncated = false, admitted = 1;
+  const add = (value, depth) => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    if (depth > 8 || admitted >= 128) { truncated = true; return; }
+    admitted++; queue.push([value, depth]);
+  };
+  try {
+    while (queue.length) {
+      const [item, depth] = queue.shift();
+      if (!item || typeof item !== 'object' || seen.has(item)) continue;
+      if (seen.size >= 32) { truncated = true; break; }
+      seen.add(item);
+      const code = item.code, name = item.name;
+      if (code === 18 || item.codeName === 'AuthenticationFailed') found.add('authentication_failed');
+      if (code === 13 || item.codeName === 'Unauthorized') found.add('authorization_denied');
+      if (['ENOTFOUND', 'ENODATA', 'EAI_AGAIN', 'ESERVFAIL', 'EREFUSED', 'ETIMEOUT', 'EBADRESP'].includes(code)) found.add('dns_failed');
+      if (['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_CERTIFICATE_VERIFY_FAILED', 'ERR_SSL_WRONG_VERSION_NUMBER', 'ERR_TLS_HANDSHAKE_TIMEOUT'].includes(code)) found.add('tls_failed');
+      if (['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'ETIMEDOUT', 'EPIPE'].includes(code)) found.add('network_failed');
+      if (['MongoNetworkError', 'MongoNetworkTimeoutError'].includes(name)) network = true;
+      if (name === 'MongoServerSelectionError') selection = true;
+      if (name === 'MongoOperationTimeoutError' || code === 50) found.add('operation_timeout');
+      if (['MongoParseError', 'MongoInvalidArgumentError', 'MongoAPIError'].includes(name)) found.add('client_configuration_invalid');
+      if (name === 'TypeError') descriptors.add('native_type_error');
+      else if (name === 'MongoRuntimeError') descriptors.add('driver_runtime_error');
+      else if (name === 'AggregateError') descriptors.add('aggregate_error');
+      else if (['MongoServerError', 'MongoNetworkError', 'MongoNetworkTimeoutError', 'MongoServerSelectionError', 'MongoOperationTimeoutError', 'MongoParseError', 'MongoInvalidArgumentError', 'MongoAPIError'].includes(name)) descriptors.add('recognized_error_type');
+      else descriptors.add('unrecognized_error');
+      add(item.cause, depth + 1); add(item.error, depth + 1); add(item.reason, depth + 1);
+      if (Array.isArray(item.errors)) {
+        for (let i = 0; i < Math.min(item.errors.length, 32); i++) add(item.errors[i], depth + 1);
+        if (item.errors.length > 32) truncated = true;
+      }
+      if (item.servers instanceof Map) {
+        let count = 0;
+        for (const server of item.servers.values()) { if (count++ >= 32) { truncated = true; break; } add(server?.error, depth + 1); }
+      }
+    }
+  } catch { truncated = true; descriptors.add('unrecognized_error'); }
+  const code = found.size > 1 ? 'ambiguous' : truncated ? 'unknown' : found.size === 1 ? [...found][0] : network ? 'network_failed' : selection ? 'server_selection_failed' : 'unknown';
+  return { code, descriptors: [...descriptors].sort(), traversalTruncated: truncated };
+}
+function classifyFailure(error, stage) { return diagnoseFailure(error, stage).code; }
+function mergeDiagnostics(first, second) {
+  if (!first) return second;
+  if (!second) return first;
+  const codes = new Set([first.code, second.code].filter(code => code !== 'unknown'));
+  return {
+    code: codes.has('ambiguous') || codes.size > 1 ? 'ambiguous' : [...codes][0] || 'unknown',
+    descriptors: [...new Set([...first.descriptors, ...second.descriptors])].sort(),
+    traversalTruncated: first.traversalTruncated || second.traversalTruncated,
+  };
+}
 function stable(value) {
   if (Array.isArray(value)) return JSON.stringify(value.map(item => JSON.parse(stable(item))));
   if (value && typeof value === 'object') return JSON.stringify(Object.fromEntries(Object.keys(value).sort().map(key => [key, JSON.parse(stable(value[key]))])));
@@ -95,12 +151,17 @@ async function readCursor(cursor, limit) {
     for (;;) { const item = await cursor.next(); if (item === null) return records; records.push(item); assert.ok(records.length <= limit); }
   } finally {
     try { await cursor.close({ timeoutMS: 2000 }); }
-    catch { throw new MetadataCleanupError('Metadata cursor cleanup failed'); }
+    catch (error) { throw new MetadataCleanupError('Metadata cursor cleanup failed', { cause: error }); }
   }
 }
 function result(state) {
   return {
     status: state.failed ? 'failed' : 'completed', stage: state.stage,
+    failureCode: mergeDiagnostics(state.eventDiagnostic, state.exceptionDiagnostic)?.code || state.cleanupDiagnostic?.code || null,
+    cleanupFailureCode: state.cleanupDiagnostic?.code || null,
+    substage: state.substage || null, eventDiagnostic: state.eventDiagnostic || null,
+    exceptionDiagnostic: state.exceptionDiagnostic || null, cleanupDiagnostic: state.cleanupDiagnostic || null,
+    connectionEstablished: Boolean(state.connectionEstablished),
     report: state.report, cleanup: state.cleanup, interrupted: Boolean(state.interrupted),
     productionAuthorized: false, projectClusterAssociation: 'human_attestation_not_server_verified',
     documentContents: 'not_read', remoteTermination: 'not_verified', detailsSuppressed: true,
@@ -115,11 +176,14 @@ async function main(env = process.env, dependencies = {}) {
     const config = validateConfig(env); check(); state.stage = 'driver';
     const driver = (dependencies.loadDriver || (() => { assert.equal(require('mongodb/package.json').version, '7.0.0'); return require('mongodb'); }))();
     check(); state.stage = 'connect';
-    client = new driver.MongoClient(config.uri, { dbName: config.database, maxPoolSize: 1, minPoolSize: 0, maxConnecting: 1, serverSelectionTimeoutMS: 5000, connectTimeoutMS: 5000, waitQueueTimeoutMS: 2000, socketTimeoutMS: 5000, timeoutMS: 3000, retryReads: false, retryWrites: false, readPreference: 'primary', tls: true, mongodbLogComponentSeverities: { default: 'off' } });
-    client.on?.('error', () => { state.failed = true; state.stage = 'connection_error'; });
-    await client.connect(); check();
+    state.substage = 'client_construction';
+    client = new driver.MongoClient(config.uri, { dbName: config.database, maxPoolSize: 1, minPoolSize: 0, maxConnecting: 1, serverSelectionTimeoutMS: 15000, connectTimeoutMS: 10000, waitQueueTimeoutMS: 2000, socketTimeoutMS: 5000, timeoutMS: 3000, retryReads: false, retryWrites: false, readPreference: 'primary', tls: true, mongodbLogComponentSeverities: { default: 'off' } });
+    client.on?.('error', error => { state.failed = true; state.eventDiagnostic = mergeDiagnostics(state.eventDiagnostic, diagnoseFailure(error, 'connection_error')); state.stage = 'connection_error'; });
+    state.substage = 'client_connect';
+    await client.connect(); state.connectionEstablished = true; check();
+    state.substage = 'namespace_identity';
     const scope = metadataScope(client, config), options = { timeoutMS: 3000, maxTimeMS: 3000 };
-    state.stage = 'collection_metadata';
+    state.substage = null; state.stage = 'collection_metadata';
     const metadata = await readCursor(scope.collections(options), 3), seen = new Set();
     for (const item of metadata) { assert.ok(item && collections.includes(item.name) && !seen.has(item.name)); seen.add(item.name); }
     for (const name of collections) {
@@ -132,10 +196,10 @@ async function main(env = process.env, dependencies = {}) {
       if (!comparison.primaryIndexPresent || comparison.rows.some(row => row.status !== 'matching')) state.failed = true;
     }
     check(); if (!state.failed) state.stage = 'complete';
-  } catch (error) { state.failed = true; if (error instanceof MetadataCleanupError) state.cleanupFailed = true; }
+  } catch (error) { state.failed = true; state.exceptionDiagnostic = diagnoseFailure(error, state.stage); if (error instanceof MetadataCleanupError) { state.cleanupFailed = true; state.cleanupDiagnostic = mergeDiagnostics(state.cleanupDiagnostic, diagnoseFailure(error, 'cleanup')); } }
   finally {
     try { if (client) await client.close(); state.cleanup = state.cleanupFailed ? 'failed' : client ? 'local_work_settled' : 'not_needed'; }
-    catch { state.failed = true; state.stage = 'cleanup'; state.cleanup = 'failed'; }
+    catch (error) { state.failed = true; state.cleanupDiagnostic = mergeDiagnostics(state.cleanupDiagnostic, diagnoseFailure(error, 'cleanup'));  state.stage = 'cleanup'; state.cleanup = 'failed'; }
     if (dependencies.signal?.aborted) { state.failed = true; state.interrupted = true; }
   }
   return result(state);
@@ -151,4 +215,4 @@ if (require.main === module) {
     console.log(JSON.stringify(report)); if (report.status !== 'completed') process.exitCode = 1;
   }, () => { clearTimeout(watchdog); console.error(JSON.stringify({ status: 'failed', detailsSuppressed: true })); process.exitCode = 1; });
 }
-module.exports = { validateConfig, confirmation, compareIndexes, metadataScope, main, expected, collections };
+module.exports = { validateConfig, confirmation, compareIndexes, metadataScope, main, expected, collections, classifyFailure, diagnoseFailure };

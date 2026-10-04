@@ -92,7 +92,7 @@ test('inspection uses only metadata, bounded options and sequential cursor/clien
   assert.equal(report.status, 'completed'); assert.equal(report.cleanup, 'local_work_settled');
   assert.equal(report.report.length, 3); assert.ok(report.report.every(row => row.rows.every(index => index.status === 'matching')));
   assert.equal(fake.calls.at(-1), 'close'); assert.equal(fake.calls.filter(call => call.startsWith('cursorClose:')).length, 4);
-  assert.deepEqual(fake.options[0], { dbName: target.database, maxPoolSize: 1, minPoolSize: 0, maxConnecting: 1, serverSelectionTimeoutMS: 5000, connectTimeoutMS: 5000, waitQueueTimeoutMS: 2000, socketTimeoutMS: 5000, timeoutMS: 3000, retryReads: false, retryWrites: false, readPreference: 'primary', tls: true, mongodbLogComponentSeverities: { default: 'off' } });
+  assert.deepEqual(fake.options[0], { dbName: target.database, maxPoolSize: 1, minPoolSize: 0, maxConnecting: 1, serverSelectionTimeoutMS: 15000, connectTimeoutMS: 10000, waitQueueTimeoutMS: 2000, socketTimeoutMS: 5000, timeoutMS: 3000, retryReads: false, retryWrites: false, readPreference: 'primary', tls: true, mongodbLogComponentSeverities: { default: 'off' } });
   assert.doesNotMatch(JSON.stringify(report), /PRIVATE_|metadata_fixture|synthetic|mongodb(?:\+srv)?:\/\//);
 });
 test('missing, foreign, views, identity mismatch, index mismatch and ambiguous outcomes fail closed', async () => {
