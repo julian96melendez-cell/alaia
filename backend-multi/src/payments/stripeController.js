@@ -683,3 +683,7 @@ exports.obtenerEstadoPagoPorSession = async (req, res, next) => {
     next(err);
   }
 };
+for (const name of ["crearSesionDesdeProductos", "crearSesionDesdeCarrito", "crearSesionDesdeOrdenId"]) {
+ const handler = module.exports[name];
+ module.exports[name] = (req, res, next) => require("../config/financialOperations").requireFinancialOperations(req, res, () => handler(req, res, next));
+}

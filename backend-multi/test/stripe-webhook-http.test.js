@@ -18,6 +18,7 @@ function load(relative, dependencies, logs, env = {}) {
     module, exports: module.exports, Buffer, Date, process: { env },
     console: Object.fromEntries(["log", "warn", "error"].map(level => [level, (...args) => logs.push({ level, args })])),
     require(name) {
+      if (name === "../config/financialOperations") return require("../src/config/financialOperations");
       assert.ok(Object.hasOwn(dependencies, name), `Forbidden import: ${name}`);
       return dependencies[name];
     },

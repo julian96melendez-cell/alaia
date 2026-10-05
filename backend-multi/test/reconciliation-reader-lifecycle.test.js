@@ -180,7 +180,7 @@ for (const flag of [undefined, 'false', 'true']) test('server integration: start
   }; } });
   const context = { conectarDB: async () => calls.push('main'), shuttingDown: false, reconciliationReader: owner,
     mongoose: { connection: { name: 'fixture' } },
-    require: name => name === './src/workers' ? { startWorkers: () => calls.push('workers') } : { collection: { name: 'fixture' } },
+    require: name => name === './src/config/financialOperations' ? { financialOperationsEnabled: () => true } : name === './src/workers' ? { startWorkers: () => calls.push('workers') } : { collection: { name: 'fixture' } },
     process: { env: { API_WORKERS_ENABLED: 'true' }, on() {} }, console: { error() {}, warn() {} },
     app: { listen() { calls.push('listen'); return { setTimeout() {}, on() {} }; } }, PORT: 0,
     createAdminReconciliationRouter: ({ readHandlers }) => { assert.equal(Boolean(readHandlers), flag === 'true'); return {}; },

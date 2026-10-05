@@ -8,10 +8,34 @@ if (!process.env.STRIPE_SECRET_KEY) {
   throw new Error("❌ FALTA STRIPE_SECRET_KEY en el archivo .env");
 }
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16",
   timeout: 20000,
 });
+
+// Closed facade: never export SDK internals or arbitrary request methods.
+// Reads and local signature verification remain available while writes are gated.
+const stripe = Object.freeze(Object.fromEntries([
+  ["accounts", ["create", "retrieve"]],
+  ["accountLinks", ["create"]],
+  ["customers", ["create", "retrieve"]],
+  ["ephemeralKeys", ["create"]],
+  ["paymentIntents", ["create", "retrieve", "cancel"]],
+  ["refunds", ["create"]],
+  ["transfers", ["create"]],
+  ["webhooks", ["constructEvent"]],
+  ["checkout.sessions", ["create", "retrieve", "expire"]],
+].map(([namespace, methods]) => {
+  const resource = () => namespace.split(".").reduce((value, key) => value[key], stripeClient);
+  const facade = Object.freeze(Object.fromEntries(methods.map(method => [method, (...args) => {
+    if (method !== "retrieve" && method !== "constructEvent") {
+      require("../config/financialOperations").assertFinancialOperationsEnabled();
+    }
+    const target = resource();
+    return target[method].apply(target, args);
+  }])));
+  return namespace === "checkout.sessions" ? ["checkout", Object.freeze({ sessions: facade })] : [namespace, facade];
+})));
 
 const ALLOWED_CURRENCIES = new Set([
   "usd",
@@ -361,3 +385,10 @@ module.exports = {
   resumirEventoStripe,
   crearReembolso,
 };
+for (const name of ["crearSesionPago", "crearCustomerMobile", "crearEphemeralKeyMobile", "crearPaymentIntentMobile", "crearReembolso"]) {
+  const operation = module.exports[name];
+  if (operation) module.exports[name] = async (...args) => {
+    require("../config/financialOperations").assertFinancialOperationsEnabled();
+    return operation(...args);
+  };
+}

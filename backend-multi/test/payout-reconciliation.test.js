@@ -92,7 +92,7 @@ function harness(options = {}) {
     } } } },
   };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, exports: module.exports,
-    require: name => { assert.ok(Object.hasOwn(dependencies, name), `forbidden dependency: ${name}`); return dependencies[name]; }, Date, Set }, { filename });
+    require: name => { if (name === "../config/financialOperations") return require("../src/config/financialOperations"); assert.ok(Object.hasOwn(dependencies, name), `forbidden dependency: ${name}`); return dependencies[name]; }, Date, Set }, { filename });
   return { run: runId => module.exports.pagarVendedoresDeOrden({ ordenId: ID, mode: 'scheduler', runId }),
     state: () => state, calls, counts: () => ({ saves, claims }), model };
 }
@@ -180,7 +180,7 @@ for (const scenario of [
   const deps = { mongoose: { Types: { ObjectId: { isValid: () => true } } }, '../models/Orden': h.model,
     '../services/payoutService': { pagarVendedoresDeOrden: async () => { payouts++; } } };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, exports: module.exports,
-    require: n => { assert.ok(Object.hasOwn(deps, n)); return deps[n]; }, console: { error() {}, log() {} }, Date, process: { env: {} } });
+    require: n => { if (n === "../config/financialOperations") return require("../src/config/financialOperations"); assert.ok(Object.hasOwn(deps, n)); return deps[n]; }, console: { error() {}, log() {} }, Date, process: { env: {} } });
   const res = { statusCode: 0, status(n) { this.statusCode = n; return this; }, json(body) { this.body = body; return this; } };
   await module.exports.adminReintentarPayout({ params: { ordenId: ID }, body: {}, usuario: { rol: 'admin' }, headers: {} }, res);
   assert.equal(res.statusCode, 400); assert.equal(payouts, 0); assert.equal(h.counts().saves, 0);

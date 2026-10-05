@@ -6,6 +6,7 @@ const startWorkers = require("./src/hubs/workersHub");
 
 (async () => {
   try {
+    require("./src/config/financialOperations").assertFinancialOperationsEnabled();
     await conectarDB();
     startWorkers();
     console.log("✅ WORKERS RUNNING");

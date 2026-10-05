@@ -591,3 +591,10 @@ exports.obtenerMisOrdenesMobile = async (req, res, next) => {
     return sendSuccess(res, { data: orders.map(toPublicOrder) });
   } catch (error) { next(error); }
 };
+
+// Guard before authentication dependencies, persistence or provider effects.
+const financialGate = require("../config/financialOperations").requireFinancialOperations;
+for (const name of ['crearOrden', 'crearOrdenYCheckoutStripe', 'actualizarEstado', 'cancelarOrden']) {
+  const handler = module.exports[name];
+  if (handler) module.exports[name] = (req, res, next) => financialGate(req, res, () => handler(req, res, next));
+}

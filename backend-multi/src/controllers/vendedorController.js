@@ -206,3 +206,9 @@ exports.syncStripeStatus = async (req, res, next) => {
     next(err);
   }
 };
+// Guard before authentication dependencies, persistence or provider effects.
+const financialGate = require("../config/financialOperations").requireFinancialOperations;
+for (const name of ['iniciarOnboardingStripe', 'syncStripeStatus']) {
+  const handler = module.exports[name];
+  if (handler) module.exports[name] = (req, res, next) => financialGate(req, res, () => handler(req, res, next));
+}

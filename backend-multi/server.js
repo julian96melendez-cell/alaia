@@ -36,6 +36,7 @@ const { rejectAmbiguousReconciliationQuery } = require("./src/middleware/reconci
 const adminAnalyticsRoutes = require("./src/routes/adminAnalyticsRoutes");
 
 const app = express();
+app.use(require("./src/config/financialOperations").financialWriteGuard);
 
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT) || 3001;
@@ -395,7 +396,7 @@ process.on("SIGTERM", () => gracefulShutdown("SIGTERM", 0));
     selectedReconciliationRouter = createAdminReconciliationRouter({ readHandlers: reconciliationReader.handlers() });
 
     // Optional workers are explicitly enabled, never prerequisites for HTTP readiness.
-    if (process.env.API_WORKERS_ENABLED === "true") {
+    if (process.env.API_WORKERS_ENABLED === "true" && require("./src/config/financialOperations").financialOperationsEnabled()) {
       try {
         workers = require("./src/workers");
         workers.startWorkers();

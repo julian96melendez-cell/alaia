@@ -1,6 +1,7 @@
 "use strict";
 // Stock is available-to-sell. Decrement only inside a mandatory Mongo transaction.
 async function reserveProductStock(Producto, productoId, cantidad, session) {
+  require("../config/financialOperations").assertFinancialOperationsEnabled();
   if (!Number.isSafeInteger(cantidad) || cantidad < 1 || cantidad > 100) throw Object.assign(new Error("Cantidad inválida"), { statusCode: 400 });
   if (!session) throw new Error("Inventory reservation requires a MongoDB transaction");
   const product = await Producto.findById(productoId).session(session).lean();

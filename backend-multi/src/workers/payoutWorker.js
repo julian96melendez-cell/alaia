@@ -50,6 +50,7 @@ function buildLedgerKey() {
 }
 
 async function tick() {
+  if (!require("../config/financialOperations").financialOperationsEnabled()) return;
   if (!FLAGS.ENABLED) return;
 
   const nowIso = new Date().toISOString();
@@ -150,6 +151,7 @@ let started = false;
 let timer = null;
 
 function start() {
+  if (!require("../config/financialOperations").financialOperationsEnabled()) return;
   if (started) return;
   started = true;
 

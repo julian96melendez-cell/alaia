@@ -618,3 +618,9 @@ exports.adminReintentarPayout = async (req, res) => {
     return serverError(res, "Error interno reintentando payout", { reqId });
   }
 };
+// Guard before authentication dependencies, persistence or provider effects.
+const financialGate = require("../config/financialOperations").requireFinancialOperations;
+for (const name of ['adminReintentarPayout']) {
+  const handler = module.exports[name];
+  if (handler) module.exports[name] = (req, res, next) => financialGate(req, res, () => handler(req, res, next));
+}

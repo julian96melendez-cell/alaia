@@ -43,6 +43,7 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
       !["completed", "terminal"].includes(order.checkoutIntent?.state);
   }
   async function release(id, reason, proof, paymentIntentId) {
+    require("../config/financialOperations").assertFinancialOperationsEnabled();
     return repo.transaction(async session => {
       const order = await repo.get(id, session);
       if (!canRelease(order)) return false;
@@ -71,6 +72,7 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
     });
   }
   async function settlePaid(id, fields = {}, proof) {
+    require("../config/financialOperations").assertFinancialOperationsEnabled();
     const before = await repo.get(id);
     if (!before?.checkoutIntent?.keyHash) return { managed: false };
     return repo.transaction(async session => {
@@ -121,6 +123,7 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
     return repo.get(String(order._id));
   }
   async function prepare({ uid, email = "", key, input, buildOrder }) {
+    require("../config/financialOperations").assertFinancialOperationsEnabled();
     const { id, keyHash } = identity(uid, key);
     const normalized = normalizePayload(input);
     const fingerprint = hash(JSON.stringify(normalized));
@@ -195,6 +198,7 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
     return { order, clientSecret: result.clientSecret, checkoutUrl: result.checkoutUrl };
   }
   async function expire(limit = 100) {
+    require("../config/financialOperations").assertFinancialOperationsEnabled();
     const expired = await repo.expired(now(), limit);
     let checked = 0; let failed = 0;
     for (const order of expired) {
@@ -203,8 +207,10 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
     }
     return { checked, failed };
   }
-  async function cancel(uid, key) { return cancelOrder(await resolve(uid, key), "buyer_cancelled_intention"); }
+  async function cancel(uid, key) {
+    require("../config/financialOperations").assertFinancialOperationsEnabled(); return cancelOrder(await resolve(uid, key), "buyer_cancelled_intention"); }
   async function cancelledWebhook(id, paymentIntentId, proof) {
+    require("../config/financialOperations").assertFinancialOperationsEnabled();
     const order = await repo.get(id);
     if (!order?.checkoutIntent?.keyHash) return { managed: false };
     assertStripeCorrelation(order, proof);
@@ -220,6 +226,7 @@ function createCheckoutLifecycle(repo, stripe, options = {}) {
     return { managed: true };
   }
   async function expiredWebhook(id, sessionId, proof) {
+    require("../config/financialOperations").assertFinancialOperationsEnabled();
     await repo.transaction(async session => {
       const order = await repo.get(id, session);
       assertStripeCorrelation(order, proof);
@@ -245,7 +252,7 @@ function getLifecycle(mode = "mobile") {
     save: (order, session) => order.save({ session }),
     saveExpected: (order, session, expected) => { order.$where = expected; return order.save({ session }); },
     reserve: (id, qty, session) => reserveProductStock(Producto, id, qty, session),
-    restore: async (id, qty, session) => { const result = await Producto.updateOne({ _id: id }, { $inc: { stock: qty } }, { session }); if (result.matchedCount !== 1) throw error("Producto reservado desapareció; conciliación requerida", 503); },
+    restore: async (id, qty, session) => { require("../config/financialOperations").assertFinancialOperationsEnabled(); const result = await Producto.updateOne({ _id: id }, { $inc: { stock: qty } }, { session }); if (result.matchedCount !== 1) throw error("Producto reservado desapareció; conciliación requerida", 503); },
     expired: (date, limit) => Orden.find({ "inventoryReservation.state": "reserved", "inventoryReservation.expiresAt": { $lte: date }, "inventoryReservation.needsReconciliation": { $ne: true } }).limit(limit),
   };
   const metadata = order => ({ ordenId: String(order._id), firebaseUserId: order.firebaseUserId, checkoutCorrelation: order.checkoutIntent.stripeCorrelation, source: order.source });

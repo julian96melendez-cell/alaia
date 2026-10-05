@@ -121,6 +121,7 @@ function canSellerReceivePayout(usuario) {
 }
 
 exports.pagarVendedoresDeOrden = async ({ ordenId, eventId = "", reason = "", mode = "webhook", runId = "" } = {}) => {
+  require("../config/financialOperations").assertFinancialOperationsEnabled();
   mustStripe();
   if (!ordenId) return;
   const initial = await Orden.findById(ordenId);

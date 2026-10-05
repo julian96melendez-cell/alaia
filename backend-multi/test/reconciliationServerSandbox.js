@@ -40,7 +40,7 @@ function startServerSandbox({ env, state, routerModule, business, cases, audits,
   };
   const models = { Orden: 'orders', WebhookEvent: 'events', ReconciliationCase: 'cases', ReconciliationAudit: 'audits' };
   const allowedPackages = new Set(['crypto', 'cors', 'morgan', 'helmet', 'express-rate-limit', 'express-mongo-sanitize', 'hpp', 'cookie-parser']);
-  const allowedModules = new Set(['./src/config/cors', './src/middleware/reconciliationLogging', './src/middleware/reconciliationQueryGuard', './src/config/readiness']);
+  const allowedModules = new Set(['./src/config/financialOperations', './src/config/cors', './src/middleware/reconciliationLogging', './src/middleware/reconciliationQueryGuard', './src/config/readiness']);
   const replacements = {
     dotenv: { config() { events.push('dotenv:disabled'); } },
     './src/utils/safeLogging': safeModule.exports, express: expressDouble,

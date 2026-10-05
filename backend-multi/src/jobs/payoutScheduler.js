@@ -26,6 +26,7 @@ function envInt(key, def) {
  * - try/catch por orden (no rompe loop)
  */
 exports.startPayoutScheduler = () => {
+  if (!require("../config/financialOperations").financialOperationsEnabled()) return;
   const intervalMs = envInt("PAYOUT_SCHEDULER_INTERVAL_MS", 5 * 60 * 1000); // 5 min
   const batchSize = envInt("PAYOUT_SCHEDULER_BATCH", 25);
 
