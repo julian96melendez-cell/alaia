@@ -4,11 +4,12 @@ const express = require("express");
 const router = express.Router();
 
 const Orden = require("../models/Orden");
+const { proteger, soloAdmin } = require("../middleware/auth");
 
 // ======================================================
 // GET /api/admin/analytics
 // ======================================================
-router.get("/", async (req, res) => {
+router.get("/", proteger, soloAdmin, async (req, res) => {
   try {
     const now = new Date();
     const last30Days = new Date();
