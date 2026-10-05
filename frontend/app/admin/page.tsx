@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import AdminLogoutButton from "../../../components/AdminLogoutButton";
+import AdminLogoutButton from "../../components/AdminLogoutButton";
 import { api } from "../../lib/api";
 
 type UserRole = "admin" | "vendedor" | "usuario";
@@ -188,7 +188,7 @@ function ModuleCard({
               fontWeight: 800,
             }}
           >
-            Próximamente
+            Función temporalmente no disponible
           </span>
         ) : (
           <Link
@@ -674,7 +674,8 @@ export default function AdminHome() {
 
           <ModuleCard
             title="Fulfillment"
-            description="Gestiona procesamiento logístico, tracking, transportistas, entregas y trazabilidad."
+            disabled
+            description="Función temporalmente no disponible."
             href="/admin/fulfillment"
             action="Ver fulfillment"
           />
@@ -695,21 +696,24 @@ export default function AdminHome() {
 
           <ModuleCard
             title="Usuarios"
-            description="Gestión de usuarios, roles administrativos, activación y control de acceso."
+            disabled
+            description="Función temporalmente no disponible."
             href="/admin/usuarios"
             action="Gestionar usuarios"
           />
 
           <ModuleCard
             title="Seguridad"
-            description="Revisión de sesiones administrativas, alertas y actividad sospechosa del sistema."
+            disabled
+            description="Función temporalmente no disponible."
             href="/admin/security"
             action="Ver seguridad"
           />
 
           <ModuleCard
             title="Analytics"
-            description="Métricas, ingresos, órdenes por día y visualización del rendimiento del negocio."
+            disabled
+            description="Función temporalmente no disponible."
             href="/admin/analytics"
             action="Ver analytics"
           />

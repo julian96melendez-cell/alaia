@@ -1,24 +1,13 @@
 import { NextResponse } from "next/server";
 
+// Legacy Firebase session route retired; no replacement or side effect is invoked.
 export async function POST() {
-  const response = NextResponse.json(
+  return NextResponse.json(
     {
-      ok: true,
-      message: "Session logout endpoint desactivado.",
+      ok: false,
+      code: "LEGACY_FIREBASE_ROUTE_DISABLED",
+      message: "Esta ruta heredada ya no está disponible.",
     },
-    {
-      status: 200,
-      headers: { "Cache-Control": "no-store" },
-    }
+    { status: 410, headers: { "Cache-Control": "no-store" } }
   );
-
-  response.cookies.set("session", "", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 0,
-  });
-
-  return response;
 }

@@ -141,7 +141,9 @@ function ModuleCard({
       </div>
 
       <div style={{ marginTop: "auto" }}>
-        <Link
+        {["/seller/ordenes", "/seller/payouts"].includes(href) || title === "Configuración" ? (
+          <span>Función temporalmente no disponible</span>
+        ) : <Link
           href={href}
           style={{
             display: "inline-flex",
@@ -156,8 +158,8 @@ function ModuleCard({
             textDecoration: "none",
           }}
         >
-          {action}
-        </Link>
+          {["/seller/ordenes", "/seller/payouts"].includes(href) || title === "Configuración" ? "Función temporalmente no disponible" : action}
+        </Link>}
       </div>
     </div>
   );
@@ -533,22 +535,22 @@ export default function SellerHome() {
 
           <ModuleCard
             title="Mis órdenes"
-            description="Consulta el flujo de tus ventas, estados de pago y estado operativo del fulfillment."
+            description="Función temporalmente no disponible."
             href="/seller/ordenes"
             action="Ver órdenes"
           />
 
           <ModuleCard
             title="Payouts"
-            description="Revisa payouts pendientes, procesados, completados o con incidencias."
+            description="Función temporalmente no disponible."
             href="/seller/payouts"
             action="Ver payouts"
           />
 
           <ModuleCard
             title="Configuración"
-            description="Administra datos de tu cuenta, configuración comercial y estado de onboarding."
-            href="/seller/configuracion"
+            description="Función temporalmente no disponible."
+            href="/seller"
             action="Ver configuración"
           />
         </section>

@@ -158,30 +158,28 @@ export async function logout(opts?: {
   const shouldRedirect = opts?.redirect !== false;
   const silent = opts?.silent === true;
 
+  let serverConfirmed = false;
   try {
-    const url = buildApiUrl("/api/auth/logout", opts?.apiBaseUrl);
-
-    await fetch(url, {
+    const response = await fetch(buildApiUrl("/api/auth/logout", opts?.apiBaseUrl), {
       method: "POST",
       credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       cache: "no-store",
     });
-  } catch (err) {
-    if (!silent) {
-      console.error("logout error:", err);
-    }
-  } finally {
-    clearLocalSessionState();
-    broadcastAuthEvent("logout");
-    emit();
-
-    if (shouldRedirect && isBrowser()) {
-      window.location.href = "/login";
-    }
+    const payload = await response.json().catch(() => null);
+    serverConfirmed = response.ok && payload?.ok === true;
+  } catch {
+    // Sin registrar respuestas, cookies ni errores originales.
   }
+  clearLocalSessionState();
+  broadcastAuthEvent("logout");
+  emit();
+  if (!serverConfirmed && !silent && isBrowser()) {
+    window.alert("Se limpió la sesión local, pero el servidor no confirmó el cierre. La sesión remota podría seguir activa.");
+  }
+  if (shouldRedirect && isBrowser()) window.location.href = "/login";
+  return { serverConfirmed, localCleared: true };
+
 }
 
 // ======================================================

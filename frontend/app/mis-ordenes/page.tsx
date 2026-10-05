@@ -179,49 +179,11 @@ export default function MisOrdenesPage() {
   }
 
   async function pagarCarrito() {
-    if (payLoadingGlobal) return;
-
-    setPayLoadingGlobal(true);
-    setPayLoadingOrdenId(null);
-    setPayError(null);
-
-    const res = await api.post<CheckoutData>("/api/pagos/stripe/checkout-carrito");
-
-    if (!res.ok || !res.data?.url) {
-      setPayError(
-        res.message ||
-          "No se pudo iniciar el pago. Revisa que el carrito tenga productos."
-      );
-      setPayLoadingGlobal(false);
-      return;
-    }
-
-    window.location.href = res.data.url;
+    setError("Operaciones financieras temporalmente no disponibles.");
   }
 
   async function continuarPagoOrden(ordenId: string) {
-    if (!ordenId) return;
-    if (payLoadingGlobal) return;
-
-    setPayLoadingGlobal(true);
-    setPayLoadingOrdenId(ordenId);
-    setPayError(null);
-
-    const res = await api.post<CheckoutData>("/api/pagos/stripe/checkout-orden", {
-      ordenId,
-    });
-
-    if (!res.ok || !res.data?.url) {
-      setPayError(
-        res.message ||
-          "No se pudo continuar el pago de esta orden. Intenta recargar e inténtalo otra vez."
-      );
-      setPayLoadingGlobal(false);
-      setPayLoadingOrdenId(null);
-      return;
-    }
-
-    window.location.href = res.data.url;
+    setError("Operaciones financieras temporalmente no disponibles.");
   }
 
   return (
@@ -234,6 +196,7 @@ export default function MisOrdenesPage() {
         gap: 14,
       }}
     >
+      <p role="status">Operaciones financieras temporalmente no disponibles.</p>
       {/* AUTO REFRESH SOLO SI HAY PENDIENTES */}
       <AutoRefreshMisOrdenes enabled={hayPendientes && !payLoadingGlobal} />
 
@@ -261,7 +224,7 @@ export default function MisOrdenesPage() {
 
             <Button
               onClick={pagarCarrito}
-              disabled={payLoadingGlobal}
+              disabled={true}
               variant="primary"
             >
               {payLoadingGlobal ? "Redirigiendo a Stripe…" : "Pagar ahora (carrito)"}
@@ -372,7 +335,7 @@ export default function MisOrdenesPage() {
                       {isPendiente ? (
                         <button
                           onClick={() => continuarPagoOrden(o._id)}
-                          disabled={payLoadingGlobal}
+                          disabled={true}
                           style={{
                             border: "none",
                             background: "transparent",

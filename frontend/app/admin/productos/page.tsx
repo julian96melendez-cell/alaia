@@ -92,214 +92,32 @@ export default function AdminProductosPage() {
   }, []);
 
   async function crearProducto() {
-    if (saving) return;
-
-    const nombreClean = nombre.trim();
-    const precioNum = Number(precio);
-    const stockNum = Number(stock);
-
-    if (!nombreClean) {
-      setError("El nombre es obligatorio.");
-      return;
-    }
-
-    if (!Number.isFinite(precioNum) || precioNum <= 0) {
-      setError("Precio inválido.");
-      return;
-    }
-
-    if (!Number.isFinite(stockNum) || stockNum < 0) {
-      setError("Stock inválido.");
-      return;
-    }
-
-    setSaving(true);
-    setError(null);
-
-    try {
-      const res = await api.post("/api/seller/productos", {
-        nombre: nombreClean,
-        precio: precioNum,
-        stock: stockNum,
-        sku: sku.trim() || undefined,
-        activo: true,
-        visible: true,
-        gestionStock: true,
-        tipo: "marketplace",
-      });
-
-      if (!res.ok) {
-        setError(res.message || "No se pudo crear el producto");
-        return;
-      }
-
-      setNombre("");
-      setPrecio("");
-      setStock("");
-      setSku("");
-
-      await loadProductos();
-    } catch (err: any) {
-      console.error("ADMIN PRODUCTOS CREATE ERROR:", err);
-      setError(err?.message || "No se pudo crear el producto");
-    } finally {
-      setSaving(false);
-    }
+    setError("Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.");
   }
 
   async function toggleActivo(producto: Producto) {
-    setError(null);
-
-    try {
-      const res = await api.put(`/api/seller/productos/${producto._id}`, {
-        nombre: producto.nombre,
-        precio: producto.precio,
-        stock: producto.stock,
-        sku: producto.sku?.trim() || undefined,
-        activo: !producto.activo,
-        visible: true,
-        gestionStock: true,
-        tipo: "marketplace",
-      });
-
-      if (!res.ok) {
-        setError(res.message || "No se pudo actualizar el estado");
-        return;
-      }
-
-      await loadProductos();
-    } catch (err: any) {
-      console.error("ADMIN PRODUCTOS TOGGLE ERROR:", err);
-      setError(err?.message || "No se pudo actualizar el estado");
-    }
+    setError("Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.");
   }
 
   async function actualizarPrecio(producto: Producto, nuevoPrecio: number) {
-    if (!Number.isFinite(nuevoPrecio) || nuevoPrecio <= 0) {
-      setError("Precio inválido.");
-      return;
-    }
-
-    setError(null);
-
-    try {
-      const res = await api.put(`/api/seller/productos/${producto._id}`, {
-        nombre: producto.nombre,
-        precio: nuevoPrecio,
-        stock: producto.stock,
-        sku: producto.sku?.trim() || undefined,
-        activo: producto.activo,
-        visible: true,
-        gestionStock: true,
-        tipo: "marketplace",
-      });
-
-      if (!res.ok) {
-        setError(res.message || "No se pudo actualizar el precio");
-        return;
-      }
-
-      await loadProductos();
-    } catch (err: any) {
-      console.error("ADMIN PRODUCTOS PRICE ERROR:", err);
-      setError(err?.message || "No se pudo actualizar el precio");
-    }
+    setError("Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.");
   }
 
   async function actualizarNombre(producto: Producto, nuevoNombre: string) {
-    const nombreClean = nuevoNombre.trim();
-    if (!nombreClean) {
-      setError("El nombre no puede estar vacío.");
-      return;
-    }
-
-    setError(null);
-
-    try {
-      const res = await api.put(`/api/seller/productos/${producto._id}`, {
-        nombre: nombreClean,
-        precio: producto.precio,
-        stock: producto.stock,
-        sku: producto.sku?.trim() || undefined,
-        activo: producto.activo,
-        visible: true,
-        gestionStock: true,
-        tipo: "marketplace",
-      });
-
-      if (!res.ok) {
-        setError(res.message || "No se pudo actualizar el nombre");
-        return;
-      }
-
-      await loadProductos();
-    } catch (err: any) {
-      console.error("ADMIN PRODUCTOS NAME ERROR:", err);
-      setError(err?.message || "No se pudo actualizar el nombre");
-    }
+    setError("Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.");
   }
 
   async function actualizarStock(producto: Producto, nuevoStock: number) {
-    if (!Number.isFinite(nuevoStock) || nuevoStock < 0) {
-      setError("Stock inválido.");
-      return;
-    }
-
-    setError(null);
-
-    try {
-      const res = await api.put(`/api/seller/productos/${producto._id}`, {
-        nombre: producto.nombre,
-        precio: producto.precio,
-        stock: nuevoStock,
-        sku: producto.sku?.trim() || undefined,
-        activo: producto.activo,
-        visible: true,
-        gestionStock: true,
-        tipo: "marketplace",
-      });
-
-      if (!res.ok) {
-        setError(res.message || "No se pudo actualizar el stock");
-        return;
-      }
-
-      await loadProductos();
-    } catch (err: any) {
-      console.error("ADMIN PRODUCTOS STOCK ERROR:", err);
-      setError(err?.message || "No se pudo actualizar el stock");
-    }
+    setError("Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.");
   }
 
   async function actualizarSku(producto: Producto, nuevoSku: string) {
-    setError(null);
-
-    try {
-      const res = await api.put(`/api/seller/productos/${producto._id}`, {
-        nombre: producto.nombre,
-        precio: producto.precio,
-        stock: producto.stock,
-        sku: nuevoSku.trim() || undefined,
-        activo: producto.activo,
-        visible: true,
-        gestionStock: true,
-        tipo: "marketplace",
-      });
-
-      if (!res.ok) {
-        setError(res.message || "No se pudo actualizar el SKU");
-        return;
-      }
-
-      await loadProductos();
-    } catch (err: any) {
-      console.error("ADMIN PRODUCTOS SKU ERROR:", err);
-      setError(err?.message || "No se pudo actualizar el SKU");
-    }
+    setError("Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.");
   }
 
   return (
     <main style={layout}>
+      <p role="status">Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.</p>
       <header style={header}>
         <div>
           <h1 style={title}>Admin · Productos VERSION NUEVA</h1>
@@ -308,7 +126,7 @@ export default function AdminProductosPage() {
           </p>
         </div>
 
-        <button onClick={() => void loadProductos()} style={buttonOutline}>
+        <button disabled onClick={() => void loadProductos()} style={buttonOutline}>
           Recargar
         </button>
       </header>
@@ -366,9 +184,8 @@ export default function AdminProductosPage() {
             style={input}
           />
 
-          <button
+          <button disabled
             onClick={() => void crearProducto()}
-            disabled={saving}
             style={buttonPrimary}
           >
             {saving ? "Creando…" : "Crear producto"}
@@ -476,7 +293,7 @@ function ProductoRow({
       <div style={rowFooter}>
         <div style={idText}>ID: {producto._id}</div>
 
-        <button onClick={onToggle} style={buttonOutline}>
+        <button disabled onClick={onToggle} style={buttonOutline}>
           {producto.activo ? "Desactivar" : "Activar"}
         </button>
       </div>

@@ -7,7 +7,8 @@ import { useEffect, useMemo, useState } from "react";
 type ProductoDetalle = {
   _id: string;
   nombre: string;
-  precio: number;
+  precio?: number;
+  precioFinal?: number;
   activo?: boolean;
   descripcion?: string;
 };
@@ -90,8 +91,8 @@ export default function EditProductoPage({
 
         setNombre(res.data.nombre || "");
         setPrecio(
-          Number.isFinite(Number(res.data.precio))
-            ? String(res.data.precio)
+          Number.isFinite(Number(res.data.precioFinal ?? res.data.precio))
+            ? String(res.data.precioFinal ?? res.data.precio)
             : ""
         );
         setDescripcion(res.data.descripcion || "");
@@ -114,77 +115,17 @@ export default function EditProductoPage({
   }, [id]);
 
   async function handleUpdate() {
-    if (!canSubmit) return;
-
-    setSaving(true);
-    setError(null);
-
-    try {
-      const payload = {
-        nombre: nombre.trim(),
-        precio: Number(precio),
-        descripcion: descripcion.trim(),
-        activo,
-      };
-
-      const res = await api.put<ApiProductoResponse>(
-        `/api/seller/productos/${id}`,
-        payload,
-        {
-          autoLogoutOn401: true,
-          friendlyErrorMessage: "No se pudo actualizar el producto.",
-        } as any
-      );
-
-      if (!res.ok) {
-        throw new Error(res.message || "No se pudo actualizar el producto.");
-      }
-
-      router.push("/seller/productos");
-      router.refresh();
-    } catch (err: any) {
-      console.error("UPDATE PRODUCT ERROR:", err);
-      setError(err?.message || "No se pudo actualizar el producto.");
-    } finally {
-      setSaving(false);
-    }
+    setError("Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.");
   }
 
   async function handleDelete() {
-    if (deleting || saving) return;
-
-    const confirmed = window.confirm(
-      "¿Seguro que quieres eliminar este producto? Esta acción no se puede deshacer."
-    );
-
-    if (!confirmed) return;
-
-    setDeleting(true);
-    setError(null);
-
-    try {
-      const res = await api.del<ApiProductoResponse>(`/api/seller/productos/${id}`, {
-        autoLogoutOn401: true,
-        friendlyErrorMessage: "No se pudo eliminar el producto.",
-      } as any);
-
-      if (!res.ok) {
-        throw new Error(res.message || "No se pudo eliminar el producto.");
-      }
-
-      router.push("/seller/productos");
-      router.refresh();
-    } catch (err: any) {
-      console.error("DELETE PRODUCT ERROR:", err);
-      setError(err?.message || "No se pudo eliminar el producto.");
-    } finally {
-      setDeleting(false);
-    }
+    setError("Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.");
   }
 
   if (loading) {
     return (
       <main style={styles.page}>
+      <p role="status">Edición, creación y eliminación temporalmente no disponibles. Vista de productos propios, no del catálogo global.</p>
         <section style={styles.card}>
           <h1 style={styles.title}>Editar producto</h1>
           <p style={styles.subtitle}>Cargando información del producto…</p>
@@ -224,7 +165,7 @@ export default function EditProductoPage({
               onChange={(e) => setNombre(e.target.value)}
               placeholder="Ej. Auriculares Pro"
               style={styles.input}
-              disabled={saving || deleting}
+              disabled={true}
             />
           </label>
 
@@ -238,7 +179,7 @@ export default function EditProductoPage({
               onChange={(e) => setPrecio(e.target.value)}
               placeholder="0.00"
               style={styles.input}
-              disabled={saving || deleting}
+              disabled={true}
             />
             <span style={styles.helperText}>
               Vista previa: {moneyPreview(precio)}
@@ -252,7 +193,7 @@ export default function EditProductoPage({
               onChange={(e) => setDescripcion(e.target.value)}
               placeholder="Describe tu producto de forma clara y profesional"
               style={styles.textarea}
-              disabled={saving || deleting}
+              disabled={true}
               rows={5}
             />
           </label>
@@ -262,7 +203,7 @@ export default function EditProductoPage({
               type="checkbox"
               checked={activo}
               onChange={(e) => setActivo(e.target.checked)}
-              disabled={saving || deleting}
+              disabled={true}
             />
             <span style={styles.checkboxText}>Producto activo y visible</span>
           </label>
@@ -272,7 +213,7 @@ export default function EditProductoPage({
           <button
             type="button"
             onClick={handleUpdate}
-            disabled={!canSubmit}
+            disabled={true}
             style={{
               ...styles.primaryButton,
               opacity: canSubmit ? 1 : 0.65,
@@ -285,7 +226,7 @@ export default function EditProductoPage({
           <button
             type="button"
             onClick={handleDelete}
-            disabled={saving || deleting}
+            disabled={true}
             style={{
               ...styles.dangerButton,
               opacity: saving || deleting ? 0.65 : 1,

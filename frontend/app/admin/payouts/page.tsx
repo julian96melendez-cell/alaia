@@ -284,39 +284,7 @@ export default function AdminPayoutsPage() {
   }
 
   async function retryPayout(row: PayoutRow) {
-    if (!canRetry(row) || retrying) return;
-
-    const okConfirm = window.confirm(
-      `¿Reintentar payout de la orden ${row.orderNumber || row.ordenId}?`
-    );
-    if (!okConfirm) return;
-
-    setRetrying(row.ordenId);
-
-    try {
-      const res = await api.post(
-        `/api/admin/payouts/${row.ordenId}/retry`,
-        row.vendedor?._id ? { vendedorId: row.vendedor._id } : {},
-        {
-          autoLogoutOn401: true,
-        } as any
-      );
-
-      if (!res.ok) {
-        setError(res.message || "No se pudo reintentar el payout");
-        return;
-      }
-
-      await Promise.all([loadRows(page), loadMetrics()]);
-
-      if (detailOpen && detail?.ordenId === row.ordenId) {
-        await openDetail(row.ordenId);
-      }
-    } catch (err: any) {
-      setError(err?.message || "No se pudo reintentar el payout");
-    } finally {
-      setRetrying(null);
-    }
+    setError("Operaciones financieras temporalmente no disponibles.");
   }
 
   useEffect(() => {
@@ -339,6 +307,7 @@ export default function AdminPayoutsPage() {
 
   return (
     <main style={layout}>
+      <p role="status">Operaciones financieras temporalmente no disponibles.</p>
       <header style={header}>
         <div>
           <h1 style={title}>Admin · Payouts</h1>
@@ -559,7 +528,7 @@ export default function AdminPayoutsPage() {
 
                   <button
                     onClick={() => void retryPayout(row)}
-                    disabled={!canRetry(row) || retrying === row.ordenId}
+                    disabled={true}
                     style={{
                       ...buttonPrimary,
                       opacity:

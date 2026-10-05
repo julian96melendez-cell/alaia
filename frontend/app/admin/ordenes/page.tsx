@@ -472,42 +472,7 @@ export default function AdminOrdenesPage() {
   }, [autoRefresh, autoRefreshSec]);
 
   async function updateEstado(ordenId: string, body: UpdateEstadoBody) {
-    if (!ordenId || updatingId) return;
-
-    const snap = lastSnapshotRef.current.get(ordenId);
-
-    setUpdatingId(ordenId);
-    setError(null);
-
-    setOrdenes((prev) =>
-      prev.map((o) =>
-        o._id === ordenId
-          ? ({
-              ...o,
-              estadoPago: body.estadoPago ?? o.estadoPago,
-              estadoFulfillment:
-                body.estadoFulfillment ?? o.estadoFulfillment,
-            } as Orden)
-          : o
-      )
-    );
-
-    const res = await api.put<Orden>(`/api/ordenes/admin/${ordenId}/estado`, body, {
-      autoLogoutOn401: true,
-      friendlyErrorMessage: "No se pudo actualizar el estado de la orden.",
-    });
-
-    if (!res.ok) {
-      if (snap) {
-        setOrdenes((prev) => prev.map((o) => (o._id === ordenId ? snap : o)));
-      }
-      setError(res.message || "Error actualizando estado.");
-      setUpdatingId(null);
-      return;
-    }
-
-    await Promise.all([loadList(), loadMetrics()]);
-    setUpdatingId(null);
+    setError("Operaciones financieras temporalmente no disponibles.");
   }
 
   const showingRange = useMemo(() => {
@@ -527,6 +492,7 @@ export default function AdminOrdenesPage() {
         gap: 14,
       }}
     >
+      <p role="status">Operaciones financieras temporalmente no disponibles.</p>
       <Card>
         <div
           style={{
@@ -913,21 +879,6 @@ export default function AdminOrdenesPage() {
                       Ver detalle
                     </Link>
 
-                    <Link
-                      href={`/orden/${o._id}`}
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(0,0,0,.12)",
-                        background: "white",
-                        textDecoration: "none",
-                        fontWeight: 900,
-                        color: "rgba(0,0,0,.85)",
-                      }}
-                    >
-                      Ver cliente
-                    </Link>
-
                     <div
                       style={{
                         display: "flex",
@@ -948,7 +899,7 @@ export default function AdminOrdenesPage() {
                         </div>
                         <select
                           value={pago || "pendiente"}
-                          disabled={isUpdating}
+                          disabled={true}
                           onChange={(e) =>
                             void updateEstado(o._id, {
                               estadoPago: e.target.value as UpdateEstadoBody["estadoPago"],
@@ -982,7 +933,7 @@ export default function AdminOrdenesPage() {
                         </div>
                         <select
                           value={fulfillment || "pendiente"}
-                          disabled={isUpdating}
+                          disabled={true}
                           onChange={(e) =>
                             void updateEstado(o._id, {
                               estadoFulfillment:

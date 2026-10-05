@@ -34,7 +34,7 @@ export default function AdminDashboardPage() {
     setLoading(true);
     setError(null);
 
-    const res = await api.get<Metrics>("/api/admin/metrics", {
+    const res = await api.get<Metrics>("/api/ordenes/admin/metrics", {
       autoLogoutOn401: true,
     });
 

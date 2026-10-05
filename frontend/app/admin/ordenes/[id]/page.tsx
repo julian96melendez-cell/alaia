@@ -382,70 +382,7 @@ export default function AdminOrdenDetallePage() {
      Save estados — optimistic + confirm + rollback
   ====================================================== */
   async function saveEstado() {
-    if (!orden) return;
-
-    if (!hasChanges) {
-      setToast({ type: "warn", msg: "No hay cambios para guardar." });
-      return;
-    }
-
-    if (savingRef.current || saving) return;
-
-    const nextPago = normalizePago(estadoPago);
-    const nextFul = normalizeFulfillment(estadoFulfillment);
-
-    const dangerous =
-      isDangerChangePago(estadoPagoActual, nextPago) ||
-      isDangerChangeFul(estadoFulActual, nextFul);
-
-    if (dangerous) {
-      const ok = window.confirm(
-        "⚠️ Cambio sensible.\n\nEsto puede afectar pagos, envíos y auditoría.\n¿Confirmas aplicar el cambio?"
-      );
-      if (!ok) return;
-    }
-
-    savingRef.current = true;
-    setSaving(true);
-    setError(null);
-
-    const payload: Record<string, string> = {};
-    if (estadoPagoActual !== nextPago) payload.estadoPago = nextPago;
-    if (estadoFulActual !== nextFul) payload.estadoFulfillment = nextFul;
-
-    const prevOrden = orden;
-    const optimisticOrden: any = {
-      ...orden,
-      estadoPago: payload.estadoPago ?? orden.estadoPago,
-      estadoFulfillment: payload.estadoFulfillment ?? orden.estadoFulfillment,
-    };
-    setOrden(optimisticOrden);
-
-    try {
-      const res = await api.put<Orden>(
-        `/api/ordenes/admin/${orden._id}/estado`,
-        payload,
-        {
-          autoLogoutOn401: true,
-          friendlyErrorMessage: "No se pudo actualizar el estado",
-        }
-      );
-
-      if (!res.ok) {
-        setOrden(prevOrden);
-        setError(res.message || "Error actualizando estado");
-        return;
-      }
-
-      setToast({ type: "ok", msg: "✅ Cambios guardados." });
-      await load({ silent: true });
-    } catch (e: any) {
-      setOrden(prevOrden);
-      setError(e?.message || "Error actualizando estado");
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
+    setError("Operaciones financieras temporalmente no disponibles.");
   }
 
   /* ======================================================
@@ -462,6 +399,7 @@ export default function AdminOrdenDetallePage() {
   ====================================================== */
   return (
     <main style={layout}>
+      <p role="status">Operaciones financieras temporalmente no disponibles.</p>
       {/* Toast */}
       {toast ? (
         <div style={toastStyle(toast.type)}>{toast.msg}</div>
@@ -682,7 +620,7 @@ export default function AdminOrdenDetallePage() {
             >
               <button
                 onClick={saveEstado}
-                disabled={!hasChanges || saving}
+                disabled={true}
                 style={{
                   ...btnPrimary,
                   opacity: !hasChanges || saving ? 0.5 : 1,

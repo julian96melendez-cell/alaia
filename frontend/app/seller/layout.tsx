@@ -1,6 +1,6 @@
 "use client";
 
-import { apiUrl } from "../../lib/backend";
+import { api } from "@/lib/api";
 import { clearCurrentUser, setCurrentUser } from "@/lib/auth";
 import type { AuthMeData, Usuario } from "@/lib/types";
 import { useRouter } from "next/navigation";
@@ -33,7 +33,6 @@ function FullPageLoader({ text }: { text: string }) {
   );
 }
 
-function buildAuthMeUrl() { return apiUrl("/api/auth/me"); }
 
 export default function SellerLayout({
   children,
@@ -61,23 +60,16 @@ export default function SellerLayout({
 
     async function verifySellerAccess() {
       try {
-        const endpoint = buildAuthMeUrl();
-
-        const res = await fetch(endpoint, {
-          method: "GET",
-          credentials: "include",
-          cache: "no-store",
+        const data = await api.get<AuthMeData>("/api/auth/me", {
           signal: controller.signal,
+          autoLogoutOn401: false,
+          retryCount: 0,
         });
-
-        const data: MeResponse = await res.json().catch(() => ({
-          ok: false,
-          message: "Respuesta inválida del servidor",
-        }));
+        if (!mounted) return;
 
         const usuario = data?.data?.usuario as Usuario | undefined;
 
-        if (!res.ok || !data?.ok || !usuario) {
+        if (!data?.ok || !usuario) {
           await denyAccess("/login");
           return;
         }

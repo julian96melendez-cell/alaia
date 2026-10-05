@@ -1,6 +1,6 @@
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
-import { installSafeLogging } from "../../utils/safeLogging";
+import { installSafeLogging } from "./safeLogging";
 
 installSafeLogging();
 
