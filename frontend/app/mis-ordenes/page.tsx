@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { logout } from "../../lib/auth";
 import type { Orden } from "../../lib/types";
 import AutoRefreshMisOrdenes from "./AutoRefreshMisOrdenes";
 
@@ -120,6 +121,29 @@ export default function MisOrdenesPage() {
   const [loading, setLoading] = useState(true);
   const [ordenes, setOrdenes] = useState<Orden[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [logoutLoading, setLogoutLoading] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const logoutInFlight = useRef(false);
+
+  async function cerrarSesion() {
+    if (logoutInFlight.current) return;
+    logoutInFlight.current = true;
+    setLogoutLoading(true);
+    setLogoutError(null);
+    try {
+      const result = await logout({ redirect: false, silent: true });
+      if (result.serverConfirmed) {
+        window.location.href = "/login";
+        return;
+      }
+      setLogoutError("Se limpió la sesión local, pero el servidor no confirmó el cierre. La sesión remota podría seguir activa.");
+    } catch {
+      setLogoutError("No se pudo confirmar el cierre de sesión en el servidor. La sesión remota podría seguir activa.");
+    } finally {
+      logoutInFlight.current = false;
+      setLogoutLoading(false);
+    }
+  }
 
   const [payLoadingGlobal, setPayLoadingGlobal] = useState(false);
   const [payLoadingOrdenId, setPayLoadingOrdenId] = useState<string | null>(null);
@@ -197,6 +221,7 @@ export default function MisOrdenesPage() {
       }}
     >
       <p role="status">Operaciones financieras temporalmente no disponibles.</p>
+      {logoutError ? <p role="alert">{logoutError}</p> : null}
       {/* AUTO REFRESH SOLO SI HAY PENDIENTES */}
       <AutoRefreshMisOrdenes enabled={hayPendientes && !payLoadingGlobal} />
 
@@ -218,6 +243,9 @@ export default function MisOrdenesPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Button onClick={cerrarSesion} disabled={logoutLoading}>
+              {logoutLoading ? "Cerrando sesión…" : "Cerrar sesión"}
+            </Button>
             <Button onClick={cargar} variant="secondary" disabled={loading}>
               {loading ? "Cargando…" : "Recargar"}
             </Button>
