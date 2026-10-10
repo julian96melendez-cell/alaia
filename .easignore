@@ -142,4 +142,4 @@ id_ed25519*
 /security/firestore-tests/node_modules/
 
 # Unrelated local directory; never upload to EAS.
-/sites/
+/sites
