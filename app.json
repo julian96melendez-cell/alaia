@@ -1,7 +1,13 @@
 {
   "expo": {
     "name": "alaia-clean",
-    "slug": "alaia-clean",
+    "slug": "alaia",
+    "owner": "eduardo1996futuro",
+    "extra": {
+      "eas": {
+        "projectId": "117a6422-1d5b-4b1d-ab78-b13638e4b284"
+      }
+    },
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
