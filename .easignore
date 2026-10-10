@@ -1,0 +1,145 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+app-example
+
+# generated native folders
+/ios
+/android
+backend-multi/.env
+
+backend-multi/.env
+backend-multi/serviceAccountKey.json
+
+backend-multi/scripts/crearAdminTemporal.js
+
+# Secrets in every application and directory. Examples must contain placeholders only.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*serviceAccount*.json
+*service-account*.json
+*service_account*.json
+*[Ss]ervice[Aa]ccount*.json
+*firebase-adminsdk*.json
+*credentials*.json
+*.pem
+*.key
+*.pfx
+*.p12
+*.p8
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+*.ppk
+id_rsa*
+id_ed25519*
+.aws/
+.ssh/
+.netrc
+.npmrc
+.pypirc
+# Local Firebase utility that writes to Firestore
+/backend-multi/test-firebase.js
+
+# Preserve exclusions from frontend/.gitignore
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/frontend/node_modules
+/frontend/.pnp
+/frontend/**/.pnp.*
+/frontend/.yarn/*
+!/frontend/.yarn/patches
+!/frontend/.yarn/plugins
+!/frontend/.yarn/releases
+!/frontend/.yarn/versions
+
+# testing
+/frontend/coverage
+
+# next.js
+/frontend/.next/
+/frontend/out/
+
+# production
+/frontend/build
+
+# misc
+/frontend/**/.DS_Store
+/frontend/**/*.pem
+
+# debug
+/frontend/**/npm-debug.log*
+/frontend/**/yarn-debug.log*
+/frontend/**/yarn-error.log*
+/frontend/**/.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+/frontend/**/.env*
+
+# vercel
+/frontend/**/.vercel
+
+# typescript
+/frontend/**/*.tsbuildinfo
+/frontend/**/next-env.d.ts
+# environment files
+/frontend/**/.env
+/frontend/**/.env.local
+/frontend/**/.env.production
+/frontend/**/.env.development
+
+# backend env
+/frontend/backend-multi/.env
+# Deliberately safe templates only
+!/frontend/**/.env.example
+!/frontend/**/.env.*.example
+
+
+# Preserve exclusions from security/.gitignore
+/security/**/*-debug.log
+/security/**/firebase-debug.*
+/security/**/.firebase/
+/security/firestore-tests/node_modules/
+
+# Unrelated local directory; never upload to EAS.
+/sites/
