@@ -1,0 +1,19 @@
+{
+  "cli": {
+    "appVersionSource": "local"
+  },
+  "build": {
+    "iphone-test": {
+      "distribution": "internal",
+      "developmentClient": false,
+      "environment": "preview",
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://alaia-backend-multi.onrender.com"
+      },
+      "ios": {
+        "simulator": false,
+        "buildConfiguration": "Release"
+      }
+    }
+  }
+}
